@@ -26,8 +26,6 @@ TMap<FString, JoyShock*> _byPath;
 
 FCriticalSection _pathHandleLock;
 TMap<FString, int32> _pathHandle;
-// https://stackoverflow.com/questions/41206861/atomic-increment-and-return-counter
-static std::atomic<int> _joyshockHandleCounter;
 
 static int32 GetUniqueHandle(const FString &path)
 {
@@ -39,7 +37,27 @@ static int32 GetUniqueHandle(const FString &path)
 		_pathHandleLock.Unlock();
 		return *iter;
 	}
-	const int handle = _joyshockHandleCounter++;
+
+	// Assign the lowest handle not currently in use, so a controller that reconnects (or is re-paired,
+	// getting a new device path) reuses a freed slot -- e.g. players 0 and 1 -- instead of ever-increasing
+	// ids (2, 3, ...). Handles are freed when a device is removed (see the poll-thread disconnect cleanup
+	// and JslDisconnectAndDisposeAll). This handle is also what the input-device mapper uses as the player
+	// index, so keeping it dense keeps player numbers stable across reconnects.
+	int32 handle = 0;
+	for (bool bInUse = true; bInUse; )
+	{
+		bInUse = false;
+		for (const TTuple<FString, int32>& pair : _pathHandle)
+		{
+			if (pair.Value == handle)
+			{
+				bInUse = true;
+				handle++;
+				break;
+			}
+		}
+	}
+
 	_pathHandle.Emplace(path, handle);
 	_pathHandleLock.Unlock();
 
@@ -250,6 +268,11 @@ void pollIndividualLoop(JoyShock *jc) {
 			JSL4UModule._connectedLock.unlock();
 			// UJoyShockLibrary::ConnectedLock.Unlock();
 		}
+
+		// Free this device's handle so it can be reused by a future connection (keeps player numbers dense).
+		_pathHandleLock.Lock();
+		_pathHandle.Remove(jc->path);
+		_pathHandleLock.Unlock();
 	}
 
 	const int32 intHandle = jc->intHandle;
@@ -548,6 +571,11 @@ void UJoyShockLibrary::JslDisconnectAndDisposeAll()
 	}
 	_joyshocks.Empty();
 	_byPath.Empty();
+
+	// Free all handles so a fresh set of connections starts from 0 again.
+	_pathHandleLock.Lock();
+	_pathHandle.Empty();
+	_pathHandleLock.Unlock();
 
 	JSL4UModule._connectedLock.unlock();
 

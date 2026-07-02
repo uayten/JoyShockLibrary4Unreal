@@ -163,18 +163,19 @@ void FJoyShockInterface::SendControllerEvents()
 {
 	// Drain connects/disconnects queued from the background enumeration and polling threads. Handling
 	// them here means the platform input-device mapper and our containers are only ever touched on the
-	// game thread. Connects are processed before disconnects so a same-frame reconnect ends up connected.
+	// game thread. Disconnects are processed before connects so that if a handle was freed and reused in
+	// the same frame (reconnect), the device ends up connected rather than disconnected.
 	{
-		int32 PendingConnect;
-		while (PendingConnects.Dequeue(PendingConnect))
-		{
-			OnConnectCallback(PendingConnect);
-		}
-
 		TPair<int32, bool> PendingDisconnect;
 		while (PendingDisconnects.Dequeue(PendingDisconnect))
 		{
 			OnDisconnectCallback(PendingDisconnect.Key, PendingDisconnect.Value);
+		}
+
+		int32 PendingConnect;
+		while (PendingConnects.Dequeue(PendingConnect))
+		{
+			OnConnectCallback(PendingConnect);
 		}
 	}
 
