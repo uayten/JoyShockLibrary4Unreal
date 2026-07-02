@@ -50,14 +50,17 @@ FJoyShockInterface::FJoyShockInterface(const TSharedRef<FGenericApplicationMessa
 	// TODO: Bind these without using lambda if possible
 	JoyShockLockedBindLambda(JSL4UModule, GetOnConnected(), [this](int32 DeviceHandle)
 	{
-		if (this)
-			this->OnConnectCallback(DeviceHandle);
+		// Enumeration runs on a background thread, so queue the connect and process it on the game thread
+		// in SendControllerEvents (where the platform input-device mapper is safe to touch).
+		PendingConnects.Enqueue(DeviceHandle);
 	});
 
 	JoyShockLockedBindLambda(JSL4UModule, GetOnDisconnected(), [this](int32 DeviceHandle, bool bHasTimedOut)
 	{
-		if (this)
-			this->OnDisconnectCallback(DeviceHandle, bHasTimedOut);
+		// This fires on a background polling thread. The platform input-device mapper and our
+		// controller containers must only be touched on the game thread, so queue the disconnect
+		// and let SendControllerEvents process it on the next tick.
+		PendingDisconnects.Enqueue(TPair<int32, bool>(DeviceHandle, bHasTimedOut));
 	});
 
 	JoyShockLockedBindLambda(JSL4UModule, GetOnPoll(), [this](int32 DeviceHandle, const FJoyShockState& SimpleState, const FJoyShockState& PreviousSimpleState, const FIMUState& IMUState, const FIMUState& PreviousIMUState, float DeltaTime)
@@ -79,6 +82,21 @@ FJoyShockInterface::FJoyShockInterface(const TSharedRef<FGenericApplicationMessa
 
 	GConfig->GetFloat(TEXT("/Script/Engine.InputSettings"), TEXT("InitialButtonRepeatDelay"), InitialButtonRepeatDelay, GInputIni);
 	GConfig->GetFloat(TEXT("/Script/Engine.InputSettings"), TEXT("ButtonRepeatDelay"), ButtonRepeatDelay, GInputIni);
+
+	// Pick up any devices that were already enumerated before this interface (and its OnConnected binding)
+	// existed -- e.g. a WM_DEVICECHANGE that fired between module startup and interface creation.
+	TArray<int32> ExistingHandles;
+	UJoyShockLibrary::JslGetConnectedDeviceHandles(ExistingHandles);
+	for (int32 ExistingHandle : ExistingHandles)
+	{
+		PendingConnects.Enqueue(ExistingHandle);
+	}
+
+	// Enumerate controllers that were already connected before the engine started. WM_DEVICECHANGE only
+	// fires on later plug/unplug events, so without this initial pass pre-connected controllers are never
+	// discovered. The callbacks are bound above, so OnConnected will be queued for each device found.
+	// This runs on a background thread (blocking HID I/O must not stall the game thread).
+	JSL4UModule.RequestConnectDevices();
 }
 
 void FJoyShockInterface::InitializeAdditionalKeys()
@@ -143,10 +161,24 @@ void FJoyShockInterface::GetPlatformUserAndDevice(int32 InControllerId, EInputDe
 
 void FJoyShockInterface::SendControllerEvents()
 {
-	bIsGamepadAttached = false;
+	// Drain connects/disconnects queued from the background enumeration and polling threads. Handling
+	// them here means the platform input-device mapper and our containers are only ever touched on the
+	// game thread. Connects are processed before disconnects so a same-frame reconnect ends up connected.
+	{
+		int32 PendingConnect;
+		while (PendingConnects.Dequeue(PendingConnect))
+		{
+			OnConnectCallback(PendingConnect);
+		}
 
-	/*TArray<int32> DeviceHandles = {};
-	UJoyShockLibrary::JslGetConnectedDeviceHandles(DeviceHandles);*/
+		TPair<int32, bool> PendingDisconnect;
+		while (PendingDisconnects.Dequeue(PendingDisconnect))
+		{
+			OnDisconnectCallback(PendingDisconnect.Key, PendingDisconnect.Value);
+		}
+	}
+
+	FScopeLock ContainerLock(&ControllerContainerLock);
 
 	bIsGamepadAttached = !DeviceHandles.IsEmpty();
 
@@ -306,16 +338,22 @@ void FJoyShockInterface::ProcessAnalogInputs(const FJoyShockState& SimpleState, 
 
 void FJoyShockInterface::OnPollCallback(int32 DeviceHandle, const FJoyShockState& SimpleState, const FJoyShockState& PreviousSimpleState, const FIMUState& IMUState, const FIMUState& PreviousIMUState, float DeltaTime)
 {
+	// Runs on a background polling thread. Only read existing entries here (never add) so the map is not
+	// structurally modified off the game thread; the entry is created by OnConnectCallback.
+	FScopeLock ContainerLock(&ControllerContainerLock);
+
 	if (!DeviceHandles.Contains(DeviceHandle))
 		return;
-	
-	FControllerState& State = ControllerStateByDeviceHandle.FindOrAdd(DeviceHandle);
+
+	FControllerState* State = ControllerStateByDeviceHandle.Find(DeviceHandle);
+	if (State == nullptr)
+		return;
 
 	// if (CachedSettings->bControllerEventsWaitForEngineTick) // TODO: Implement this setting
 	{
 		FScopeLock Lock(&SimpleStateLock);
-		State.SimpleState.Update(SimpleState, State.PreviousSimpleState);
-		State.IMUState = IMUState;
+		State->SimpleState.Update(SimpleState, State->PreviousSimpleState);
+		State->IMUState = IMUState;
 	}
 	/*else
 	{
@@ -366,15 +404,21 @@ void FJoyShockInterface::ProcessTouchState(const FTouchState& InTouchState, cons
 
 void FJoyShockInterface::OnTouchCallback(int32 DeviceHandle, const FTouchState& TouchState, const FTouchState& PreviousTouchState, float DeltaTime)
 {
+	// Runs on a background polling thread. Only read existing entries here (never add) so the map is not
+	// structurally modified off the game thread; the entry is created by OnConnectCallback.
+	FScopeLock ContainerLock(&ControllerContainerLock);
+
 	if (!DeviceHandles.Contains(DeviceHandle))
 		return;
-	
-	FControllerState& ControllerState = ControllerStateByDeviceHandle.FindOrAdd(DeviceHandle);
+
+	FControllerState* ControllerState = ControllerStateByDeviceHandle.Find(DeviceHandle);
+	if (ControllerState == nullptr)
+		return;
 
 	// if (CachedSettings->bControllerEventsWaitForEngineTick) // TODO: Implement this setting
 	{
 		FScopeLock Lock(&TouchStateLock);
-		ControllerState.TouchState = TouchState;
+		ControllerState->TouchState = TouchState;
 	}
 	/*else
 	{
@@ -388,6 +432,8 @@ void FJoyShockInterface::OnTouchCallback(int32 DeviceHandle, const FTouchState& 
 void FJoyShockInterface::OnConnectCallback(int32 InDeviceHandle)
 {
 	// UE_LOG(LogJoyShockLibrary, Log, TEXT(">>>>>OnConnectCallback %d"), InDeviceHandle);
+	FScopeLock ContainerLock(&ControllerContainerLock);
+
 	DeviceHandles.AddUnique(InDeviceHandle);
 
 	IPlatformInputDeviceMapper& DeviceMapper = IPlatformInputDeviceMapper::Get();
@@ -405,10 +451,9 @@ void FJoyShockInterface::OnConnectCallback(int32 InDeviceHandle)
 	{
 		int32 Handle = DeviceHandles[Index];
 
-		UJoyShockLibrary::JslGetControllerInfoAndSettings(Handle);
 		if (Handle == InDeviceHandle)
 		{
-			DeviceMapper.RemapControllerIdToPlatformUserAndDevice(Index, OUT PlatformUser, OUT InputDevice);			
+			DeviceMapper.RemapControllerIdToPlatformUserAndDevice(Index, OUT PlatformUser, OUT InputDevice);
 		}
 	}
 }
@@ -416,6 +461,8 @@ void FJoyShockInterface::OnConnectCallback(int32 InDeviceHandle)
 void FJoyShockInterface::OnDisconnectCallback(int32 InDeviceHandle, bool bInHasTimedOut)
 {
 	// UE_LOG(LogJoyShockLibrary, Log, TEXT(">>>>>OnDisconnectCallback %d"), InDeviceHandle);
+	FScopeLock ContainerLock(&ControllerContainerLock);
+
 	if (!DeviceHandles.Contains(InDeviceHandle))
 	{
 		return; // Should never happen!

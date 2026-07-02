@@ -2,6 +2,7 @@
 
 
 #include "CoreTypes.h"
+#include "Containers/Queue.h"
 #include "GenericPlatform/IInputInterface.h"
 #include "IInputDevice.h"
 #include "JoyShockLibrary4UnrealSettings.h"
@@ -97,8 +98,19 @@ private:
 
 	// Controller states
 	TMap<int32, FControllerState> ControllerStateByDeviceHandle = {};
-	
+
 	TArray<int32> DeviceHandles = {};
+
+	// Guards structural access to DeviceHandles / ControllerStateByDeviceHandle. These containers are
+	// read/iterated by the game thread (SendControllerEvents, connect/disconnect handling) and read by
+	// the background polling threads, so all access must be serialised to avoid reallocation races.
+	FCriticalSection ControllerContainerLock;
+
+	// Connect/disconnect notifications originate on background threads (enumeration and polling threads),
+	// but touching the platform input-device mapper and our containers is only safe on the game thread.
+	// We queue them here and drain them at the start of SendControllerEvents (which runs on the game thread).
+	TQueue<int32, EQueueMode::Mpsc> PendingConnects;
+	TQueue<TPair<int32, bool>, EQueueMode::Mpsc> PendingDisconnects;
 
 	// Delay before sending a repeat message after a button was first pressed
 	float InitialButtonRepeatDelay;

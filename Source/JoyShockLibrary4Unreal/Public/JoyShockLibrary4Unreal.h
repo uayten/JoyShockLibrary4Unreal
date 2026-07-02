@@ -6,6 +6,7 @@
 #include "IInputDeviceModule.h"
 #include "JoyShockLibrary4Unreal/JoyShockLibrary/JoyShockLibrary.h"
 #include "Modules/ModuleManager.h"
+#include <atomic>
 
 #if PLATFORM_WINDOWS
 #include "Windows/WindowsApplication.h"
@@ -50,6 +51,14 @@ public:
 	// IInputDeviceModule implementation
 	virtual TSharedPtr<IInputDevice> CreateInputDevice(const TSharedRef<FGenericApplicationMessageHandler>& InMessageHandler) override;
 
+	/**
+	 * Kicks off device (re)enumeration on a background thread. Enumerating and initialising HID devices
+	 * performs blocking I/O and thread joins, so it must never run on the game thread (doing so freezes
+	 * the editor when controllers connect/disconnect). Repeated requests while one is running are
+	 * coalesced into a single follow-up pass.
+	 */
+	void RequestConnectDevices();
+
 	FORCEINLINE FJoyShockConnectedDelegate& GetOnConnected() { return OnConnected; }
 	FORCEINLINE FJoyShockDisconnectedDelegate& GetOnDisconnected() { return OnDisconnected; }
 	FORCEINLINE FJoyShockPollDelegate& GetOnPoll() { return OnPoll; }
@@ -57,7 +66,12 @@ public:
 	
 	std::shared_timed_mutex _callbackLock;
 	std::shared_timed_mutex _connectedLock;
-	
+
+	// State for the coalesced background enumeration driven by RequestConnectDevices().
+	std::atomic<bool> bConnectRunning{ false };
+	std::atomic<bool> bConnectQueued{ false };
+	std::atomic<bool> bShuttingDown{ false };
+
 protected:
 	FJoyShockConnectedDelegate OnConnected;
 	FJoyShockDisconnectedDelegate OnDisconnected;

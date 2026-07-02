@@ -70,6 +70,11 @@ void pollIndividualLoop(JoyShock *jc) {
 	int numNoIMU = 0;
 	bool hasIMU = false;
 	bool lockedThread = false;
+	// Whether this device ever delivered a real input packet. Used to avoid re-scanning for a "phantom"
+	// device: a controller that is powered off but still lingers in HID enumeration can be opened and
+	// even respond to the init handshake, yet never produce input. Re-scanning after such a device drops
+	// would just recreate it in an endless loop, so we only trigger a rescan for devices that actually worked.
+	bool bReceivedInput = false;
 	int noIMULimit;
 	switch (jc->controller_type)
 	{
@@ -174,6 +179,7 @@ void pollIndividualLoop(JoyShock *jc) {
 			// we want to be able to do these check-and-calls without fear of interruption by another thread. there could be many threads (as many as connected controllers),
 			// and the callback could be time-consuming (up to the user), so we use a readers-writer-lock.
 			if (handle_input(jc, buf, 64, hasIMU)) { // but the user won't necessarily have a callback at all, so we'll skip the lock altogether in that case
+				bReceivedInput = true;
 				// accumulate gyro
 				FIMUState imuState = jc->get_transformed_imu_state(jc->imu_state);
 				jc->push_cumulative_gyro(imuState.gyroX, imuState.gyroY, imuState.gyroZ);
@@ -247,6 +253,9 @@ void pollIndividualLoop(JoyShock *jc) {
 	}
 
 	const int32 intHandle = jc->intHandle;
+	// Capture the notify decision before deleting jc -- reading jc->* after delete is a use-after-free.
+	const bool bShouldNotifyDisconnect = jc->remove_on_finish || jc->delete_on_finish; // Don't notify if reused
+
 	// disconnect this device
 	if (jc->delete_on_finish)
 	{
@@ -261,14 +270,22 @@ void pollIndividualLoop(JoyShock *jc) {
 	}
 
 	// notify that we disconnected this device, and say whether or not it was a timeout (if not a timeout, then an explicit disconnect)
+	if (bShouldNotifyDisconnect)
 	{
-		std::shared_lock<std::shared_timed_mutex> lock(JSL4UModule._callbackLock);
-		// FScopeLock Lock(&UJoyShockLibrary::CallbackLock);
-
-		// UE_LOG(LogJoyShockLibrary, Log, TEXT(">>>>>Remove on Finish: %d - Delete on Finish: %d"), jc->remove_on_finish, jc->delete_on_finish);
-		if (jc->remove_on_finish || jc->delete_on_finish) // Don't notify disconnection if device is being reused
 		{
+			std::shared_lock<std::shared_timed_mutex> lock(JSL4UModule._callbackLock);
+			// FScopeLock Lock(&UJoyShockLibrary::CallbackLock);
 			JSL4UModule.GetOnDisconnected().ExecuteIfBound(intHandle, numTimeOuts >= 10);
+		}
+
+		// A controller may have reconnected on the same device path just before we finished cleaning up
+		// (within the poll timeout window). Re-scan so it is picked up again -- cheap now that enumeration
+		// only creates genuinely new devices and never touches existing ones. Only do this for a device
+		// that actually delivered input, otherwise a powered-off controller lingering in enumeration would
+		// be recreated endlessly (create -> never receives input -> drop -> recreate...).
+		if (bReceivedInput)
+		{
+			JSL4UModule.RequestConnectDevices();
 		}
 	}
 }
@@ -294,7 +311,6 @@ int32 UJoyShockLibrary::JslConnectDevices()
 	cur_dev = devs;
 	while (cur_dev) {
 		bool isSupported = false;
-		bool isSwitch = false;
 		switch (cur_dev->vendor_id)
 		{
 		case JOYCON_VENDOR:
@@ -302,7 +318,6 @@ int32 UJoyShockLibrary::JslConnectDevices()
 				cur_dev->product_id == JOYCON_R_BT ||
 				cur_dev->product_id == PRO_CONTROLLER ||
 				cur_dev->product_id == JOYCON_CHARGING_GRIP;
-			isSwitch = true;
 			break;
 		case DS_VENDOR:
 			isSupported = cur_dev->product_id == DS4_USB ||
@@ -325,84 +340,29 @@ int32 UJoyShockLibrary::JslConnectDevices()
 		}
 
 		const FString path = cur_dev->path;
-		JoyShock** iter = _byPath.Find(path);
-		JoyShock* currentJc = nullptr;
-		bool isSameController = false;
-		if (iter != nullptr)
+
+		// If we're already tracking this device, leave it entirely alone. Its own poll thread is the sole
+		// authority on disconnection (hid_read returning -1), so we don't need to reconcile it here.
+		// Re-opening / re-initialising an already-tracked device does blocking HID I/O while we hold
+		// _connectedLock, and if that device has just been unplugged the I/O hangs -- which stalls every
+		// other poll thread's disconnect cleanup (so the other controller never reports a disconnect) and
+		// freezes the game thread's Jsl* getters during play. We only ever create genuinely new devices.
+		if (_byPath.Contains(path))
 		{
-			currentJc = *iter;
-			isSameController = isSwitch == (currentJc->controller_type == ControllerType::n_switch);
+			cur_dev = cur_dev->next;
+			continue;
 		}
+
 		UE_LOG(LogJoyShockLibrary, Log, TEXT("path: %s\n"), *FString(StringCast<TCHAR>(cur_dev->path).Get()));
 
 		hid_device* handle = hid_open_path(cur_dev->path);
 		if (handle != nullptr)
 		{
-			UE_LOG(LogJoyShockLibrary, Log, TEXT("\topened new handle\n"));
-			if (isSameController)
-			{
-				UE_LOG(LogJoyShockLibrary, Log, TEXT("\tending old thread and joining\n"));
-				// we'll get a new thread, so we need to delete the old one, but we need to actually wait for it, I think, because it'll be affected by init and all that...
-				// but we can't wait for it! That could deadlock if it happens to be about to disconnect or time out!
-				std::thread* thread = currentJc->thread;
-				currentJc->delete_on_finish = false;
-				currentJc->remove_on_finish = false;
-				currentJc->cancel_thread = true;
-				currentJc->reuse_counter++;
-
-				// finishing thread may be about to hit a lock
-				JSL4UModule._connectedLock.unlock();
-				thread->join();
-				JSL4UModule._connectedLock.lock();
-
-				delete thread;
-				currentJc->thread = nullptr;
-				// don't immediately cancel the next thread:
-				currentJc->cancel_thread = false;
-				currentJc->delete_on_finish = false;
-				currentJc->remove_on_finish = true;
-
-				UE_LOG(LogJoyShockLibrary, Log, TEXT("\tinitialising with new handle\n"));
-				// keep calibration stuff, but reset other stuff just in case it's actually a new controller
-				currentJc->init(cur_dev, handle, GetUniqueHandle(path), path);
-				currentJc = nullptr;
-			}
-			else
-			{
-				UE_LOG(LogJoyShockLibrary, Log, TEXT("\tcreating new JoyShock\n"));
-				JoyShock* jc = new JoyShock(cur_dev, handle, GetUniqueHandle(path), path);
-				_joyshocks.Emplace(jc->intHandle, jc);
-				_byPath.Emplace(path, jc);
-				createdIds.push_back(jc->intHandle);
-			}
-
-			if (currentJc != nullptr)
-			{
-				UE_LOG(LogJoyShockLibrary, Log, TEXT("\tdeinitialising old controller\n"));
-				// it's been replaced! get rid of it
-				if (currentJc->controller_type == ControllerType::s_ds4) {
-					if (currentJc->is_usb) {
-						currentJc->deinit_ds4_usb();
-					}
-					else {
-						currentJc->deinit_ds4_bt();
-					}
-				}
-				else if (currentJc->controller_type == ControllerType::s_ds) {
-
-				}
-				else if (currentJc->is_usb) {
-					currentJc->deinit_usb();
-				}
-				UE_LOG(LogJoyShockLibrary, Log, TEXT("\tending old thread\n"));
-				std::thread* thread = currentJc->thread;
-				currentJc->delete_on_finish = true;
-				currentJc->remove_on_finish = false;
-				currentJc->cancel_thread = true;
-				thread->detach();
-				delete thread;
-				currentJc->thread = nullptr;
-			}
+			UE_LOG(LogJoyShockLibrary, Log, TEXT("\tcreating new JoyShock\n"));
+			JoyShock* jc = new JoyShock(cur_dev, handle, GetUniqueHandle(path), path);
+			_joyshocks.Emplace(jc->intHandle, jc);
+			_byPath.Emplace(path, jc);
+			createdIds.push_back(jc->intHandle);
 		}
 
 		cur_dev = cur_dev->next;
@@ -434,10 +394,18 @@ int32 UJoyShockLibrary::JslConnectDevices()
 		else if (jc->is_usb) {
 			//UE_LOG(LibraryLogJoyShock, Log, TEXT("USB\n"));
 			jc->init_usb();
+			// init_usb() doesn't set this itself; without it a Switch controller is never considered
+			// initialised, so every JslConnectDevices call re-runs init (blocking HID I/O while holding
+			// _connectedLock) on every already-connected Switch controller -- which freezes the game
+			// thread's Jsl* getters during play.
+			jc->initialised = true;
 		}
 		else {
 			//UE_LOG(LibraryLogJoyShock, Log, TEXT("BT\n"));
 			jc->init_bt();
+			// See the init_usb() note above: init_bt() doesn't set this, so mark it here to stop the
+			// per-device-change re-initialisation churn that blocks _connectedLock.
+			jc->initialised = true;
 		}
 		// all get time now for polling
 		jc->last_polled = std::chrono::steady_clock::now();
@@ -456,25 +424,48 @@ int32 UJoyShockLibrary::JslConnectDevices()
 	{
 		JoyShock *jc = pair.Value;
 
+		// Only perform HID I/O on devices we're bringing online in this pass (thread == nullptr).
+		// This runs on every WM_DEVICECHANGE (including disconnects), and writing to a controller that
+		// already has a running poll thread can block on a device that has just been disconnected (e.g.
+		// bluetooth turned off) while we hold _connectedLock -- which would stall the poll threads and,
+		// during play, the game thread's Jsl* getters, freezing the editor. Player-number indices are
+		// still advanced for every device so newly connected controllers get a sensible LED.
+		const bool bIsNewDevice = jc->thread == nullptr;
+
 		// restore colours if we have them set for this controller
 		switch (jc->controller_type)
 		{
 		case ControllerType::s_ds4:
-			jc->set_ds4_rumble_light(0, 0, jc->led_r, jc->led_g, jc->led_b);
+			if (bIsNewDevice)
+			{
+				jc->set_ds4_rumble_light(0, 0, jc->led_r, jc->led_g, jc->led_b);
+			}
 			break;
 		case ControllerType::s_ds:
-			jc->set_ds5_rumble_light(0, 0, jc->led_r, jc->led_g, jc->led_b, dualSenseIndex++);
+			{
+				const int thisDualSenseIndex = dualSenseIndex++;
+				if (bIsNewDevice)
+				{
+					jc->set_ds5_rumble_light(0, 0, jc->led_r, jc->led_g, jc->led_b, thisDualSenseIndex);
+				}
+			}
 			break;
 		case ControllerType::n_switch:
-			jc->player_number = switchIndex++;
-			memset(buf, 0x00, 0x40);
-			buf[0] = static_cast<unsigned char>(jc->player_number);
-			jc->send_subcommand(0x01, 0x30, buf, 1);
+			{
+				const int thisSwitchIndex = switchIndex++;
+				if (bIsNewDevice)
+				{
+					jc->player_number = thisSwitchIndex;
+					memset(buf, 0x00, 0x40);
+					buf[0] = static_cast<unsigned char>(jc->player_number);
+					jc->send_subcommand(0x01, 0x30, buf, 1);
+				}
+			}
 			break;
 		}
 
 		// threads for polling
-		if (jc->thread == nullptr)
+		if (bIsNewDevice)
 		{
 			UE_LOG(LogJoyShockLibrary, Log, TEXT("\tstarting new thread\n"));
 			jc->thread = new std::thread(pollIndividualLoop, jc);
