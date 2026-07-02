@@ -13,6 +13,7 @@
 #include "JoyShock.h"
 #include "InputHelpers.h"
 #include "JoyShockLibrary4Unreal.h"
+#include "JoyShockInterface.h"
 
 // TEMP DEBUG BEGIN
 #include "Kismet/KismetSystemLibrary.h"
@@ -530,6 +531,110 @@ int32 UJoyShockLibrary::JslGetConnectedDeviceHandles(TArray<int32>& OutDeviceHan
 	}
 	JSL4UModule._connectedLock.unlock_shared();
 	return i; // return num actually found
+}
+
+// --- Joy-Con pairing (Blueprint) ------------------------------------------------------------------------
+
+static EJSL4UControllerType JSL4UControllerTypeFromLegacy(int32 LegacyType)
+{
+	switch (LegacyType)
+	{
+	case JS_TYPE_JOYCON_LEFT:    return EJSL4UControllerType::JoyConLeft;
+	case JS_TYPE_JOYCON_RIGHT:   return EJSL4UControllerType::JoyConRight;
+	case JS_TYPE_PRO_CONTROLLER: return EJSL4UControllerType::ProController;
+	case JS_TYPE_DS4:            return EJSL4UControllerType::DualShock4;
+	case JS_TYPE_DS:             return EJSL4UControllerType::DualSense;
+	default:                     return EJSL4UControllerType::Undefined;
+	}
+}
+
+static FString JSL4UControllerNameFromLegacy(int32 LegacyType)
+{
+	switch (LegacyType)
+	{
+	case JS_TYPE_JOYCON_LEFT:    return TEXT("JoyCon (L)");
+	case JS_TYPE_JOYCON_RIGHT:   return TEXT("JoyCon (R)");
+	case JS_TYPE_PRO_CONTROLLER: return TEXT("Pro Controller");
+	case JS_TYPE_DS4:            return TEXT("DualShock 4");
+	case JS_TYPE_DS:             return TEXT("DualSense");
+	default:                     return TEXT("Unknown Controller");
+	}
+}
+
+TArray<FJSL4UConnectedController> UJoyShockLibrary::JSL4UGetConnectedControllers()
+{
+	FJoyShockInterface* Interface = FJoyShockLibrary4UnrealModule::GetInstance().GetActiveInterface();
+
+	TArray<int32> Handles;
+	JslGetConnectedDeviceHandles(Handles);
+	Handles.Sort();
+
+	TArray<FJSL4UConnectedController> Result;
+	Result.Reserve(Handles.Num());
+	for (int32 Handle : Handles)
+	{
+		const int32 LegacyType = JslGetControllerType(Handle);
+
+		FJSL4UConnectedController Controller;
+		Controller.DeviceId = Handle;
+		Controller.ControllerType = JSL4UControllerTypeFromLegacy(LegacyType);
+		Controller.Name = JSL4UControllerNameFromLegacy(LegacyType);
+		Controller.bIsJoyCon = LegacyType == JS_TYPE_JOYCON_LEFT || LegacyType == JS_TYPE_JOYCON_RIGHT;
+		Controller.JoinedToDeviceId = Interface != nullptr ? Interface->GetJoinPartner(Handle) : INDEX_NONE;
+		Controller.PlayerIndex = Interface != nullptr ? Interface->GetPlayerIndexForDevice(Handle) : INDEX_NONE;
+		Result.Add(Controller);
+	}
+	return Result;
+}
+
+bool UJoyShockLibrary::JSL4UJoinJoyCons(int32 DeviceIdA, int32 DeviceIdB)
+{
+	if (DeviceIdA == DeviceIdB)
+	{
+		return false;
+	}
+
+	const int32 TypeA = JslGetControllerType(DeviceIdA);
+	const int32 TypeB = JslGetControllerType(DeviceIdB);
+
+	const bool bAIsJoyCon = TypeA == JS_TYPE_JOYCON_LEFT || TypeA == JS_TYPE_JOYCON_RIGHT;
+	const bool bBIsJoyCon = TypeB == JS_TYPE_JOYCON_LEFT || TypeB == JS_TYPE_JOYCON_RIGHT;
+	if (!bAIsJoyCon || !bBIsJoyCon)
+	{
+		UE_LOG(LogJoyShockLibrary, Warning, TEXT("JSL4UJoinJoyCons: both device ids must be Joy-Cons (got %d and %d)."), DeviceIdA, DeviceIdB);
+		return false;
+	}
+
+	if (TypeA == TypeB)
+	{
+		UE_LOG(LogJoyShockLibrary, Warning, TEXT("JSL4UJoinJoyCons: expected one left and one right Joy-Con; both are the same side."));
+		return false;
+	}
+
+	FJoyShockInterface* Interface = FJoyShockLibrary4UnrealModule::GetInstance().GetActiveInterface();
+	return Interface != nullptr && Interface->JoinControllers(DeviceIdA, DeviceIdB);
+}
+
+void UJoyShockLibrary::JSL4UUnjoinJoyCon(int32 DeviceId)
+{
+	if (FJoyShockInterface* Interface = FJoyShockLibrary4UnrealModule::GetInstance().GetActiveInterface())
+	{
+		Interface->UnjoinController(DeviceId);
+	}
+}
+
+void UJoyShockLibrary::JSL4UUnjoinAllJoyCons()
+{
+	if (FJoyShockInterface* Interface = FJoyShockLibrary4UnrealModule::GetInstance().GetActiveInterface())
+	{
+		Interface->UnjoinAllControllers();
+	}
+}
+
+int32 UJoyShockLibrary::JSL4UGetPlayerIndex(int32 DeviceId)
+{
+	FJoyShockInterface* Interface = FJoyShockLibrary4UnrealModule::GetInstance().GetActiveInterface();
+	return Interface != nullptr ? Interface->GetPlayerIndexForDevice(DeviceId) : INDEX_NONE;
 }
 
 void UJoyShockLibrary::JslDisconnectAndDisposeAll()

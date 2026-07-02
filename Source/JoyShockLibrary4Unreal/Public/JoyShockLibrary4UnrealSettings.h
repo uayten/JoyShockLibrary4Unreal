@@ -25,7 +25,7 @@ public:
 
 	FORCEINLINE FJSL4USettingsChangedDelegate& GetOnSettingsChanged() { return OnSettingsChanged; }
 #endif
-	
+
 	/* TODO: Add support for these settings in the future:
 	// The original JoyShockLibrary returns motion-related values in a Right-handed Y-Up format.
 	// In order to match Unreal's coordinate system, JSL4U converts these values to Left-handed Z-Up.

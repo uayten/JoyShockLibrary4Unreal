@@ -23,6 +23,8 @@ DECLARE_DELEGATE_FourParams(FJoyShockPollTouchDelegate, int32, FTouchState, FTou
 	(Module).Delegate.BindLambda(Lambda); \
 	(Module)._callbackLock.unlock(); }
 
+class FJoyShockInterface;
+
 #if PLATFORM_WINDOWS
 class FWindowsDeviceChangeMessageHandler : public IWindowsMessageHandler
 {
@@ -63,7 +65,13 @@ public:
 	FORCEINLINE FJoyShockDisconnectedDelegate& GetOnDisconnected() { return OnDisconnected; }
 	FORCEINLINE FJoyShockPollDelegate& GetOnPoll() { return OnPoll; }
 	FORCEINLINE FJoyShockPollTouchDelegate& GetOnPollTouch() { return OnPollTouch; }
-	
+
+	// The live input-device interface owns the controller state, player-slot assignment and Joy-Con joining.
+	// It registers itself here on creation so the Blueprint pairing API can reach it. May be null before the
+	// input device is created or after it's destroyed.
+	void SetActiveInterface(FJoyShockInterface* InInterface) { ActiveInterface = InInterface; }
+	FJoyShockInterface* GetActiveInterface() const { return ActiveInterface; }
+
 	std::shared_timed_mutex _callbackLock;
 	std::shared_timed_mutex _connectedLock;
 
@@ -71,6 +79,8 @@ public:
 	std::atomic<bool> bConnectRunning{ false };
 	std::atomic<bool> bConnectQueued{ false };
 	std::atomic<bool> bShuttingDown{ false };
+
+	FJoyShockInterface* ActiveInterface = nullptr;
 
 protected:
 	FJoyShockConnectedDelegate OnConnected;

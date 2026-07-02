@@ -47,6 +47,9 @@ FJoyShockInterface::FJoyShockInterface(const TSharedRef<FGenericApplicationMessa
 
 	FJoyShockLibrary4UnrealModule& JSL4UModule = FJoyShockLibrary4UnrealModule::GetInstance();
 
+	// Expose this interface to the Blueprint pairing API (UJoyShockLibrary reaches it via the module).
+	JSL4UModule.SetActiveInterface(this);
+
 	// TODO: Bind these without using lambda if possible
 	JoyShockLockedBindLambda(JSL4UModule, GetOnConnected(), [this](int32 DeviceHandle)
 	{
@@ -99,6 +102,18 @@ FJoyShockInterface::FJoyShockInterface(const TSharedRef<FGenericApplicationMessa
 	JSL4UModule.RequestConnectDevices();
 }
 
+FJoyShockInterface::~FJoyShockInterface()
+{
+	if (FJoyShockLibrary4UnrealModule::IsAvailable())
+	{
+		FJoyShockLibrary4UnrealModule& JSL4UModule = FJoyShockLibrary4UnrealModule::GetInstance();
+		if (JSL4UModule.GetActiveInterface() == this)
+		{
+			JSL4UModule.SetActiveInterface(nullptr);
+		}
+	}
+}
+
 void FJoyShockInterface::InitializeAdditionalKeys()
 {
 	EKeys::AddMenuCategoryDisplayInfo(JoyShockControllerName, LOCTEXT("JoyShockSubCategory", "JoyShock"), TEXT("GraphEditor.PadEvent_16x"));
@@ -146,19 +161,6 @@ FString FJoyShockInterface::GetDeviceName(int32 InControllerId)
 	}
 }
 
-void FJoyShockInterface::GetPlatformUserAndDevice(int32 InControllerId, EInputDeviceConnectionState InDeviceState,
-	FPlatformUserId& OutPlatformUserId, FInputDeviceId& OutDeviceId)
-{
-	IPlatformInputDeviceMapper& DeviceMapper = IPlatformInputDeviceMapper::Get();
-	DeviceMapper.RemapControllerIdToPlatformUserAndDevice(InControllerId, OUT OutPlatformUserId, OUT OutDeviceId);
-
-	// If the controller is connected now but was not before, refresh the information
-	if (InDeviceState == EInputDeviceConnectionState::Connected || InDeviceState == EInputDeviceConnectionState::Disconnected)
-	{
-		DeviceMapper.Internal_MapInputDeviceToUser(OutDeviceId, OutPlatformUserId, InDeviceState);
-	}
-}
-
 void FJoyShockInterface::SendControllerEvents()
 {
 	// Drain connects/disconnects queued from the background enumeration and polling threads. Handling
@@ -187,17 +189,19 @@ void FJoyShockInterface::SendControllerEvents()
 	{
 		int32 DeviceHandle = DeviceHandles[Index];
 
-		static FName SystemName(TEXT("JoyShock4Unreal"));
-		static FString ControllerName(GetDeviceName(DeviceHandle)); 
-		FInputDeviceScope InputScope(this, SystemName, DeviceHandle, ControllerName);
-
 		FControllerState& ControllerState = ControllerStateByDeviceHandle[DeviceHandle];
 		if (ControllerState.bIsConnected)
 		{
 			// if (CachedSettings->bControllerEventsWaitForEngineTick) // TODO: Implement this setting
 			{
+				// PlatformUser is the player slot this device is assigned to (see RefreshPlayerAssignments).
+				// Both halves of a joined Joy-Con pair share the same PlatformUser, so their (disjoint)
+				// buttons and separate stick axes combine into a single player.
 				const FPlatformUserId& PlatformUser = ControllerState.PlatformUser;
 				const FInputDeviceId& InputDevice = ControllerState.InputDevice;
+
+				static FName SystemName(TEXT("JoyShock4Unreal"));
+				FInputDeviceScope InputScope(this, SystemName, DeviceHandle, ControllerState.DeviceName);
 
 				{
 					FScopeLock Lock(&SimpleStateLock);
@@ -438,25 +442,19 @@ void FJoyShockInterface::OnConnectCallback(int32 InDeviceHandle)
 	DeviceHandles.AddUnique(InDeviceHandle);
 
 	IPlatformInputDeviceMapper& DeviceMapper = IPlatformInputDeviceMapper::Get();
-	FPlatformUserId PlatformUser = PLATFORMUSERID_NONE; // FPlatformMisc::GetPlatformUserForUserIndex(i);
-	FInputDeviceId InputDevice = INPUTDEVICEID_NONE;
-	GetPlatformUserAndDevice(InDeviceHandle, EInputDeviceConnectionState::Connected, PlatformUser, InputDevice);
-	
+
 	FControllerState& State = ControllerStateByDeviceHandle.FindOrAdd(InDeviceHandle);
 
 	State.bIsConnected = true;
-	State.PlatformUser = PlatformUser;
-	State.InputDevice = InputDevice;
+	// Allocate a globally-unique input device id for this physical controller. (Using the legacy
+	// RemapControllerIdToPlatformUserAndDevice "best guess" device id here can collide with the keyboard's
+	// device 0 / other controllers, which corrupts the input-device mapper and hangs Enhanced Input's
+	// user-settings init when entering play with several controllers.)
+	State.InputDevice = DeviceMapper.AllocateNewInputDeviceId();
+	State.PlatformUser = PLATFORMUSERID_NONE; // assigned (and mapped connected) by RefreshPlayerAssignments
+	State.DeviceName = GetDeviceName(InDeviceHandle);
 
-	for (int32 Index = 0; Index < DeviceHandles.Num(); Index++)
-	{
-		int32 Handle = DeviceHandles[Index];
-
-		if (Handle == InDeviceHandle)
-		{
-			DeviceMapper.RemapControllerIdToPlatformUserAndDevice(Index, OUT PlatformUser, OUT InputDevice);
-		}
-	}
+	RefreshPlayerAssignments();
 }
 
 void FJoyShockInterface::OnDisconnectCallback(int32 InDeviceHandle, bool bInHasTimedOut)
@@ -470,9 +468,183 @@ void FJoyShockInterface::OnDisconnectCallback(int32 InDeviceHandle, bool bInHasT
 	}
 
 	FControllerState& ControllerState = ControllerStateByDeviceHandle.FindChecked(InDeviceHandle);
-	FPlatformUserId PlatformUser = ControllerState.PlatformUser; // PLATFORMUSERID_NONE;
-	FInputDeviceId InputDevice = ControllerState.InputDevice; // INPUTDEVICEID_NONE;
 	ControllerState.bIsConnected = false;
 
-	GetPlatformUserAndDevice(InDeviceHandle, EInputDeviceConnectionState::Disconnected, PlatformUser, InputDevice);
+	// Tell the mapper this physical device is gone.
+	IPlatformInputDeviceMapper& DeviceMapper = IPlatformInputDeviceMapper::Get();
+	DeviceMapper.Internal_MapInputDeviceToUser(ControllerState.InputDevice, ControllerState.PlatformUser, EInputDeviceConnectionState::Disconnected);
+
+	// Dissolve any join this device was part of, then re-assign remaining players.
+	JoinPartner.Remove(InDeviceHandle);
+	for (auto It = JoinPartner.CreateIterator(); It; ++It)
+	{
+		if (It.Value() == InDeviceHandle)
+		{
+			It.RemoveCurrent();
+		}
+	}
+	RefreshPlayerAssignments();
+}
+
+int32 FJoyShockInterface::GetGroupPrimary(int32 Handle) const
+{
+	// The primary of a logical controller is the lower of the two joined handles (when both are connected),
+	// otherwise the handle itself.
+	if (const int32* Partner = JoinPartner.Find(Handle))
+	{
+		const FControllerState* PartnerState = ControllerStateByDeviceHandle.Find(*Partner);
+		if (PartnerState != nullptr && PartnerState->bIsConnected)
+		{
+			return FMath::Min(Handle, *Partner);
+		}
+	}
+	return Handle;
+}
+
+void FJoyShockInterface::RefreshPlayerAssignments()
+{
+	// Runs on the game thread with ControllerContainerLock held (via the connect/disconnect/join callers).
+	IPlatformInputDeviceMapper& DeviceMapper = IPlatformInputDeviceMapper::Get();
+
+	// 1. Gather the primary handle of every connected logical controller (a standalone device or a pair).
+	TArray<int32> GroupPrimaries;
+	for (int32 Handle : DeviceHandles)
+	{
+		const FControllerState* State = ControllerStateByDeviceHandle.Find(Handle);
+		if (State == nullptr || !State->bIsConnected)
+		{
+			continue;
+		}
+		GroupPrimaries.AddUnique(GetGroupPrimary(Handle));
+	}
+
+	// 2. Assign each logical controller a dense player slot. Preserve slots that groups already have (so
+	//    players keep their number), and give any new group the lowest free slot.
+	TMap<int32, int32> NewSlotByPrimary;
+	TSet<int32> UsedSlots;
+	for (int32 Primary : GroupPrimaries)
+	{
+		if (const int32* ExistingSlot = PlayerSlotByPrimary.Find(Primary))
+		{
+			NewSlotByPrimary.Add(Primary, *ExistingSlot);
+			UsedSlots.Add(*ExistingSlot);
+		}
+	}
+	for (int32 Primary : GroupPrimaries)
+	{
+		if (NewSlotByPrimary.Contains(Primary))
+		{
+			continue;
+		}
+		int32 Slot = 0;
+		while (UsedSlots.Contains(Slot))
+		{
+			Slot++;
+		}
+		NewSlotByPrimary.Add(Primary, Slot);
+		UsedSlots.Add(Slot);
+	}
+	PlayerSlotByPrimary = MoveTemp(NewSlotByPrimary);
+
+	// 3. Map every connected device to its logical controller's player slot. Both halves of a joined pair
+	//    map to the same platform user, so the engine sees one player for the pair.
+	for (int32 Handle : DeviceHandles)
+	{
+		FControllerState* State = ControllerStateByDeviceHandle.Find(Handle);
+		if (State == nullptr || !State->bIsConnected)
+		{
+			continue;
+		}
+
+		const int32 Slot = PlayerSlotByPrimary[GetGroupPrimary(Handle)];
+
+		const FPlatformUserId SlotUser = DeviceMapper.GetPlatformUserForUserIndex(Slot);
+
+		if (State->PlatformUser != SlotUser)
+		{
+			DeviceMapper.Internal_MapInputDeviceToUser(State->InputDevice, SlotUser, EInputDeviceConnectionState::Connected);
+			State->PlatformUser = SlotUser;
+		}
+	}
+}
+
+bool FJoyShockInterface::JoinControllers(int32 HandleA, int32 HandleB)
+{
+	FScopeLock ContainerLock(&ControllerContainerLock);
+
+	if (HandleA == HandleB)
+	{
+		return false;
+	}
+
+	const FControllerState* StateA = ControllerStateByDeviceHandle.Find(HandleA);
+	const FControllerState* StateB = ControllerStateByDeviceHandle.Find(HandleB);
+	if (StateA == nullptr || !StateA->bIsConnected || StateB == nullptr || !StateB->bIsConnected)
+	{
+		return false;
+	}
+
+	// Dissolve any existing joins the two handles are part of, then pair them. Joins are stored
+	// bidirectionally, so removing a handle (as both key and value) fully dissolves its old pair.
+	auto RemoveJoinsFor = [this](int32 Handle)
+	{
+		JoinPartner.Remove(Handle);
+		for (auto It = JoinPartner.CreateIterator(); It; ++It)
+		{
+			if (It.Value() == Handle)
+			{
+				It.RemoveCurrent();
+			}
+		}
+	};
+	RemoveJoinsFor(HandleA);
+	RemoveJoinsFor(HandleB);
+
+	JoinPartner.Add(HandleA, HandleB);
+	JoinPartner.Add(HandleB, HandleA);
+
+	RefreshPlayerAssignments();
+	return true;
+}
+
+void FJoyShockInterface::UnjoinController(int32 Handle)
+{
+	FScopeLock ContainerLock(&ControllerContainerLock);
+
+	const int32* Partner = JoinPartner.Find(Handle);
+	if (Partner == nullptr)
+	{
+		return;
+	}
+
+	JoinPartner.Remove(*Partner);
+	JoinPartner.Remove(Handle);
+
+	RefreshPlayerAssignments();
+}
+
+void FJoyShockInterface::UnjoinAllControllers()
+{
+	FScopeLock ContainerLock(&ControllerContainerLock);
+	JoinPartner.Empty();
+	RefreshPlayerAssignments();
+}
+
+int32 FJoyShockInterface::GetJoinPartner(int32 Handle) const
+{
+	FScopeLock ContainerLock(&ControllerContainerLock);
+	const int32* Partner = JoinPartner.Find(Handle);
+	return Partner != nullptr ? *Partner : INDEX_NONE;
+}
+
+int32 FJoyShockInterface::GetPlayerIndexForDevice(int32 Handle) const
+{
+	FScopeLock ContainerLock(&ControllerContainerLock);
+	const FControllerState* State = ControllerStateByDeviceHandle.Find(Handle);
+	if (State == nullptr || !State->bIsConnected)
+	{
+		return INDEX_NONE;
+	}
+	const int32* Slot = PlayerSlotByPrimary.Find(GetGroupPrimary(Handle));
+	return Slot != nullptr ? *Slot : INDEX_NONE;
 }

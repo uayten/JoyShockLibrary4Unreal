@@ -396,12 +396,69 @@ struct JOYSHOCKLIBRARY4UNREAL_API FJSLSettings // typedef struct JSL_SETTINGS {
 	bool isConnected = false;
 }; // JSL_SETTINGS;
 
+// A connected controller as seen by Blueprint: its device id (player index), its type and a readable name.
+// Used to build a UI list so the user can pick which two Joy-Cons to join.
+USTRUCT(BlueprintType)
+struct JOYSHOCKLIBRARY4UNREAL_API FJSL4UConnectedController
+{
+	GENERATED_BODY()
+
+	// Device id / player index (0, 1, 2, ...). This is what you pass to JSL4UJoinJoyCons.
+	UPROPERTY(BlueprintReadOnly)
+	int32 DeviceId = 0;
+
+	UPROPERTY(BlueprintReadOnly)
+	EJSL4UControllerType ControllerType = EJSL4UControllerType::Undefined;
+
+	// Readable name, e.g. "JoyCon (L)", "DualSense".
+	UPROPERTY(BlueprintReadOnly)
+	FString Name;
+
+	// True for a left or right Joy-Con (the only types that can be joined into a pair).
+	UPROPERTY(BlueprintReadOnly)
+	bool bIsJoyCon = false;
+
+	// The player slot (0, 1, 2, ...) this controller's input is delivered to. Both halves of a joined
+	// Joy-Con pair share the same PlayerIndex.
+	UPROPERTY(BlueprintReadOnly)
+	int32 PlayerIndex = -1;
+
+	// If this controller is joined with another, the device id of the controller it's joined with;
+	// otherwise -1.
+	UPROPERTY(BlueprintReadOnly)
+	int32 JoinedToDeviceId = -1;
+};
+
 UCLASS()
 class JOYSHOCKLIBRARY4UNREAL_API UJoyShockLibrary : public UBlueprintFunctionLibrary
 {
 	GENERATED_BODY()
 
 public:
+	// Returns every currently connected controller with its device id, type and name. Use this to list
+	// controllers (e.g. "0 JoyCon (R), 1 DualSense, 2 JoyCon (L)") and pick which Joy-Cons to join.
+	UFUNCTION(BlueprintCallable, Category = "JoyShockLibrary|JoyConPairing")
+	static TArray<FJSL4UConnectedController> JSL4UGetConnectedControllers();
+
+	// Joins two Joy-Cons so they act as a single controller for one player: their inputs are merged and
+	// delivered to the lower device id's player (e.g. joining 0 and 2 -> both feed player 0). Both ids must
+	// be Joy-Cons (one left, one right). Returns true on success.
+	UFUNCTION(BlueprintCallable, Category = "JoyShockLibrary|JoyConPairing")
+	static bool JSL4UJoinJoyCons(int32 DeviceIdA, int32 DeviceIdB);
+
+	// Undoes a join involving this device id (both halves go back to being their own players).
+	UFUNCTION(BlueprintCallable, Category = "JoyShockLibrary|JoyConPairing")
+	static void JSL4UUnjoinJoyCon(int32 DeviceId);
+
+	// Undoes every Joy-Con join.
+	UFUNCTION(BlueprintCallable, Category = "JoyShockLibrary|JoyConPairing")
+	static void JSL4UUnjoinAllJoyCons();
+
+	// Returns the player slot (0, 1, 2, ...) the given controller's input is delivered to, or -1 if it
+	// isn't connected. Both halves of a joined Joy-Con pair return the same slot. Useful for UI.
+	UFUNCTION(BlueprintCallable, BlueprintPure, Category = "JoyShockLibrary|JoyConPairing")
+	static int32 JSL4UGetPlayerIndex(int32 DeviceId);
+
 	UFUNCTION(BlueprintCallable, Category = JoyShockLibrary)
 	static int32 JslConnectDevices();
 

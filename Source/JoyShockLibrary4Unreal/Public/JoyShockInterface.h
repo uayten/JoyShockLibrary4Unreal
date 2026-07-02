@@ -58,6 +58,23 @@ public:
 	virtual void Tick(float DeltaTime) override {};
 	virtual bool Exec(UWorld* InWorld, const TCHAR* Cmd, FOutputDevice& Ar) override { return false; }
 
+	virtual ~FJoyShockInterface() override;
+
+	// --- Joy-Con pairing (game thread only) --------------------------------------------------------------
+	// Joins two connected device handles so they share one player slot (their input feeds a single player).
+	// Returns false if the handles are equal or not both connected. Any existing joins involving either
+	// handle are dissolved first.
+	bool JoinControllers(int32 HandleA, int32 HandleB);
+	// Dissolves any join involving this handle (both halves become their own players again).
+	void UnjoinController(int32 Handle);
+	// Dissolves every join.
+	void UnjoinAllControllers();
+	// Returns the handle joined with this one, or INDEX_NONE if it isn't joined.
+	int32 GetJoinPartner(int32 Handle) const;
+	// Returns the dense player slot (0, 1, 2, ...) this device's input is delivered to, or INDEX_NONE if
+	// the device isn't connected.
+	int32 GetPlayerIndexForDevice(int32 Handle) const;
+
 private:
 	FJoyShockInterface(const TSharedRef<FGenericApplicationMessageHandler>& MessageHandler);
 
@@ -70,6 +87,9 @@ private:
 
 		FPlatformUserId PlatformUser = PLATFORMUSERID_NONE;
 		FInputDeviceId InputDevice = INPUTDEVICEID_NONE;
+
+		// Readable device name, cached at connect time so we don't re-query it (under a lock) every frame.
+		FString DeviceName;
 		
 		FJoyShockState SimpleState = {};
 		FJoyShockState PreviousSimpleState = {};
@@ -92,8 +112,6 @@ private:
 	bool bIsGamepadAttached;
 	const FName JoyShockControllerName = FName("JoyShock");
 
-	void GetPlatformUserAndDevice(int32 InControllerId, EInputDeviceConnectionState InDeviceState, FPlatformUserId& OutPlatformUserId, FInputDeviceId& OutDeviceId);
-
 	static FString GetDeviceName(int32 InControllerId);
 
 	// Controller states
@@ -104,7 +122,24 @@ private:
 	// Guards structural access to DeviceHandles / ControllerStateByDeviceHandle. These containers are
 	// read/iterated by the game thread (SendControllerEvents, connect/disconnect handling) and read by
 	// the background polling threads, so all access must be serialised to avoid reallocation races.
-	FCriticalSection ControllerContainerLock;
+	mutable FCriticalSection ControllerContainerLock;
+
+	// Joy-Con joining: bidirectional map of a device handle to the handle it's joined with. A handle not
+	// present here is a standalone controller.
+	TMap<int32, int32> JoinPartner;
+
+	// Player-slot assignment: maps each "logical controller" (a standalone device or a joined pair,
+	// identified by its lower "primary" handle) to a dense player slot (0, 1, 2, ...). Existing slots are
+	// preserved across changes so players keep their number; new logical controllers take the lowest free
+	// slot. Recomputed by RefreshPlayerAssignments() whenever devices connect/disconnect or joins change.
+	TMap<int32, int32> PlayerSlotByPrimary;
+
+	// Recomputes player slots and maps every connected device to its logical controller's platform user in
+	// the platform input-device mapper, so the engine sees one player per logical controller.
+	void RefreshPlayerAssignments();
+
+	// Returns the primary (lower) handle of the logical controller this handle belongs to.
+	int32 GetGroupPrimary(int32 Handle) const;
 
 	// Connect/disconnect notifications originate on background threads (enumeration and polling threads),
 	// but touching the platform input-device mapper and our containers is only safe on the game thread.
