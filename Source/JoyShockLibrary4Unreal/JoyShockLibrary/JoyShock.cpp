@@ -12,6 +12,15 @@
 #include "tools.h"
 #include <cstring>
 
+#if PLATFORM_WINDOWS
+// The Switch 2 Pro Controller takes its commands over the WinUSB (bulk) interface MI_01, not over HID.
+#include "Windows/WindowsHWrapper.h"
+#include "Windows/AllowWindowsPlatformTypes.h"
+#include <setupapi.h>
+#include <winusb.h>
+#include "Windows/HideWindowsPlatformTypes.h"
+#endif
+
 #ifdef __GNUC__
 #define _wcsdup wcsdup
 #endif
@@ -66,6 +75,13 @@ void JoyShock::init(struct hid_device_info *dev, hid_device* inHandle, int uniqu
 	else if (dev->product_id == PRO_CONTROLLER) {
 		this->name = TEXT("Pro Controller");
 		this->left_right = 3;// left joycon
+	}
+	else if (dev->product_id == PRO_CONTROLLER_2) {
+		// Switch 2 Pro Controller, enumerated here over USB.
+		this->name = TEXT("Pro Controller 2");
+		this->left_right = 3;// treated like a Pro Controller (both halves)
+		this->is_usb = true;
+		this->is_switch2_pro = true;
 	}
 
 	if (dev->product_id == DS4_BT ||
@@ -632,6 +648,169 @@ bool JoyShock::init_usb() {
 		UE_LOG(LogJoyShockLibrary, Log, TEXT("Could not initialise %s! Will try again later.\n"), *this->name);
 	}
 	return result;
+}
+
+bool JoyShock::init_switch2() {
+	// Nintendo Switch 2 Pro Controller init, replicating what Steam does (confirmed with a USBPcap capture):
+	// commands go over the controller's WinUSB interface (MI_01) bulk OUT endpoint 0x02 -- NOT over HID
+	// (the HID interface MI_00 is input-only; hid_write fails with -1 on it). Once initialised, the
+	// controller streams its 0x05 input reports on the HID interface, which the poll thread parses.
+	// Command format: [command_id] 0x91 0x00 [subcommand_id] 0x00 [data_len] 0x00 0x00 [data...].
+	// (Over Bluetooth LE byte 2 is 0x01 instead; sending that over USB makes it search for a BT host.)
+#if PLATFORM_WINDOWS
+	UE_LOG(LogJoyShockLibrary, Log, TEXT("Running Switch 2 (WinUSB) init sequence...\n"));
+
+	// Device interface GUID exposed by the controller's own MS OS descriptor for its WinUSB interface
+	// (registry: Enum\USB\VID_057E&PID_2069&MI_01\...\Device Parameters\DeviceInterfaceGUID). Firmware-
+	// defined, so it is the same on every machine.
+	static const GUID Sw2WinUsbGuid = { 0x6F13725E, 0xEF0E, 0x4FD3, { 0xAE, 0x5F, 0xB2, 0xDE, 0x98, 0x9E, 0xC8, 0x25 } };
+
+	HDEVINFO devInfo = SetupDiGetClassDevsW(&Sw2WinUsbGuid, nullptr, nullptr, DIGCF_PRESENT | DIGCF_DEVICEINTERFACE);
+	if (devInfo == INVALID_HANDLE_VALUE)
+	{
+		UE_LOG(LogJoyShockLibrary, Warning, TEXT("SW2: SetupDiGetClassDevs failed (%u)\n"), GetLastError());
+		return false;
+	}
+
+	bool bSuccess = false;
+	SP_DEVICE_INTERFACE_DATA ifData;
+	ifData.cbSize = sizeof(ifData);
+	// NOTE: with multiple Switch 2 controllers this picks each WinUSB interface in enumeration order; we
+	// currently don't correlate MI_01 instances back to this JoyShock's MI_00 HID path (single-controller
+	// assumption; multi-Pro-2 correlation via container id is a TODO).
+	for (DWORD index = 0; SetupDiEnumDeviceInterfaces(devInfo, nullptr, &Sw2WinUsbGuid, index, &ifData); index++)
+	{
+		DWORD requiredSize = 0;
+		SetupDiGetDeviceInterfaceDetailW(devInfo, &ifData, nullptr, 0, &requiredSize, nullptr);
+		if (requiredSize == 0)
+		{
+			continue;
+		}
+
+		TArray<uint8> detailBuffer;
+		detailBuffer.SetNumZeroed(requiredSize);
+		PSP_DEVICE_INTERFACE_DETAIL_DATA_W detail = reinterpret_cast<PSP_DEVICE_INTERFACE_DETAIL_DATA_W>(detailBuffer.GetData());
+		detail->cbSize = sizeof(SP_DEVICE_INTERFACE_DETAIL_DATA_W);
+		if (!SetupDiGetDeviceInterfaceDetailW(devInfo, &ifData, detail, requiredSize, nullptr, nullptr))
+		{
+			continue;
+		}
+
+		FString devicePath(detail->DevicePath);
+		if (!devicePath.Contains(TEXT("vid_057e")) || !devicePath.Contains(TEXT("pid_2069")))
+		{
+			continue;
+		}
+
+		HANDLE fileHandle = CreateFileW(detail->DevicePath, GENERIC_READ | GENERIC_WRITE,
+			FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_EXISTING,
+			FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OVERLAPPED, nullptr);
+		if (fileHandle == INVALID_HANDLE_VALUE)
+		{
+			UE_LOG(LogJoyShockLibrary, Warning, TEXT("SW2: CreateFile failed (%u) for %s\n"), GetLastError(), *devicePath);
+			continue;
+		}
+
+		WINUSB_INTERFACE_HANDLE usbHandle = nullptr;
+		if (!WinUsb_Initialize(fileHandle, &usbHandle))
+		{
+			UE_LOG(LogJoyShockLibrary, Warning, TEXT("SW2: WinUsb_Initialize failed (%u)\n"), GetLastError());
+			CloseHandle(fileHandle);
+			continue;
+		}
+
+		// Find the bulk pipes (capture shows OUT=0x02, IN=0x82; query them to be safe).
+		UCHAR outPipe = 0x02, inPipe = 0x82;
+		USB_INTERFACE_DESCRIPTOR ifaceDesc;
+		if (WinUsb_QueryInterfaceSettings(usbHandle, 0, &ifaceDesc))
+		{
+			for (UCHAR p = 0; p < ifaceDesc.bNumEndpoints; p++)
+			{
+				WINUSB_PIPE_INFORMATION pipeInfo;
+				if (WinUsb_QueryPipe(usbHandle, 0, p, &pipeInfo) && pipeInfo.PipeType == UsbdPipeTypeBulk)
+				{
+					if (pipeInfo.PipeId & 0x80) { inPipe = pipeInfo.PipeId; }
+					else { outPipe = pipeInfo.PipeId; }
+				}
+			}
+		}
+
+		ULONG timeoutMs = 200;
+		WinUsb_SetPipePolicy(usbHandle, inPipe, PIPE_TRANSFER_TIMEOUT, sizeof(timeoutMs), &timeoutMs);
+
+		struct Sw2InitCmd { unsigned char cmd; unsigned char subcmd; int dataLen; unsigned char data[20]; };
+		const Sw2InitCmd cmds[] = {
+			{ 0x07, 0x01, 0,  {} },
+			{ 0x0c, 0x02, 4,  { 0x27, 0x00, 0x00, 0x00 } },              // FEATSEL
+			{ 0x11, 0x01, 0,  {} },
+			{ 0x0a, 0x08, 20, { 0x01, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x35, 0x00, 0x46, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 } },
+			{ 0x0c, 0x04, 4,  { 0x27, 0x00, 0x00, 0x00 } },
+			{ 0x01, 0x0c, 0,  {} },
+			{ 0x01, 0x01, 0,  {} },
+			{ 0x08, 0x02, 4,  { 0x01, 0x00, 0x00, 0x00 } },
+			{ 0x03, 0x0a, 4,  { 0x05, 0x00, 0x00, 0x00 } },              // input report mode 0x05
+			{ 0x03, 0x0d, 8,  { 0x01, 0x00, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff } },
+			{ 0x09, 0x07, 8,  { 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 } },
+		};
+
+		bSuccess = true;
+		for (const Sw2InitCmd& c : cmds)
+		{
+			unsigned char cmdBuf[28];
+			memset(cmdBuf, 0, sizeof(cmdBuf));
+			cmdBuf[0] = c.cmd;
+			cmdBuf[1] = 0x91;
+			cmdBuf[2] = 0x00;
+			cmdBuf[3] = c.subcmd;
+			cmdBuf[4] = 0x00;
+			cmdBuf[5] = static_cast<unsigned char>(c.dataLen);
+			cmdBuf[6] = 0x00;
+			cmdBuf[7] = 0x00;
+			if (c.dataLen > 0)
+			{
+				memcpy(cmdBuf + 8, c.data, c.dataLen);
+			}
+
+			ULONG written = 0;
+			if (!WinUsb_WritePipe(usbHandle, outPipe, cmdBuf, 8 + c.dataLen, &written, nullptr))
+			{
+				UE_LOG(LogJoyShockLibrary, Warning, TEXT("  SW2 cmd %02x:%02x -> WritePipe failed (%u)\n"), c.cmd, c.subcmd, GetLastError());
+				bSuccess = false;
+				continue;
+			}
+
+			// Drain the command response (best effort; also confirms the controller acknowledged).
+			unsigned char resp[64];
+			ULONG got = 0;
+			if (WinUsb_ReadPipe(usbHandle, inPipe, resp, sizeof(resp), &got, nullptr) && got >= 2)
+			{
+				UE_LOG(LogJoyShockLibrary, Log, TEXT("  SW2 cmd %02x:%02x -> ack %02x %02x (%u bytes)\n"), c.cmd, c.subcmd, resp[0], resp[1], got);
+			}
+			else
+			{
+				UE_LOG(LogJoyShockLibrary, Log, TEXT("  SW2 cmd %02x:%02x -> sent (%u bytes), no ack\n"), c.cmd, c.subcmd, written);
+			}
+		}
+
+		WinUsb_Free(usbHandle);
+		CloseHandle(fileHandle);
+		break; // first matching controller only (see note above)
+	}
+
+	SetupDiDestroyDeviceInfoList(devInfo);
+
+	if (!bSuccess)
+	{
+		UE_LOG(LogJoyShockLibrary, Warning, TEXT("SW2: no WinUSB interface initialised; controller will not stream input.\n"));
+	}
+	this->initialised = true;
+	return bSuccess;
+#else
+	// Non-Windows: the WinUSB path doesn't apply; hidapi may be able to talk to the command interface
+	// directly on other platforms (untested).
+	this->initialised = true;
+	return false;
+#endif
 }
 
 bool JoyShock::init_bt() {

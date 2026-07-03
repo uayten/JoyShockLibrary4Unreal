@@ -15,10 +15,6 @@
 #include "JoyShockLibrary4Unreal.h"
 #include "JoyShockInterface.h"
 
-// TEMP DEBUG BEGIN
-#include "Kismet/KismetSystemLibrary.h"
-// TEMP DEBUG END
-
 DEFINE_LOG_CATEGORY(LogJoyShockLibrary)
 
 TMap<int32, JoyShock*> _joyshocks;
@@ -94,6 +90,11 @@ void pollIndividualLoop(JoyShock *jc) {
 	// even respond to the init handshake, yet never produce input. Re-scanning after such a device drops
 	// would just recreate it in an endless loop, so we only trigger a rescan for devices that actually worked.
 	bool bReceivedInput = false;
+
+	// Diagnostic: log the first report the Switch 2 streams (size + report id), so we can confirm whether
+	// it started streaming after init.
+	bool bLoggedFirstRead = false;
+
 	int noIMULimit;
 	switch (jc->controller_type)
 	{
@@ -144,7 +145,7 @@ void pollIndividualLoop(JoyShock *jc) {
 		if (res == 0)
 		{
 			numTimeOuts++;
-			if (numTimeOuts >= 10)
+			if (numTimeOuts >= 10 && !jc->is_switch2_pro)
 			{
 				UE_LOG(LogJoyShockLibrary, Log, TEXT("Controller %d timed out\n"), jc->intHandle);
 
@@ -171,6 +172,12 @@ void pollIndividualLoop(JoyShock *jc) {
 				{
 					// TODO
 				}
+				else if (jc->is_switch2_pro)
+				{
+					// Don't re-run init on the Switch 2 while waiting for its stream to start. Its init was
+					// already done once; re-sending the handshake here (every timeout) resets it and stops it
+					// from ever settling into streaming its reports. Just keep reading.
+				}
 				else
 				{
 					if (jc->is_usb)
@@ -195,6 +202,13 @@ void pollIndividualLoop(JoyShock *jc) {
 		else
 		{
 			numTimeOuts = 0;
+
+			if (jc->is_switch2_pro && !bLoggedFirstRead)
+			{
+				UE_LOG(LogJoyShockLibrary, Log, TEXT("Pro Controller 2 first report received: %d bytes, report id 0x%02X"), res, buf[0]);
+				bLoggedFirstRead = true;
+			}
+
 			// we want to be able to do these check-and-calls without fear of interruption by another thread. there could be many threads (as many as connected controllers),
 			// and the callback could be time-consuming (up to the user), so we use a readers-writer-lock.
 			if (handle_input(jc, buf, 64, hasIMU)) { // but the user won't necessarily have a callback at all, so we'll skip the lock altogether in that case
@@ -329,7 +343,7 @@ int32 UJoyShockLibrary::JslConnectDevices()
 
 	JSL4UModule._connectedLock.lock();
 
-	int res = hid_init();
+	hid_init();
 
 	devs = hid_enumerate(0x0, 0x0);
 	cur_dev = devs;
@@ -341,6 +355,7 @@ int32 UJoyShockLibrary::JslConnectDevices()
 			isSupported = cur_dev->product_id == JOYCON_L_BT ||
 				cur_dev->product_id == JOYCON_R_BT ||
 				cur_dev->product_id == PRO_CONTROLLER ||
+				cur_dev->product_id == PRO_CONTROLLER_2 ||
 				cur_dev->product_id == JOYCON_CHARGING_GRIP;
 			break;
 		case DS_VENDOR:
@@ -403,7 +418,11 @@ int32 UJoyShockLibrary::JslConnectDevices()
 			continue;
 		}
 
-		if (jc->controller_type == ControllerType::s_ds4) {
+		if (jc->is_switch2_pro) {
+			// Send the Switch 2 USB init sequence (captured from Steam) that makes it start streaming.
+			jc->init_switch2();
+		}
+		else if (jc->controller_type == ControllerType::s_ds4) {
 			if (!jc->is_usb) {
 				jc->init_ds4_bt();
 			}
@@ -477,7 +496,9 @@ int32 UJoyShockLibrary::JslConnectDevices()
 		case ControllerType::n_switch:
 			{
 				const int thisSwitchIndex = switchIndex++;
-				if (bIsNewDevice)
+				// Skip the player-LED subcommand for the Switch 2 -- it doesn't speak the Switch 1 subcommand
+				// protocol, and the write/read could block or interfere with reading its raw reports.
+				if (bIsNewDevice && !jc->is_switch2_pro)
 				{
 					jc->player_number = thisSwitchIndex;
 					memset(buf, 0x00, 0x40);
@@ -685,7 +706,7 @@ void UJoyShockLibrary::JslDisconnectAndDisposeAll()
 	JSL4UModule._connectedLock.unlock();
 
 	// Finalize the hidapi library
-	int res = hid_exit();
+	hid_exit();
 }
 
 bool UJoyShockLibrary::JslStillConnected(int32 deviceId)

@@ -45,6 +45,10 @@ enum ControllerType { n_switch, s_ds4, s_ds };
 #define JOYCON_R_BT 0x2007
 #define PRO_CONTROLLER 0x2009
 #define JOYCON_CHARGING_GRIP 0x200e
+// Nintendo Switch 2 Pro Controller (enumerates as VID 057E / PID 2069 over USB). NOTE: the Switch 2 uses a
+// newer input protocol than the Switch 1 controllers above, so this is recognised/created here but full
+// input parsing may still need protocol-specific work.
+#define PRO_CONTROLLER_2 0x2069
 #define L_OR_R(lr) (lr == 1 ? 'L' : (lr == 2 ? 'R' : '?'))
 
 class JoyShock {
@@ -118,6 +122,10 @@ public:
 
 	ControllerType controller_type = ControllerType::n_switch;
 	bool is_usb = false;
+
+	// Nintendo Switch 2 Pro Controller (PID 0x2069). Its input protocol differs from the Switch 1; this flag
+	// is used to dump its raw HID reports for reverse-engineering until proper parsing is implemented.
+	bool is_switch2_pro = false;
 
 	unsigned char small_rumble = 0;
 	unsigned char big_rumble = 0;
@@ -266,6 +274,9 @@ public:
 	bool init_usb();
 
 	bool init_bt();
+
+	// Nintendo Switch 2 init sequence (sends the SW2 command reports that make it start streaming input).
+	bool init_switch2();
 
 	void init_ds4_bt();
 

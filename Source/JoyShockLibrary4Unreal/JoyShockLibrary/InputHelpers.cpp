@@ -22,6 +22,73 @@ bool handle_input(JoyShock* jc, uint8_t* packet, int32 len, bool &hasIMU) {
 	auto time_now = std::chrono::steady_clock::now();
 	jc->delta_time = (float)(std::chrono::duration_cast<std::chrono::microseconds>(time_now - jc->last_polled).count() / 1000000.0);
 	jc->last_polled = time_now;
+
+	// Nintendo Switch 2 Pro Controller: its own 64-byte report (id 0x05), decoded from raw dumps. Its
+	// protocol differs from the Switch 1 controllers, so it gets a dedicated parser here. Motion (gyro/
+	// accel) and per-device stick calibration aren't parsed yet.
+	if (jc->is_switch2_pro)
+	{
+		if (packet[0] != 0x05 || len < 17)
+		{
+			return false;
+		}
+
+		const uint8_t b5 = packet[5]; // face buttons + right shoulders
+		const uint8_t b6 = packet[6]; // system buttons + stick clicks + "C"
+		const uint8_t b7 = packet[7]; // d-pad + left shoulders
+		const uint8_t b8 = packet[8]; // rear paddles GL/GR
+
+		int32 buttons = 0;
+		if (b5 & 0x08) buttons |= JSMASK_E;      // A (right)
+		if (b5 & 0x04) buttons |= JSMASK_S;      // B (bottom)
+		if (b5 & 0x02) buttons |= JSMASK_N;      // X (top)
+		if (b5 & 0x01) buttons |= JSMASK_W;      // Y (left)
+		if (b5 & 0x40) buttons |= JSMASK_R;
+		if (b5 & 0x80) buttons |= JSMASK_ZR;
+		if (b6 & 0x01) buttons |= JSMASK_MINUS;
+		if (b6 & 0x02) buttons |= JSMASK_PLUS;
+		if (b6 & 0x04) buttons |= JSMASK_RCLICK;
+		if (b6 & 0x08) buttons |= JSMASK_LCLICK;
+		if (b6 & 0x10) buttons |= JSMASK_HOME;
+		if (b6 & 0x20) buttons |= JSMASK_CAPTURE;
+		if (b6 & 0x40) buttons |= JSMASK_C;      // "C" (GameChat) button
+		if (b7 & 0x02) buttons |= JSMASK_UP;
+		if (b7 & 0x01) buttons |= JSMASK_DOWN;
+		if (b7 & 0x08) buttons |= JSMASK_LEFT;
+		if (b7 & 0x04) buttons |= JSMASK_RIGHT;
+		if (b7 & 0x40) buttons |= JSMASK_L;
+		if (b7 & 0x80) buttons |= JSMASK_ZL;
+		if (b8 & 0x02) buttons |= JSMASK_GL;     // GL rear grip button
+		if (b8 & 0x01) buttons |= JSMASK_GR;     // GR rear grip button
+
+		jc->simple_state.buttons = buttons;
+
+		// Sticks: two 12-bit axes packed into 3 bytes each (same layout as the Switch 1), centre ~0x800.
+		const uint16_t lx = packet[11] | ((packet[12] & 0x0F) << 8);
+		const uint16_t ly = (packet[12] >> 4) | (packet[13] << 4);
+		const uint16_t rx = packet[14] | ((packet[15] & 0x0F) << 8);
+		const uint16_t ry = (packet[15] >> 4) | (packet[16] << 4);
+
+		auto normStick = [](uint16_t raw) -> float
+		{
+			const float value = ((int32)raw - 2048) / 1800.0f; // centre 0x800, ~full range at the extremes
+			return value < -1.0f ? -1.0f : (value > 1.0f ? 1.0f : value);
+		};
+		jc->simple_state.stickLX = normStick(lx);
+		jc->simple_state.stickLY = normStick(ly);
+		jc->simple_state.stickRX = normStick(rx);
+		// The right stick's Y axis is reported inverted relative to the left stick's (confirmed on
+		// hardware), so negate it to make up positive on both sticks.
+		jc->simple_state.stickRY = -normStick(ry);
+
+		// Switch controllers only report ZL/ZR digitally; surface them as full triggers when pressed.
+		jc->simple_state.lTrigger = (buttons & JSMASK_ZL) ? 1.0f : 0.0f;
+		jc->simple_state.rTrigger = (buttons & JSMASK_ZR) ? 1.0f : 0.0f;
+
+		hasIMU = false; // no motion data parsed yet
+		return true;
+	}
+
 	if (jc->cue_motion_reset)
 	{
 		//printf("RESET motion\n");

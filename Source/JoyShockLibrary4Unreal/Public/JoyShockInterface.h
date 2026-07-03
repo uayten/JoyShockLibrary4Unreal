@@ -207,9 +207,19 @@ private:
 	
 	const FGamepadKeyNames::Type FunctionLeftButtonKeyName = "FunctionLeft";
 	const FKey FunctionLeftButtonKey = "FunctionLeft";
-	
+
 	const FGamepadKeyNames::Type FunctionRightButtonKeyName = "FunctionRight";
 	const FKey FunctionRightButtonKey = "FunctionRight";
+
+	// Switch 2 Pro Controller
+	const FGamepadKeyNames::Type CButtonKeyName = "SwitchC";
+	const FKey CButtonKey = "SwitchC";
+
+	const FGamepadKeyNames::Type GripLeftButtonKeyName = "GripLeft";
+	const FKey GripLeftButtonKey = "GripLeft";
+
+	const FGamepadKeyNames::Type GripRightButtonKeyName = "GripRight";
+	const FKey GripRightButtonKey = "GripRight";
 	
 	
 	const TArray<TTuple<int32, FName>> JoyShockMaskMappings = {
@@ -236,7 +246,12 @@ private:
 		{JSMASK_SL, SideLeftButtonKeyName},
 		{JSMASK_SR, SideRightButtonKeyName},
 		{JSMASK_FNL, FunctionLeftButtonKeyName},
-		{JSMASK_FNR, FunctionRightButtonKeyName}
+		{JSMASK_FNR, FunctionRightButtonKeyName},
+
+		// Switch 2 Pro Controller
+		{JSMASK_C, CButtonKeyName},
+		{JSMASK_GL, GripLeftButtonKeyName},
+		{JSMASK_GR, GripRightButtonKeyName}
 	};
 
 	TStaticArray<double, MAX_NUM_CONTROLLER_BUTTONS> NextRepeatTimes{InPlace, 0.0};

@@ -49,6 +49,10 @@ DECLARE_LOG_CATEGORY_EXTERN(LogJoyShockLibrary, Verbose, All);
 #define JSMASK_SR 0x100000
 #define JSMASK_FNL 0x200000
 #define JSMASK_FNR 0x400000
+// Nintendo Switch 2 Pro Controller extras
+#define JSMASK_C 0x800000    // "C" (GameChat) button
+#define JSMASK_GL 0x1000000  // rear grip button GL
+#define JSMASK_GR 0x2000000  // rear grip button GR
 
 #define JSOFFSET_UP 0
 #define JSOFFSET_DOWN 1
@@ -77,6 +81,9 @@ DECLARE_LOG_CATEGORY_EXTERN(LogJoyShockLibrary, Verbose, All);
 #define JSOFFSET_SR 20
 #define JSOFFSET_FNL 21
 #define JSOFFSET_FNR 22
+#define JSOFFSET_C 23
+#define JSOFFSET_GL 24
+#define JSOFFSET_GR 25
 
 // PS5 Player maps for the DS Player Lightbar
 #define DS5_PLAYER_1 4
