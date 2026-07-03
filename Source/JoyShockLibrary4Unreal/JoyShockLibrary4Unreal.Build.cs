@@ -70,9 +70,10 @@ public class JoyShockLibrary4Unreal : ModuleRules
 			PublicDelayLoadDLLs.Add("hidapi.dll");
 			RuntimeDependencies.Add(Path.Combine(x64Path, "hidapi.dll"));
 
-			// WinUSB + SetupAPI: used to send the Nintendo Switch 2 Pro Controller its init commands over
-			// its WinUSB (bulk) interface -- its HID interface is input-only.
-			PublicSystemLibraries.AddRange(new string[] { "setupapi.lib", "winusb.lib" });
+			// WinUSB + SetupAPI + CfgMgr: used to send the Nintendo Switch 2 Pro Controller its init
+			// commands over its WinUSB (bulk) interface (its HID interface is input-only), and to match
+			// that WinUSB interface to the HID interface of the same physical unit via the device tree.
+			PublicSystemLibraries.AddRange(new string[] { "setupapi.lib", "winusb.lib", "cfgmgr32.lib" });
 		}
 		/*else if (Target.Platform == UnrealTargetPlatform.Linux)
 		{

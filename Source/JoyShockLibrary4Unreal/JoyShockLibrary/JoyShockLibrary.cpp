@@ -95,6 +95,13 @@ void pollIndividualLoop(JoyShock *jc) {
 	// it started streaming after init.
 	bool bLoggedFirstRead = false;
 
+	// Switch 1 rumble: this thread is the SOLE writer of rumble packets (JslSetRumble only stores the
+	// values). Rumble decays on its own shortly after a single 0x10 packet, so while active the state is
+	// re-sent continuously; a change to (0,0) sends one final stop packet.
+	int rumbleRefreshCounter = 0;
+	unsigned char lastSentSmallRumble = 0;
+	unsigned char lastSentBigRumble = 0;
+
 	int noIMULimit;
 	switch (jc->controller_type)
 	{
@@ -207,6 +214,29 @@ void pollIndividualLoop(JoyShock *jc) {
 			{
 				UE_LOG(LogJoyShockLibrary, Log, TEXT("Pro Controller 2 first report received: %d bytes, report id 0x%02X"), res, buf[0]);
 				bLoggedFirstRead = true;
+			}
+
+			// Switch 1 rumble (sole writer, see above): send immediately when the requested values change
+			// (including a final stop packet on a change to 0,0), and while active re-send roughly every
+			// 4 input reports (~60ms at 66Hz) -- the actuator fades out on its own otherwise, which made a
+			// single packet feel like a short, inconsistent blip. The write happens outside modifying_lock
+			// so a slow Bluetooth write can never stall the game thread's Jsl* calls.
+			if (jc->controller_type == ControllerType::n_switch && !jc->is_switch2_pro)
+			{
+				jc->modifying_lock.Lock();
+				const unsigned char wantedSmallRumble = jc->small_rumble;
+				const unsigned char wantedBigRumble = jc->big_rumble;
+				jc->modifying_lock.Unlock();
+
+				const bool bRumbleActive = wantedSmallRumble != 0 || wantedBigRumble != 0;
+				const bool bRumbleChanged = wantedSmallRumble != lastSentSmallRumble || wantedBigRumble != lastSentBigRumble;
+				if (bRumbleChanged || (bRumbleActive && ++rumbleRefreshCounter >= 4))
+				{
+					rumbleRefreshCounter = 0;
+					jc->set_switch_rumble(wantedSmallRumble, wantedBigRumble);
+					lastSentSmallRumble = wantedSmallRumble;
+					lastSentBigRumble = wantedBigRumble;
+				}
 			}
 
 			// we want to be able to do these check-and-calls without fear of interruption by another thread. there could be many threads (as many as connected controllers),
@@ -1564,6 +1594,11 @@ void UJoyShockLibrary::JslSetRumble(int32 deviceId, int32 smallRumble, int32 big
 	std::shared_lock<std::shared_timed_mutex> lock(JSL4UModule._connectedLock);
 	
 	JoyShock* jc = GetJoyShockFromHandle(deviceId);
+	// Diagnostic: rumble is event-driven, so this stays quiet in normal play but makes "why doesn't this
+	// controller vibrate" immediately visible in the log (wrong device id, disconnected device, etc).
+	UE_LOG(LogJoyShockLibrary, Log, TEXT("JslSetRumble(device %d, small %d, big %d) -> %s"),
+		deviceId, smallRumble, bigRumble, jc != nullptr ? *jc->name : TEXT("NO DEVICE WITH THIS ID"));
+
 	if (jc != nullptr && jc->controller_type == ControllerType::s_ds4) {
 		jc->modifying_lock.Lock();
 		jc->small_rumble = smallRumble;
@@ -1589,6 +1624,21 @@ void UJoyShockLibrary::JslSetRumble(int32 deviceId, int32 smallRumble, int32 big
                 jc->player_number);
 		jc->modifying_lock.Unlock();
     }
+	else if (jc != nullptr && jc->is_switch2_pro) {
+		jc->modifying_lock.Lock();
+		jc->small_rumble = smallRumble;
+		jc->big_rumble = bigRumble;
+		jc->set_sw2_rumble(smallRumble, bigRumble);
+		jc->modifying_lock.Unlock();
+	}
+	else if (jc != nullptr && jc->controller_type == ControllerType::n_switch) {
+		// Only store the values here: the polling thread is the sole writer of Switch 1 rumble packets
+		// (it both sustains the vibration and keeps blocking HID writes off the game thread).
+		jc->modifying_lock.Lock();
+		jc->small_rumble = smallRumble;
+		jc->big_rumble = bigRumble;
+		jc->modifying_lock.Unlock();
+	}
 }
 // set controller player number indicator (not all controllers have a number indicator which can be set, but that just means nothing will be done when this is called -- no harm)
 void UJoyShockLibrary::JslSetPlayerNumber(int32 deviceId, int32 number)

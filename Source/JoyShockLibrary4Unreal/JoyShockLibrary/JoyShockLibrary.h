@@ -692,9 +692,20 @@ public:
 	/*extern "C" static void JslSetLightColour(int32 deviceId, int32 colour); */
 	static void JslSetLightColor(int32 InDeviceId, FColor InColor);
 
-	// set controller rumble
+	/**
+	 * Sets the controller's rumble motors. Values range from 0 (off) to 255 (maximum intensity).
+	 * BigRumble drives the heavy/low-frequency motor (strong shake, e.g. explosions, impacts);
+	 * SmallRumble drives the light/high-frequency motor (fine buzz, e.g. UI feedback, engines).
+	 * The rumble stays at the given intensities until you call this again -- call it with (0, 0) to stop.
+	 * Supported controllers: DualShock 4, DualSense, Joy-Cons and Pro Controller (HD rumble, both values
+	 * mapped to the low/high-frequency actuator components), and Switch 2 Pro Controller over USB (currently
+	 * plays a fixed vibration preset while either value is above 0; amplitude control is not mapped yet).
+	 * @param deviceId     The controller's device id (see JSL4UGetConnectedControllers).
+	 * @param smallRumble  High-frequency motor intensity, 0-255.
+	 * @param bigRumble    Low-frequency motor intensity, 0-255.
+	 */
 	UFUNCTION(BlueprintCallable, Category = JoyShockLibrary)
-	/*extern "C"*/ static void JslSetRumble(int32 deviceId, int32 smallRumble, int32 bigRumble);
+	static void JslSetRumble(int32 deviceId, int32 smallRumble, int32 bigRumble);
 
 	// set controller player number indicator (not all controllers have a number indicator which can be set, but that just means nothing will be done when this is called -- no harm)
 	UFUNCTION(BlueprintCallable, Category = JoyShockLibrary)

@@ -1,10 +1,10 @@
 # JoyShockLibrary4Unreal
-This is a fork of JibbSmart's [JoyShockLibrary](https://github.com/JibbSmart/JoyShockLibrary), modified to integrate with Unreal Engine's input system as a plug-in. This allows your Unreal Engine games to support DualShock 4, DualSense (including Edge), Switch Pro and Joy-con controllers natively, and use some of their exclusive features such as gyro and touchpad.
+This is a fork of JibbSmart's [JoyShockLibrary](https://github.com/JibbSmart/JoyShockLibrary), modified to integrate with Unreal Engine's input system as a plug-in. This allows your Unreal Engine games to support DualShock 4, DualSense (including Edge), Switch Pro, Joy-Con and Switch 2 Pro controllers natively, and use some of their exclusive features such as gyro and touchpad.
 
 ## Installation
-- This plug-in requires using microdee's [HIDUE](https://github.com/microdee/HIDUE) plugin for communicating with controllers via USB and Bluetooth. Please add it to your Unreal project first.
 - Download or clone the JoyShockLibrary4Unreal repo from this GitHub page and add it to your game's Plugins folder. The path to the Content folder should look like this: `<project>/Plugins/JoyShockLibrary4Unreal/Content`.
-- Make sure that both HIDUE and JoyShockLibrary4Unreal are enabled in your project's .uproject file or Plug-in settings.
+- Make sure that JoyShockLibrary4Unreal is enabled in your project's .uproject file or Plug-in settings.
+- On Windows, no other plug-in is needed (hidapi is bundled). On other platforms, the plug-in falls back to microdee's [HIDUE](https://github.com/microdee/HIDUE) plugin for HID communication, so add it to your project as well.
 
 ## Demo Level
 - There's a demo level called LV_JoyShockDemo in the Content folder! You can find it in your Content Browser, as long as you enable showing Plugin Content in your Content Browser settings:
@@ -42,6 +42,30 @@ For inputs that have an XInput equivalent (e.g. face buttons, triggers and stick
 For buttons that are exclusive to JoyShock inputs, new input events have been added:
 ![JoyShock inputs](https://github.com/user-attachments/assets/3ce0e091-e703-4781-823f-33e1aa615997)
 
+The Switch 2 Pro Controller's exclusive buttons also have their own input events: **JoyShock C Button (Switch 2)**, **JoyShock Grip Left GL (Switch 2)** and **JoyShock Grip Right GR (Switch 2)**.
+
+## Nintendo Switch 2 Pro Controller
+
+The Switch 2 Pro Controller is supported over **USB** on Windows. Just plug it in — the plug-in initializes it through its WinUSB interface (the Switch 2 uses a new protocol that is not compatible with Switch 1 controllers), reads its factory stick calibration and colors, and parses all of its inputs:
+
+- All buttons, including the new **C (GameChat)**, **GL** and **GR** buttons
+- Both analog sticks, using the per-unit factory calibration
+- Gyro and accelerometer, fully integrated with the motion API (`JSL4U Get Motion State`, `JSL4U Get And Flush Accumulated Gyro`, calibration, etc.)
+- Multiple Switch 2 Pro Controllers at the same time
+
+Bluetooth is currently **not** supported for the Switch 2 Pro Controller: it uses Bluetooth LE (GATT) and Windows does not expose it as a gamepad, which would require a dedicated BLE client. USB is the supported connection for now.
+
+## Combining Joy-Cons into one player
+
+A left+right Joy-Con pair can act as a single controller for one player. New Blueprint nodes are available under **JoyShockLibrary | JoyConPairing**:
+
+- **JSL4U Get Connected Controllers** — lists connected controllers (device id, type, name, player index and join partner), e.g. to build a controller-assignment screen.
+- **JSL4U Join Joy Cons (A, B)** — joins a left and a right Joy-Con so they feed a single player (left half = left stick and its buttons, right half = right stick and its buttons). The engine sees one player per joined pair.
+- **JSL4U Unjoin Joy Con / JSL4U Unjoin All Joy Cons** — dissolve joins (each Joy-Con becomes its own player again).
+- **JSL4U Get Player Index** — the player slot a controller's input is delivered to.
+
+Player slots are dense and stable: 4 solo Joy-Cons = 4 players; two joined pairs = 2 players. Joins dissolve automatically if one of the Joy-Cons disconnects.
+
 ## Blueprint nodes
 
 All original JoyShockLibrary functions are still here and exposed to Blueprints. You can quickly find them by searching for the JSL prefix. 
@@ -55,7 +79,7 @@ Additionally, new functions have been created and exposed to Blueprints with the
 JSL4U functions favour Unreal Engine's types and standards, so instead of returning, for example, 3 floats for an acceleration vector, they return an FVector. Additionally, vectors and quaternions were updated to be in Left-handed Z-up, as opposed to Right-handed Y-up.
 
 ## Which versions of Unreal Engine has this been tested with?
-So far I've used it in Unreal Engine 5.4, but I intend to upgrade my project to 5.5 soon. I expect it to work in other versions of Unreal, but if you find any issues, feel free to let me know.
+It has been used in Unreal Engine 5.4 and, more recently, 5.8 (where it uses the new `FInputDeviceRegistry` API that replaces the deprecated `FInputDeviceScope`). I expect it to work in other versions of Unreal, but if you find any issues, feel free to let me know.
 
 ## Why should I use this plug-in instead of Steam Input or DS4Windows?
 
@@ -67,6 +91,8 @@ No official Sony or Nintendo libraries were used in the development or testing o
 ## Planned future updates
 - Improved multiplayer support, especially when mixed with XInput controllers
 - Expand test level, with easier calibration, different 3D models for each controller type, and demonstrating more features such as Touch.
+- Bluetooth (BLE) support for the Switch 2 Pro Controller
+- Rumble support
 
 ## Credits
 - A massive thanks to JibbSmart for creating the original JoyShockLibrary plug-in, and for answering the questions I sent to his Twitter DMs. For the full credits of the original JoyShockLibrary, check out his [JoyShockLibrary](https://github.com/JibbSmart/JoyShockLibrary) repo.

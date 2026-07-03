@@ -18,6 +18,7 @@
 #include "Windows/AllowWindowsPlatformTypes.h"
 #include <setupapi.h>
 #include <winusb.h>
+#include <cfgmgr32.h>
 #include "Windows/HideWindowsPlatformTypes.h"
 #endif
 
@@ -156,6 +157,18 @@ JoyShock::~JoyShock() {
 	if (handle != nullptr) {
 		hid_close(handle);
 	}
+
+#if PLATFORM_WINDOWS
+	// Close the Switch 2 WinUSB command interface, if this controller had one open.
+	if (sw2_winusb_handle != nullptr) {
+		WinUsb_Free(static_cast<WINUSB_INTERFACE_HANDLE>(sw2_winusb_handle));
+		sw2_winusb_handle = nullptr;
+	}
+	if (sw2_winusb_file != nullptr) {
+		CloseHandle(static_cast<HANDLE>(sw2_winusb_file));
+		sw2_winusb_file = nullptr;
+	}
+#endif
 }
 
 void JoyShock::push_cumulative_gyro(float gyroX, float gyroY, float gyroZ) {
@@ -650,6 +663,65 @@ bool JoyShock::init_usb() {
 	return result;
 }
 
+#if PLATFORM_WINDOWS
+// Walks up the device tree from a device node and returns the instance id of the composite USB parent
+// (the node whose id has the controller's VID/PID but no interface suffix), or empty if not found.
+static FString Sw2GetCompositeParentId(DEVINST InDevInst)
+{
+	DEVINST current = InDevInst;
+	for (int depth = 0; depth < 4; depth++)
+	{
+		DEVINST parent = 0;
+		if (CM_Get_Parent(&parent, current, 0) != CR_SUCCESS)
+		{
+			break;
+		}
+		WCHAR idBuffer[MAX_DEVICE_ID_LEN];
+		if (CM_Get_Device_IDW(parent, idBuffer, MAX_DEVICE_ID_LEN, 0) != CR_SUCCESS)
+		{
+			break;
+		}
+		FString id(idBuffer);
+		if (id.Contains(TEXT("VID_057E")) && id.Contains(TEXT("PID_2069")) && !id.Contains(TEXT("&MI_")))
+		{
+			return id;
+		}
+		current = parent;
+	}
+	return FString();
+}
+
+// Resolves the composite USB parent id for a device *interface path* (e.g. this JoyShock's HID path),
+// so a controller's HID (MI_00) and WinUSB (MI_01) interfaces can be matched to the same physical unit.
+static FString Sw2GetCompositeParentIdForInterfacePath(const FString& InterfacePath)
+{
+	FString result;
+	HDEVINFO devInfo = SetupDiCreateDeviceInfoList(nullptr, nullptr);
+	if (devInfo == INVALID_HANDLE_VALUE)
+	{
+		return result;
+	}
+
+	SP_DEVICE_INTERFACE_DATA ifData;
+	ifData.cbSize = sizeof(ifData);
+	if (SetupDiOpenDeviceInterfaceW(devInfo, *InterfacePath, 0, &ifData))
+	{
+		DWORD requiredSize = 0;
+		SP_DEVINFO_DATA devData;
+		devData.cbSize = sizeof(devData);
+		devData.DevInst = 0;
+		// Sizing call; fails with insufficient-buffer but still fills devData with the owning devnode.
+		SetupDiGetDeviceInterfaceDetailW(devInfo, &ifData, nullptr, 0, &requiredSize, &devData);
+		if (devData.DevInst != 0)
+		{
+			result = Sw2GetCompositeParentId(devData.DevInst);
+		}
+	}
+	SetupDiDestroyDeviceInfoList(devInfo);
+	return result;
+}
+#endif
+
 bool JoyShock::init_switch2() {
 	// Nintendo Switch 2 Pro Controller init, replicating what Steam does (confirmed with a USBPcap capture):
 	// commands go over the controller's WinUSB interface (MI_01) bulk OUT endpoint 0x02 -- NOT over HID
@@ -672,12 +744,13 @@ bool JoyShock::init_switch2() {
 		return false;
 	}
 
+	// Composite USB parent of this JoyShock's HID interface: used to pick the WinUSB interface belonging
+	// to the SAME physical controller when several Pro Controller 2s are connected.
+	const FString MyCompositeId = Sw2GetCompositeParentIdForInterfacePath(this->path);
+
 	bool bSuccess = false;
 	SP_DEVICE_INTERFACE_DATA ifData;
 	ifData.cbSize = sizeof(ifData);
-	// NOTE: with multiple Switch 2 controllers this picks each WinUSB interface in enumeration order; we
-	// currently don't correlate MI_01 instances back to this JoyShock's MI_00 HID path (single-controller
-	// assumption; multi-Pro-2 correlation via container id is a TODO).
 	for (DWORD index = 0; SetupDiEnumDeviceInterfaces(devInfo, nullptr, &Sw2WinUsbGuid, index, &ifData); index++)
 	{
 		DWORD requiredSize = 0;
@@ -691,7 +764,10 @@ bool JoyShock::init_switch2() {
 		detailBuffer.SetNumZeroed(requiredSize);
 		PSP_DEVICE_INTERFACE_DETAIL_DATA_W detail = reinterpret_cast<PSP_DEVICE_INTERFACE_DETAIL_DATA_W>(detailBuffer.GetData());
 		detail->cbSize = sizeof(SP_DEVICE_INTERFACE_DETAIL_DATA_W);
-		if (!SetupDiGetDeviceInterfaceDetailW(devInfo, &ifData, detail, requiredSize, nullptr, nullptr))
+		SP_DEVINFO_DATA devData;
+		devData.cbSize = sizeof(devData);
+		devData.DevInst = 0;
+		if (!SetupDiGetDeviceInterfaceDetailW(devInfo, &ifData, detail, requiredSize, nullptr, &devData))
 		{
 			continue;
 		}
@@ -700,6 +776,17 @@ bool JoyShock::init_switch2() {
 		if (!devicePath.Contains(TEXT("vid_057e")) || !devicePath.Contains(TEXT("pid_2069")))
 		{
 			continue;
+		}
+
+		// Match this WinUSB interface to the same physical controller as our HID interface (shared
+		// composite parent). If the HID side couldn't be resolved, fall back to first-match.
+		if (!MyCompositeId.IsEmpty() && devData.DevInst != 0)
+		{
+			const FString CandidateCompositeId = Sw2GetCompositeParentId(devData.DevInst);
+			if (!CandidateCompositeId.Equals(MyCompositeId, ESearchCase::IgnoreCase))
+			{
+				continue;
+			}
 		}
 
 		HANDLE fileHandle = CreateFileW(detail->DevicePath, GENERIC_READ | GENERIC_WRITE,
@@ -735,8 +822,94 @@ bool JoyShock::init_switch2() {
 			}
 		}
 
+		// Bound every transfer on both pipes: these handles stay open for the device's lifetime and rumble
+		// runs on the game thread, so an unbounded WritePipe/ReadPipe could otherwise hang the editor.
 		ULONG timeoutMs = 200;
 		WinUsb_SetPipePolicy(usbHandle, inPipe, PIPE_TRANSFER_TIMEOUT, sizeof(timeoutMs), &timeoutMs);
+		WinUsb_SetPipePolicy(usbHandle, outPipe, PIPE_TRANSFER_TIMEOUT, sizeof(timeoutMs), &timeoutMs);
+
+		// --- Factory config over SPI (same reads Steam performs before configuring the controller) ---
+		// SPI read command 0x02:0x01, data = [flags u32 = 0][address LE u32]; the response is a 16-byte
+		// header (cmd echo, status, length 0x40, address echo) followed by 64 bytes of flash data.
+		auto SpiRead = [usbHandle, outPipe, inPipe](uint32 address, unsigned char* outData) -> bool
+		{
+			unsigned char cmdBuf[16];
+			memset(cmdBuf, 0, sizeof(cmdBuf));
+			cmdBuf[0] = 0x02;
+			cmdBuf[1] = 0x91;
+			cmdBuf[3] = 0x01;
+			cmdBuf[5] = 0x08;
+			cmdBuf[12] = address & 0xFF;
+			cmdBuf[13] = (address >> 8) & 0xFF;
+			cmdBuf[14] = (address >> 16) & 0xFF;
+			cmdBuf[15] = (address >> 24) & 0xFF;
+
+			ULONG written = 0;
+			if (!WinUsb_WritePipe(usbHandle, outPipe, cmdBuf, sizeof(cmdBuf), &written, nullptr))
+			{
+				return false;
+			}
+
+			unsigned char resp[96];
+			ULONG total = 0;
+			while (total < 80) // 16-byte header + 64 bytes of data (may arrive split across bulk packets)
+			{
+				ULONG got = 0;
+				if (!WinUsb_ReadPipe(usbHandle, inPipe, resp + total, sizeof(resp) - total, &got, nullptr) || got == 0)
+				{
+					break;
+				}
+				total += got;
+			}
+			if (total < 80 || resp[0] != 0x02)
+			{
+				return false;
+			}
+			memcpy(outData, resp + 16, 64);
+			return true;
+		};
+
+		// Two 12-bit values packed into 3 bytes (same packing as the stick axes in input reports).
+		auto Unpack12 = [](const unsigned char* p, uint16_t& v0, uint16_t& v1)
+		{
+			v0 = p[0] | ((p[1] & 0x0F) << 8);
+			v1 = (p[1] >> 4) | (p[2] << 4);
+		};
+
+		// Stick factory calibration layout (blocks 0x013080 = left, 0x0130C0 = right): 9 bytes at offset
+		// 0x28 as packed 12-bit pairs: [centerX,centerY][rangeX_a,rangeY_a][rangeX_b,rangeY_b].
+		auto ParseStickCal = [&Unpack12](const unsigned char* blk, uint16_t* calX, uint16_t* calY)
+		{
+			uint16_t cx, cy, rxa, rya, rxb, ryb;
+			Unpack12(blk + 0x28, cx, cy);
+			Unpack12(blk + 0x2B, rxa, rya);
+			Unpack12(blk + 0x2E, rxb, ryb);
+			calX[1] = cx; calX[2] = cx + rxa; calX[0] = cx - rxb;
+			calY[1] = cy; calY[2] = cy + rya; calY[0] = cy - ryb;
+		};
+
+		unsigned char spi[64];
+		// Block 0x013000: serial, ids, then body/buttons/left-grip/right-grip RGB colours at offset 0x19.
+		if (SpiRead(0x013000, spi))
+		{
+			body_colour = (spi[0x19] << 16) | (spi[0x1A] << 8) | spi[0x1B];
+			button_colour = (spi[0x1C] << 16) | (spi[0x1D] << 8) | spi[0x1E];
+			left_grip_colour = (spi[0x1F] << 16) | (spi[0x20] << 8) | spi[0x21];
+			right_grip_colour = (spi[0x22] << 16) | (spi[0x23] << 8) | spi[0x24];
+			UE_LOG(LogJoyShockLibrary, Log, TEXT("SW2 colours: body %06x, buttons %06x\n"), body_colour, button_colour);
+		}
+		if (SpiRead(0x013080, spi))
+		{
+			ParseStickCal(spi, stick_cal_x_l, stick_cal_y_l);
+			UE_LOG(LogJoyShockLibrary, Log, TEXT("SW2 left stick cal: centre (%d, %d), min (%d, %d), max (%d, %d)\n"),
+				stick_cal_x_l[1], stick_cal_y_l[1], stick_cal_x_l[0], stick_cal_y_l[0], stick_cal_x_l[2], stick_cal_y_l[2]);
+		}
+		if (SpiRead(0x0130C0, spi))
+		{
+			ParseStickCal(spi, stick_cal_x_r, stick_cal_y_r);
+			UE_LOG(LogJoyShockLibrary, Log, TEXT("SW2 right stick cal: centre (%d, %d), min (%d, %d), max (%d, %d)\n"),
+				stick_cal_x_r[1], stick_cal_y_r[1], stick_cal_x_r[0], stick_cal_y_r[0], stick_cal_x_r[2], stick_cal_y_r[2]);
+		}
 
 		struct Sw2InitCmd { unsigned char cmd; unsigned char subcmd; int dataLen; unsigned char data[20]; };
 		const Sw2InitCmd cmds[] = {
@@ -792,9 +965,21 @@ bool JoyShock::init_switch2() {
 			}
 		}
 
-		WinUsb_Free(usbHandle);
-		CloseHandle(fileHandle);
-		break; // first matching controller only (see note above)
+		if (bSuccess)
+		{
+			// Keep the command interface open for the device's lifetime so rumble can be sent at any time
+			// (closed in the destructor).
+			sw2_winusb_file = fileHandle;
+			sw2_winusb_handle = usbHandle;
+			sw2_out_pipe = outPipe;
+			sw2_in_pipe = inPipe;
+		}
+		else
+		{
+			WinUsb_Free(usbHandle);
+			CloseHandle(fileHandle);
+		}
+		break; // this JoyShock's own controller found (matched via composite parent above)
 	}
 
 	SetupDiDestroyDeviceInfoList(devInfo);
@@ -811,6 +996,98 @@ bool JoyShock::init_switch2() {
 	this->initialised = true;
 	return false;
 #endif
+}
+
+void JoyShock::set_sw2_rumble(int smallRumble, int bigRumble) {
+#if PLATFORM_WINDOWS
+	if (sw2_winusb_handle == nullptr)
+	{
+		return;
+	}
+
+	// The Switch 2's amplitude-accurate rumble stream uses a dedicated channel that hasn't been mapped on
+	// USB yet, but its command channel supports playing/stopping a built-in vibration preset:
+	// command 0x0A, subcommand 0x02, data = preset id (u32; 1 = rumble, 0 = stop). The preset is a short
+	// one-shot, so every call with a non-zero value retriggers it; only redundant stops are skipped.
+	const bool bWantOn = smallRumble > 0 || bigRumble > 0;
+	if (!bWantOn && !sw2_rumble_on)
+	{
+		return;
+	}
+	sw2_rumble_on = bWantOn;
+
+	unsigned char cmdBuf[12];
+	memset(cmdBuf, 0, sizeof(cmdBuf));
+	cmdBuf[0] = 0x0A; // vibration command
+	cmdBuf[1] = 0x91;
+	cmdBuf[2] = 0x00; // USB transport flag
+	cmdBuf[3] = 0x02; // play preset
+	cmdBuf[5] = 0x04; // data length
+	cmdBuf[8] = bWantOn ? 0x01 : 0x00;
+
+	ULONG written = 0;
+	WinUsb_WritePipe(static_cast<WINUSB_INTERFACE_HANDLE>(sw2_winusb_handle), sw2_out_pipe, cmdBuf, sizeof(cmdBuf), &written, nullptr);
+
+	// Drain the ack so responses don't accumulate in the pipe's buffer.
+	unsigned char resp[64];
+	ULONG got = 0;
+	WinUsb_ReadPipe(static_cast<WINUSB_INTERFACE_HANDLE>(sw2_winusb_handle), sw2_in_pipe, resp, sizeof(resp), &got, nullptr);
+#endif
+}
+
+void JoyShock::set_switch_rumble(int smallRumble, int bigRumble) {
+	// Switch 1 (Joy-Con / Pro Controller) HD rumble: output report 0x10, followed by a 4-bit packet
+	// counter and 4 bytes of rumble data per side (left, right). Fixed frequencies (320 Hz high /
+	// 160 Hz low -- the neutral encoding 00 01 40 40) with amplitudes encoded per dekuNukem's
+	// Nintendo_Switch_Reverse_Engineering rumble tables:
+	//   code = log2(amp * 17) * 16   for 0.12 < amp <= 0.23
+	//   code = log2(amp * 8.7) * 32  for amp > 0.23
+	//   HF amplitude byte = code * 2; LF amplitude u16 = 0x0040 + code/2, +0x8000 when code is odd.
+	auto EncodeSide = [](float hfAmp, float lfAmp, unsigned char* out)
+	{
+		auto AmpToCode = [](float amp) -> int
+		{
+			if (amp <= 0.007f)
+			{
+				return 0;
+			}
+			float code;
+			if (amp <= 0.23f)
+			{
+				code = log2f(amp * 17.0f) * 16.0f;
+			}
+			else
+			{
+				code = log2f(amp * 8.7f) * 32.0f;
+			}
+			return FMath::Clamp(FMath::RoundToInt(code), 0, 100);
+		};
+
+		const int hfCode = AmpToCode(hfAmp);
+		const int lfCode = AmpToCode(lfAmp);
+		const uint16_t lfEncoded = 0x0040 + (lfCode >> 1) + ((lfCode & 1) ? 0x8000 : 0);
+
+		out[0] = 0x00;                                            // HF 320 Hz (low byte)
+		out[1] = static_cast<unsigned char>(0x01 + hfCode * 2);   // HF 320 Hz (high byte) + HF amplitude
+		out[2] = static_cast<unsigned char>(0x40 + (lfEncoded >> 8)); // LF 160 Hz + LF amplitude (high)
+		out[3] = static_cast<unsigned char>(lfEncoded & 0xFF);    // LF amplitude (low)
+	};
+
+	const float hfAmp = FMath::Clamp(smallRumble, 0, 255) / 255.0f;
+	const float lfAmp = FMath::Clamp(bigRumble, 0, 255) / 255.0f;
+
+	unsigned char buf[10];
+	buf[0] = 0x10;
+	buf[1] = static_cast<unsigned char>((++global_count) & 0xF);
+	if (global_count > 0xF)
+	{
+		global_count = 0x0;
+	}
+	EncodeSide(hfAmp, lfAmp, buf + 2); // left actuator
+	EncodeSide(hfAmp, lfAmp, buf + 6); // right actuator
+
+	// Plain hid_write: report 0x10 has no reply, and a blocking read here would fight the poll thread.
+	hid_write(this->handle, buf, sizeof(buf));
 }
 
 bool JoyShock::init_bt() {
@@ -1455,7 +1732,12 @@ void JoyShock::CalcAnalogStick2
 bool JoyShock::get_spi_data(uint32_t offset, const uint8_t read_len, uint8_t *test_buf) {
 	int res;
 	uint8_t buf[0x100];
-	while (1) {
+	// Bounded retries: once the controller is in report mode 0x30 it streams input at 60Hz, so
+	// hid_read_timeout almost always returns *something*. If the SPI response itself is lost (flaky
+	// Bluetooth), an unbounded loop here spins forever -- while the enumeration thread holds the exclusive
+	// connected lock, freezing connects AND (via the shared lock) the game thread. Also treat res < 0
+	// (device gone) as failure; the old `res == 0` check looped forever on -1.
+	for (int attempt = 0; attempt < 32; attempt++) {
 		memset(buf, 0, sizeof(buf));
 		auto hdr = (brcm_hdr *)buf;
 		auto pkt = (brcm_cmd_01 *)(hdr + 1);
@@ -1479,22 +1761,21 @@ bool JoyShock::get_spi_data(uint32_t offset, const uint8_t read_len, uint8_t *te
 		res = hid_write(handle, buf, sizeof(*hdr) + sizeof(*pkt));
 
 		res = hid_read_timeout(handle, buf, sizeof(buf), 1000);
-		if (res == 0)
+		if (res <= 0)
 		{
 			return false;
 		}
 
 		if ((*(uint16_t*)&buf[0xD] == 0x1090) && (*(uint32_t*)&buf[0xF] == offset)) {
-			break;
+			if (res >= 0x14 + read_len) {
+				for (int i = 0; i < read_len; i++) {
+					test_buf[i] = buf[0x14 + i];
+				}
+			}
+			return true;
 		}
 	}
-	if (res >= 0x14 + read_len) {
-		for (int i = 0; i < read_len; i++) {
-			test_buf[i] = buf[0x14 + i];
-		}
-	}
-
-	return true;
+	return false;
 }
 
 int32 JoyShock::write_spi_data(uint32_t offset, const uint8_t write_len, uint8_t* test_buf) {
@@ -1519,7 +1800,11 @@ int32 JoyShock::write_spi_data(uint32_t offset, const uint8_t write_len, uint8_t
 		}
 		res = hid_write(handle, buf, sizeof(*hdr) + sizeof(*pkt) + write_len);
 
-		res = hid_read(handle, buf, sizeof(buf));
+		// Bounded read: a blocking hid_read here can hang forever if the device stops responding.
+		res = hid_read_timeout(handle, buf, sizeof(buf), 1000);
+		if (res <= 0) {
+			return 1;
+		}
 
 		if (*(uint16_t*)&buf[0xD] == 0x1180)
 			break;

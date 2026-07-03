@@ -129,9 +129,10 @@ private:
 	TMap<int32, int32> JoinPartner;
 
 	// Player-slot assignment: maps each "logical controller" (a standalone device or a joined pair,
-	// identified by its lower "primary" handle) to a dense player slot (0, 1, 2, ...). Existing slots are
-	// preserved across changes so players keep their number; new logical controllers take the lowest free
-	// slot. Recomputed by RefreshPlayerAssignments() whenever devices connect/disconnect or joins change.
+	// identified by its lower "primary" handle) to a dense player slot (0, 1, 2, ...). Slots are kept
+	// compact: relative order is preserved, but when a controller disconnects the remaining ones shift
+	// down (the last controller left is always player 0). Recomputed by RefreshPlayerAssignments()
+	// whenever devices connect/disconnect or joins change.
 	TMap<int32, int32> PlayerSlotByPrimary;
 
 	// Recomputes player slots and maps every connected device to its logical controller's platform user in

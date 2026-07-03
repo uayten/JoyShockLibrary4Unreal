@@ -6,6 +6,7 @@
 // #include "Windows/WindowsApplication.h"
 #include "GenericPlatform/GenericApplication.h"
 #include "GenericPlatform/GenericPlatformInputDeviceMapper.h"
+#include "GenericPlatform/InputDeviceRegistry.h"
 #include "JoyShockLibrary4Unreal/JoyShockLibrary/JoyShockLibrary.h"
 #include "Misc/ConfigCacheIni.h"
 #include <functional>
@@ -202,11 +203,10 @@ void FJoyShockInterface::SendControllerEvents()
 				// PlatformUser is the player slot this device is assigned to (see RefreshPlayerAssignments).
 				// Both halves of a joined Joy-Con pair share the same PlatformUser, so their (disjoint)
 				// buttons and separate stick axes combine into a single player.
+				// (Device attribution for these events is registered once at connect time via
+				// FInputDeviceRegistry, replacing the deprecated per-dispatch FInputDeviceScope.)
 				const FPlatformUserId& PlatformUser = ControllerState.PlatformUser;
 				const FInputDeviceId& InputDevice = ControllerState.InputDevice;
-
-				static FName SystemName(TEXT("JoyShock4Unreal"));
-				FInputDeviceScope InputScope(this, SystemName, DeviceHandle, ControllerState.DeviceName);
 
 				{
 					FScopeLock Lock(&SimpleStateLock);
@@ -459,6 +459,14 @@ void FJoyShockInterface::OnConnectCallback(int32 InDeviceHandle)
 	State.PlatformUser = PLATFORMUSERID_NONE; // assigned (and mapped connected) by RefreshPlayerAssignments
 	State.DeviceName = GetDeviceName(InDeviceHandle);
 
+	// Register the device's hardware descriptor once, for the lifetime of its device id (replaces the
+	// deprecated per-dispatch FInputDeviceScope).
+	FInputDeviceDescriptor Descriptor;
+	Descriptor.HardwareDeviceHandle = State.InputDevice;
+	Descriptor.InputDeviceName = TEXT("JoyShock4Unreal");
+	Descriptor.HardwareDeviceIdentifier = FName(*State.DeviceName);
+	FInputDeviceRegistry::RegisterDevice(Descriptor);
+
 	RefreshPlayerAssignments();
 }
 
@@ -478,6 +486,9 @@ void FJoyShockInterface::OnDisconnectCallback(int32 InDeviceHandle, bool bInHasT
 	// Tell the mapper this physical device is gone.
 	IPlatformInputDeviceMapper& DeviceMapper = IPlatformInputDeviceMapper::Get();
 	DeviceMapper.Internal_MapInputDeviceToUser(ControllerState.InputDevice, ControllerState.PlatformUser, EInputDeviceConnectionState::Disconnected);
+
+	// This device id is permanently retired (a reconnect allocates a fresh id), so drop its descriptor.
+	FInputDeviceRegistry::RemoveDevice(ControllerState.InputDevice);
 
 	// Dissolve any join this device was part of, then re-assign remaining players.
 	JoinPartner.Remove(InDeviceHandle);
@@ -523,31 +534,24 @@ void FJoyShockInterface::RefreshPlayerAssignments()
 		GroupPrimaries.AddUnique(GetGroupPrimary(Handle));
 	}
 
-	// 2. Assign each logical controller a dense player slot. Preserve slots that groups already have (so
-	//    players keep their number), and give any new group the lowest free slot.
+	// 2. Assign dense player slots (0..N-1). Groups that already had a slot keep their relative order;
+	//    new groups go after them (by handle). Compacting means that when a lower-numbered player
+	//    disconnects, the remaining controllers shift down -- e.g. the last controller left always becomes
+	//    player 0. (Trade-off: if player 0 drops mid-match, player 1 becomes player 0.)
+	TArray<int32> OrderedPrimaries = GroupPrimaries;
+	OrderedPrimaries.Sort([this](const int32& A, const int32& B)
+	{
+		const int32* SlotA = PlayerSlotByPrimary.Find(A);
+		const int32* SlotB = PlayerSlotByPrimary.Find(B);
+		const int32 KeyA = SlotA != nullptr ? *SlotA : MAX_int32;
+		const int32 KeyB = SlotB != nullptr ? *SlotB : MAX_int32;
+		return KeyA != KeyB ? KeyA < KeyB : A < B;
+	});
+
 	TMap<int32, int32> NewSlotByPrimary;
-	TSet<int32> UsedSlots;
-	for (int32 Primary : GroupPrimaries)
+	for (int32 Index = 0; Index < OrderedPrimaries.Num(); Index++)
 	{
-		if (const int32* ExistingSlot = PlayerSlotByPrimary.Find(Primary))
-		{
-			NewSlotByPrimary.Add(Primary, *ExistingSlot);
-			UsedSlots.Add(*ExistingSlot);
-		}
-	}
-	for (int32 Primary : GroupPrimaries)
-	{
-		if (NewSlotByPrimary.Contains(Primary))
-		{
-			continue;
-		}
-		int32 Slot = 0;
-		while (UsedSlots.Contains(Slot))
-		{
-			Slot++;
-		}
-		NewSlotByPrimary.Add(Primary, Slot);
-		UsedSlots.Add(Slot);
+		NewSlotByPrimary.Add(OrderedPrimaries[Index], Index);
 	}
 	PlayerSlotByPrimary = MoveTemp(NewSlotByPrimary);
 

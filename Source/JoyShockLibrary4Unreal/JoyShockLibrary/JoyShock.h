@@ -123,9 +123,17 @@ public:
 	ControllerType controller_type = ControllerType::n_switch;
 	bool is_usb = false;
 
-	// Nintendo Switch 2 Pro Controller (PID 0x2069). Its input protocol differs from the Switch 1; this flag
-	// is used to dump its raw HID reports for reverse-engineering until proper parsing is implemented.
+	// Nintendo Switch 2 Pro Controller (PID 0x2069). Its protocol differs from the Switch 1: commands
+	// (init, SPI reads, rumble) go over its WinUSB bulk interface rather than HID.
 	bool is_switch2_pro = false;
+
+	// WinUSB handles for the Switch 2 command interface, opened by init_switch2 and kept for the device's
+	// lifetime so rumble can be sent at any time (void* to keep Windows types out of this header).
+	void* sw2_winusb_file = nullptr;   // HANDLE
+	void* sw2_winusb_handle = nullptr; // WINUSB_INTERFACE_HANDLE
+	unsigned char sw2_out_pipe = 0x02;
+	unsigned char sw2_in_pipe = 0x82;
+	bool sw2_rumble_on = false;
 
 	unsigned char small_rumble = 0;
 	unsigned char big_rumble = 0;
@@ -275,8 +283,17 @@ public:
 
 	bool init_bt();
 
-	// Nintendo Switch 2 init sequence (sends the SW2 command reports that make it start streaming input).
+	// Nintendo Switch 2 init sequence (sends the SW2 command reports that make it start streaming input),
+	// reads factory stick calibration/colours over SPI, and keeps the WinUSB command interface open.
 	bool init_switch2();
+
+	// Sends a rumble packet to a Switch 2 controller over its WinUSB command interface.
+	// smallRumble drives the high-frequency motor component, bigRumble the low-frequency one (0-255 each).
+	void set_sw2_rumble(int smallRumble, int bigRumble);
+
+	// Sends an HD-rumble packet (output report 0x10) to a Switch 1 controller (Joy-Con / Pro Controller).
+	// smallRumble drives the high-frequency component, bigRumble the low-frequency one (0-255 each).
+	void set_switch_rumble(int smallRumble, int bigRumble);
 
 	void init_ds4_bt();
 

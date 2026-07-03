@@ -23,9 +23,26 @@ bool handle_input(JoyShock* jc, uint8_t* packet, int32 len, bool &hasIMU) {
 	jc->delta_time = (float)(std::chrono::duration_cast<std::chrono::microseconds>(time_now - jc->last_polled).count() / 1000000.0);
 	jc->last_polled = time_now;
 
-	// Nintendo Switch 2 Pro Controller: its own 64-byte report (id 0x05), decoded from raw dumps. Its
-	// protocol differs from the Switch 1 controllers, so it gets a dedicated parser here. Motion (gyro/
-	// accel) and per-device stick calibration aren't parsed yet.
+	if (jc->cue_motion_reset)
+	{
+		//printf("RESET motion\n");
+		jc->cue_motion_reset = false;
+		jc->motion.Reset();
+	}
+	if (jc->motion.GetCalibrationMode() == GamepadMotionHelpers::CalibrationMode::Manual)
+	{
+		if (jc->use_continuous_calibration)
+		{
+			jc->motion.StartContinuousCalibration();
+		}
+		else
+		{
+			jc->motion.PauseContinuousCalibration();
+		}
+	}
+
+	// Nintendo Switch 2 Pro Controller: its own 64-byte report (id 0x05), decoded from raw dumps + a USB
+	// capture of Steam. Its protocol differs from the Switch 1 controllers, so it gets a dedicated parser.
 	if (jc->is_switch2_pro)
 	{
 		if (packet[0] != 0x05 || len < 17)
@@ -36,7 +53,7 @@ bool handle_input(JoyShock* jc, uint8_t* packet, int32 len, bool &hasIMU) {
 		const uint8_t b5 = packet[5]; // face buttons + right shoulders
 		const uint8_t b6 = packet[6]; // system buttons + stick clicks + "C"
 		const uint8_t b7 = packet[7]; // d-pad + left shoulders
-		const uint8_t b8 = packet[8]; // rear paddles GL/GR
+		const uint8_t b8 = packet[8]; // rear grip buttons GL/GR
 
 		int32 buttons = 0;
 		if (b5 & 0x08) buttons |= JSMASK_E;      // A (right)
@@ -69,43 +86,78 @@ bool handle_input(JoyShock* jc, uint8_t* packet, int32 len, bool &hasIMU) {
 		const uint16_t rx = packet[14] | ((packet[15] & 0x0F) << 8);
 		const uint16_t ry = (packet[15] >> 4) | (packet[16] << 4);
 
-		auto normStick = [](uint16_t raw) -> float
+		// Use the factory calibration read over SPI during init when available; fall back to fixed
+		// centre/range otherwise.
+		auto normStickFallback = [](uint16_t raw) -> float
 		{
-			const float value = ((int32)raw - 2048) / 1800.0f; // centre 0x800, ~full range at the extremes
+			const float value = ((int32)raw - 2048) / 1800.0f;
 			return value < -1.0f ? -1.0f : (value > 1.0f ? 1.0f : value);
 		};
-		jc->simple_state.stickLX = normStick(lx);
-		jc->simple_state.stickLY = normStick(ly);
-		jc->simple_state.stickRX = normStick(rx);
+		if (jc->stick_cal_x_l[2] != 0)
+		{
+			jc->CalcAnalogStick2(jc->simple_state.stickLX, jc->simple_state.stickLY, lx, ly, jc->stick_cal_x_l, jc->stick_cal_y_l);
+			jc->CalcAnalogStick2(jc->simple_state.stickRX, jc->simple_state.stickRY, rx, ry, jc->stick_cal_x_r, jc->stick_cal_y_r);
+		}
+		else
+		{
+			jc->simple_state.stickLX = normStickFallback(lx);
+			jc->simple_state.stickLY = normStickFallback(ly);
+			jc->simple_state.stickRX = normStickFallback(rx);
+			jc->simple_state.stickRY = normStickFallback(ry);
+		}
 		// The right stick's Y axis is reported inverted relative to the left stick's (confirmed on
 		// hardware), so negate it to make up positive on both sticks.
-		jc->simple_state.stickRY = -normStick(ry);
+		jc->simple_state.stickRY = -jc->simple_state.stickRY;
 
 		// Switch controllers only report ZL/ZR digitally; surface them as full triggers when pressed.
 		jc->simple_state.lTrigger = (buttons & JSMASK_ZL) ? 1.0f : 0.0f;
 		jc->simple_state.rTrigger = (buttons & JSMASK_ZR) ? 1.0f : 0.0f;
 
-		hasIMU = false; // no motion data parsed yet
-		return true;
-	}
-
-	if (jc->cue_motion_reset)
-	{
-		//printf("RESET motion\n");
-		jc->cue_motion_reset = false;
-		jc->motion.Reset();
-	}
-	if (jc->motion.GetCalibrationMode() == GamepadMotionHelpers::CalibrationMode::Manual)
-	{
-		if (jc->use_continuous_calibration)
+		// IMU: int16 LE triplets at bytes 49-54 (accel) and 55-60 (gyro), one sample per report. Bytes
+		// 61-62 are always zero (padding) -- reading the gyro from 57 leaves one axis permanently dead.
+		// The gyro's word order differs from the accelerometer's: physical pitch was measured (on
+		// hardware) in the third gyro word, so the assignment below is (yaw, roll, pitch).
+		// Scales follow the Switch 1 defaults (~1g = 4096 LSB for accel; 936/13371 dps per LSB for gyro).
+		if (len >= 61)
 		{
-			jc->motion.StartContinuousCalibration();
+			const float accScale = 1.0f / 4096.0f;
+			const float gyroScale = 936.0f / 13371.0f;
+
+			const float aw0 = (float)uint16_to_int16(packet[49] | (packet[50] << 8) & 0xFF00);
+			const float aw1 = (float)uint16_to_int16(packet[51] | (packet[52] << 8) & 0xFF00);
+			const float aw2 = (float)uint16_to_int16(packet[53] | (packet[54] << 8) & 0xFF00);
+			const float gw0 = (float)uint16_to_int16(packet[55] | (packet[56] << 8) & 0xFF00);
+			const float gw1 = (float)uint16_to_int16(packet[57] | (packet[58] << 8) & 0xFF00);
+			const float gw2 = (float)uint16_to_int16(packet[59] | (packet[60] << 8) & 0xFF00);
+
+			hasIMU = !(aw0 == 0.f && aw1 == 0.f && aw2 == 0.f && gw0 == 0.f && gw1 == 0.f && gw2 == 0.f);
+
+			// Remap into JSL's right-handed Y-up IMU space. Both sensors verified per-axis on hardware
+			// against a Switch 1 controller held in identical poses: accel words map (X,Y,Z) = (w0, w2, -w1);
+			// gyro words map pitch = w0, yaw = w2, roll = -w1.
+			imu_state.accelX = aw0 * accScale;
+			imu_state.accelY = aw2 * accScale;
+			imu_state.accelZ = -aw1 * accScale;
+			imu_state.gyroX = gw0 * gyroScale;
+			imu_state.gyroY = gw2 * gyroScale;
+			imu_state.gyroZ = -gw1 * gyroScale;
+
+			jc->modifying_lock.Lock();
+			jc->push_sensor_samples(imu_state.gyroX, imu_state.gyroY, imu_state.gyroZ,
+				imu_state.accelX, imu_state.accelY, imu_state.accelZ, jc->delta_time);
+			jc->get_calibrated_gyro(imu_state.gyroX, imu_state.gyroY, imu_state.gyroZ);
+			jc->modifying_lock.Unlock();
+
+			jc->imu_state = imu_state;
 		}
 		else
 		{
-			jc->motion.PauseContinuousCalibration();
+			hasIMU = false;
 		}
+
+		return true;
 	}
+
 	// ds4
 	if (jc->controller_type == ControllerType::s_ds4) {
 		int indexOffset = 0;
