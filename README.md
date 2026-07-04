@@ -55,6 +55,15 @@ The Switch 2 Pro Controller is supported over **USB** on Windows. Just plug it i
 
 Bluetooth is currently **not** supported for the Switch 2 Pro Controller: it uses Bluetooth LE (GATT) and Windows does not expose it as a gamepad, which would require a dedicated BLE client. USB is the supported connection for now.
 
+## Rumble
+
+`Jsl Set Rumble (DeviceId, SmallRumble, BigRumble)` sets the rumble motors (0-255 each; call it with `(0, 0)` to stop):
+
+- **DualShock 4 / DualSense**: small and big motor intensities.
+- **Joy-Cons / Pro Controller (Switch 1)**: full HD-rumble amplitude control — `BigRumble` drives the low-frequency component (heavy shake), `SmallRumble` the high-frequency one (fine buzz). The vibration is sustained automatically until you set `(0, 0)`.
+- **Switch 2 Pro Controller (USB)**: simplified support — while either value is above 0 the controller vibrates (sustained automatically, like the other controllers) until you call `(0, 0)`. Intensity values are treated as on/off for now: the Switch 2's amplitude-accurate rumble channel hasn't been mapped over USB yet (Steam itself never rumbles this controller, so there was no traffic to reverse-engineer it from). Under the hood this retriggers the controller's short built-in vibration preset, so the texture may feel slightly pulsed compared to the Switch 1's HD rumble.
+- Note: close Steam when using the Switch 2 Pro Controller with Unreal — Steam holds the controller's USB command interface exclusively, which blocks the plugin's init and rumble (the plugin logs a warning and re-acquires the interface automatically once Steam is closed).
+
 ## Combining Joy-Cons into one player
 
 A left+right Joy-Con pair can act as a single controller for one player. New Blueprint nodes are available under **JoyShockLibrary | JoyConPairing**:
@@ -92,7 +101,7 @@ No official Sony or Nintendo libraries were used in the development or testing o
 - Improved multiplayer support, especially when mixed with XInput controllers
 - Expand test level, with easier calibration, different 3D models for each controller type, and demonstrating more features such as Touch.
 - Bluetooth (BLE) support for the Switch 2 Pro Controller
-- Rumble support
+- Amplitude-accurate rumble for the Switch 2 Pro Controller (requires mapping its dedicated vibration channel over USB)
 
 ## Credits
 - A massive thanks to JibbSmart for creating the original JoyShockLibrary plug-in, and for answering the questions I sent to his Twitter DMs. For the full credits of the original JoyShockLibrary, check out his [JoyShockLibrary](https://github.com/JibbSmart/JoyShockLibrary) repo.

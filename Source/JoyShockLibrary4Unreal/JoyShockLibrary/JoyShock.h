@@ -134,6 +134,11 @@ public:
 	unsigned char sw2_out_pipe = 0x02;
 	unsigned char sw2_in_pipe = 0x82;
 	bool sw2_rumble_on = false;
+	std::chrono::steady_clock::time_point sw2_last_open_attempt = {};
+
+	// Opens (or re-opens) this controller's WinUSB command interface and stores the handles/pipes above.
+	// Fails with a clear warning when another application (e.g. Steam) holds the interface exclusively.
+	bool sw2_open_winusb();
 
 	unsigned char small_rumble = 0;
 	unsigned char big_rumble = 0;

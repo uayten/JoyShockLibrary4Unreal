@@ -95,12 +95,14 @@ void pollIndividualLoop(JoyShock *jc) {
 	// it started streaming after init.
 	bool bLoggedFirstRead = false;
 
-	// Switch 1 rumble: this thread is the SOLE writer of rumble packets (JslSetRumble only stores the
-	// values). Rumble decays on its own shortly after a single 0x10 packet, so while active the state is
-	// re-sent continuously; a change to (0,0) sends one final stop packet.
+	// Rumble: this thread is the SOLE writer of rumble packets/commands (JslSetRumble only stores the
+	// values). Switch 1 rumble decays shortly after a single 0x10 packet, and the Switch 2 only has a short
+	// one-shot preset, so while active the state is re-sent/retriggered continuously; a change to (0,0)
+	// sends one final stop.
 	int rumbleRefreshCounter = 0;
 	unsigned char lastSentSmallRumble = 0;
 	unsigned char lastSentBigRumble = 0;
+	auto lastSw2RumbleTime = std::chrono::steady_clock::now();
 
 	int noIMULimit;
 	switch (jc->controller_type)
@@ -236,6 +238,30 @@ void pollIndividualLoop(JoyShock *jc) {
 					jc->set_switch_rumble(wantedSmallRumble, wantedBigRumble);
 					lastSentSmallRumble = wantedSmallRumble;
 					lastSentBigRumble = wantedBigRumble;
+				}
+			}
+
+			// Switch 2 rumble: its vibration preset is a short one-shot, so to behave like the other
+			// controllers (vibrate until (0,0)) it is retriggered continuously while the requested values
+			// are non-zero. Time-based (not report-count) because the Switch 2 streams reports much faster
+			// than the Switch 1's 66Hz.
+			if (jc->is_switch2_pro)
+			{
+				jc->modifying_lock.Lock();
+				const unsigned char wantedSmallRumble = jc->small_rumble;
+				const unsigned char wantedBigRumble = jc->big_rumble;
+				jc->modifying_lock.Unlock();
+
+				const bool bRumbleActive = wantedSmallRumble != 0 || wantedBigRumble != 0;
+				const bool bRumbleChanged = wantedSmallRumble != lastSentSmallRumble || wantedBigRumble != lastSentBigRumble;
+				const auto now = std::chrono::steady_clock::now();
+				if (bRumbleChanged
+					|| (bRumbleActive && std::chrono::duration_cast<std::chrono::milliseconds>(now - lastSw2RumbleTime).count() >= 70))
+				{
+					jc->set_sw2_rumble(wantedSmallRumble, wantedBigRumble);
+					lastSentSmallRumble = wantedSmallRumble;
+					lastSentBigRumble = wantedBigRumble;
+					lastSw2RumbleTime = now;
 				}
 			}
 
@@ -1594,9 +1620,9 @@ void UJoyShockLibrary::JslSetRumble(int32 deviceId, int32 smallRumble, int32 big
 	std::shared_lock<std::shared_timed_mutex> lock(JSL4UModule._connectedLock);
 	
 	JoyShock* jc = GetJoyShockFromHandle(deviceId);
-	// Diagnostic: rumble is event-driven, so this stays quiet in normal play but makes "why doesn't this
-	// controller vibrate" immediately visible in the log (wrong device id, disconnected device, etc).
-	UE_LOG(LogJoyShockLibrary, Log, TEXT("JslSetRumble(device %d, small %d, big %d) -> %s"),
+	// Diagnostic (Verbose so per-frame rumble pulses don't spam the log; enable with
+	// `Log LogJoyShockLibrary Verbose` to see why a controller isn't vibrating -- wrong id, disconnected...).
+	UE_LOG(LogJoyShockLibrary, Verbose, TEXT("JslSetRumble(device %d, small %d, big %d) -> %s"),
 		deviceId, smallRumble, bigRumble, jc != nullptr ? *jc->name : TEXT("NO DEVICE WITH THIS ID"));
 
 	if (jc != nullptr && jc->controller_type == ControllerType::s_ds4) {
@@ -1625,10 +1651,12 @@ void UJoyShockLibrary::JslSetRumble(int32 deviceId, int32 smallRumble, int32 big
 		jc->modifying_lock.Unlock();
     }
 	else if (jc != nullptr && jc->is_switch2_pro) {
+		// Only store the values: the polling thread is the sole writer of Switch 2 rumble commands. Its
+		// vibration preset is a short one-shot, so the poll thread retriggers it continuously while these
+		// values are non-zero, making it behave like the other controllers (vibrate until (0,0)).
 		jc->modifying_lock.Lock();
 		jc->small_rumble = smallRumble;
 		jc->big_rumble = bigRumble;
-		jc->set_sw2_rumble(smallRumble, bigRumble);
 		jc->modifying_lock.Unlock();
 	}
 	else if (jc != nullptr && jc->controller_type == ControllerType::n_switch) {

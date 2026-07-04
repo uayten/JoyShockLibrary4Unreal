@@ -722,16 +722,8 @@ static FString Sw2GetCompositeParentIdForInterfacePath(const FString& InterfaceP
 }
 #endif
 
-bool JoyShock::init_switch2() {
-	// Nintendo Switch 2 Pro Controller init, replicating what Steam does (confirmed with a USBPcap capture):
-	// commands go over the controller's WinUSB interface (MI_01) bulk OUT endpoint 0x02 -- NOT over HID
-	// (the HID interface MI_00 is input-only; hid_write fails with -1 on it). Once initialised, the
-	// controller streams its 0x05 input reports on the HID interface, which the poll thread parses.
-	// Command format: [command_id] 0x91 0x00 [subcommand_id] 0x00 [data_len] 0x00 0x00 [data...].
-	// (Over Bluetooth LE byte 2 is 0x01 instead; sending that over USB makes it search for a BT host.)
+bool JoyShock::sw2_open_winusb() {
 #if PLATFORM_WINDOWS
-	UE_LOG(LogJoyShockLibrary, Log, TEXT("Running Switch 2 (WinUSB) init sequence...\n"));
-
 	// Device interface GUID exposed by the controller's own MS OS descriptor for its WinUSB interface
 	// (registry: Enum\USB\VID_057E&PID_2069&MI_01\...\Device Parameters\DeviceInterfaceGUID). Firmware-
 	// defined, so it is the same on every machine.
@@ -748,7 +740,7 @@ bool JoyShock::init_switch2() {
 	// to the SAME physical controller when several Pro Controller 2s are connected.
 	const FString MyCompositeId = Sw2GetCompositeParentIdForInterfacePath(this->path);
 
-	bool bSuccess = false;
+	bool bOpened = false;
 	SP_DEVICE_INTERFACE_DATA ifData;
 	ifData.cbSize = sizeof(ifData);
 	for (DWORD index = 0; SetupDiEnumDeviceInterfaces(devInfo, nullptr, &Sw2WinUsbGuid, index, &ifData); index++)
@@ -794,7 +786,15 @@ bool JoyShock::init_switch2() {
 			FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OVERLAPPED, nullptr);
 		if (fileHandle == INVALID_HANDLE_VALUE)
 		{
-			UE_LOG(LogJoyShockLibrary, Warning, TEXT("SW2: CreateFile failed (%u) for %s\n"), GetLastError(), *devicePath);
+			const DWORD openError = GetLastError();
+			if (openError == ERROR_ACCESS_DENIED)
+			{
+				UE_LOG(LogJoyShockLibrary, Warning, TEXT("SW2: another application (e.g. Steam) has exclusive access to the controller's command interface. Close it to enable rumble/init from this plugin.\n"));
+			}
+			else
+			{
+				UE_LOG(LogJoyShockLibrary, Warning, TEXT("SW2: CreateFile failed (%u) for %s\n"), openError, *devicePath);
+			}
 			continue;
 		}
 
@@ -827,6 +827,46 @@ bool JoyShock::init_switch2() {
 		ULONG timeoutMs = 200;
 		WinUsb_SetPipePolicy(usbHandle, inPipe, PIPE_TRANSFER_TIMEOUT, sizeof(timeoutMs), &timeoutMs);
 		WinUsb_SetPipePolicy(usbHandle, outPipe, PIPE_TRANSFER_TIMEOUT, sizeof(timeoutMs), &timeoutMs);
+
+		// Keep the command interface open for the device's lifetime (closed in the destructor).
+		sw2_winusb_file = fileHandle;
+		sw2_winusb_handle = usbHandle;
+		sw2_out_pipe = outPipe;
+		sw2_in_pipe = inPipe;
+		bOpened = true;
+		break; // this JoyShock's own controller found (matched via composite parent above)
+	}
+
+	SetupDiDestroyDeviceInfoList(devInfo);
+	return bOpened;
+#else
+	return false;
+#endif
+}
+
+bool JoyShock::init_switch2() {
+	// Nintendo Switch 2 Pro Controller init, replicating what Steam does (confirmed with a USBPcap capture):
+	// commands go over the controller's WinUSB interface (MI_01) bulk OUT endpoint 0x02 -- NOT over HID
+	// (the HID interface MI_00 is input-only; hid_write fails with -1 on it). Once initialised, the
+	// controller streams its 0x05 input reports on the HID interface, which the poll thread parses.
+	// Command format: [command_id] 0x91 0x00 [subcommand_id] 0x00 [data_len] 0x00 0x00 [data...].
+	// (Over Bluetooth LE byte 2 is 0x01 instead; sending that over USB makes it search for a BT host.)
+#if PLATFORM_WINDOWS
+	UE_LOG(LogJoyShockLibrary, Log, TEXT("Running Switch 2 (WinUSB) init sequence...\n"));
+
+	if (!sw2_open_winusb())
+	{
+		// The controller may still stream input if it was already initialised (e.g. by Steam or a previous
+		// session), so don't treat this as fatal; rumble retries the open lazily (see set_sw2_rumble).
+		UE_LOG(LogJoyShockLibrary, Warning, TEXT("SW2: command interface unavailable; skipping init (input may still stream if already initialised).\n"));
+		this->initialised = true;
+		return false;
+	}
+
+	WINUSB_INTERFACE_HANDLE usbHandle = static_cast<WINUSB_INTERFACE_HANDLE>(sw2_winusb_handle);
+	const UCHAR outPipe = sw2_out_pipe;
+	const UCHAR inPipe = sw2_in_pipe;
+	bool bSuccess = false;
 
 		// --- Factory config over SPI (same reads Steam performs before configuring the controller) ---
 		// SPI read command 0x02:0x01, data = [flags u32 = 0][address LE u32]; the response is a 16-byte
@@ -965,28 +1005,9 @@ bool JoyShock::init_switch2() {
 			}
 		}
 
-		if (bSuccess)
-		{
-			// Keep the command interface open for the device's lifetime so rumble can be sent at any time
-			// (closed in the destructor).
-			sw2_winusb_file = fileHandle;
-			sw2_winusb_handle = usbHandle;
-			sw2_out_pipe = outPipe;
-			sw2_in_pipe = inPipe;
-		}
-		else
-		{
-			WinUsb_Free(usbHandle);
-			CloseHandle(fileHandle);
-		}
-		break; // this JoyShock's own controller found (matched via composite parent above)
-	}
-
-	SetupDiDestroyDeviceInfoList(devInfo);
-
 	if (!bSuccess)
 	{
-		UE_LOG(LogJoyShockLibrary, Warning, TEXT("SW2: no WinUSB interface initialised; controller will not stream input.\n"));
+		UE_LOG(LogJoyShockLibrary, Warning, TEXT("SW2: some init commands failed; the controller may not stream input.\n"));
 	}
 	this->initialised = true;
 	return bSuccess;
@@ -1002,7 +1023,20 @@ void JoyShock::set_sw2_rumble(int smallRumble, int bigRumble) {
 #if PLATFORM_WINDOWS
 	if (sw2_winusb_handle == nullptr)
 	{
-		return;
+		// The command interface couldn't be opened at connect time (typically another application such as
+		// Steam holding it exclusively). Retry lazily -- if that application has since been closed, rumble
+		// self-heals. Throttled so failed attempts don't run the device enumeration on every rumble call.
+		const auto now = std::chrono::steady_clock::now();
+		if (std::chrono::duration_cast<std::chrono::seconds>(now - sw2_last_open_attempt).count() < 2)
+		{
+			return;
+		}
+		sw2_last_open_attempt = now;
+		if (!sw2_open_winusb())
+		{
+			return;
+		}
+		UE_LOG(LogJoyShockLibrary, Log, TEXT("SW2: command interface acquired on retry; rumble available.\n"));
 	}
 
 	// The Switch 2's amplitude-accurate rumble stream uses a dedicated channel that hasn't been mapped on
