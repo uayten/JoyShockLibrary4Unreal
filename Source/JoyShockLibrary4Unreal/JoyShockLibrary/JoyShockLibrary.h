@@ -17,6 +17,7 @@ DECLARE_LOG_CATEGORY_EXTERN(LogJoyShockLibrary, Verbose, All);
 #define JS_TYPE_PRO_CONTROLLER 3
 #define JS_TYPE_DS4 4
 #define JS_TYPE_DS 5
+#define JS_TYPE_PRO_CONTROLLER_2 6
 
 #define JS_SPLIT_TYPE_LEFT 1
 #define JS_SPLIT_TYPE_RIGHT 2
@@ -332,7 +333,8 @@ enum class EJSL4UControllerType : uint8
 	JoyConRight = 2 UMETA(DisplayName = "JoyCon (R)"),
 	ProController = 3 UMETA(DisplayName = "Pro Controller"),
 	DualShock4 = 4 UMETA(DisplayName = "DualShock 4"),
-	DualSense = 5 UMETA(DisplayName = "DualSense")
+	DualSense = 5 UMETA(DisplayName = "DualSense"),
+	ProController2 = 6 UMETA(DisplayName = "Pro Controller 2")
 };
 
 UENUM(BlueprintType)

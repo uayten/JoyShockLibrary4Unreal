@@ -75,13 +75,6 @@ public:
 	std::shared_timed_mutex _callbackLock;
 	std::shared_timed_mutex _connectedLock;
 
-	// State for the coalesced background enumeration driven by RequestConnectDevices().
-	std::atomic<bool> bConnectRunning{ false };
-	std::atomic<bool> bConnectQueued{ false };
-	std::atomic<bool> bShuttingDown{ false };
-
-	FJoyShockInterface* ActiveInterface = nullptr;
-
 protected:
 	FJoyShockConnectedDelegate OnConnected;
 	FJoyShockDisconnectedDelegate OnDisconnected;
@@ -91,5 +84,12 @@ protected:
 #if PLATFORM_WINDOWS
 	FWindowsDeviceChangeMessageHandler WindowsDeviceChangeMessageHandler;
 #endif
-	
+
+private:
+	// State for the coalesced background enumeration driven by RequestConnectDevices().
+	std::atomic<bool> bConnectRunning{ false };
+	std::atomic<bool> bConnectQueued{ false };
+	std::atomic<bool> bShuttingDown{ false };
+
+	FJoyShockInterface* ActiveInterface = nullptr;
 };

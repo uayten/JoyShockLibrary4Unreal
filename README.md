@@ -107,3 +107,4 @@ No official Sony or Nintendo libraries were used in the development or testing o
 - A massive thanks to JibbSmart for creating the original JoyShockLibrary plug-in, and for answering the questions I sent to his Twitter DMs. For the full credits of the original JoyShockLibrary, check out his [JoyShockLibrary](https://github.com/JibbSmart/JoyShockLibrary) repo.
 - microdee for the [HIDUE](https://github.com/microdee/HIDUE) Unreal plug-in, which JSL4U relies on for both USB and Bluetooth connections.
 - DualSense 3D model in the test level created by [Saleem Akhtar](https://www.artstation.com/marketplace/p/zBM9R/ps5-duelsense-controller-3d-model-fbx).
+- [uayten](https://github.com/uayten) for adding Nintendo Switch 2 Pro Controller (USB) support with rumble, Joy-Con combined/separated pairing with dedicated Blueprint nodes, and fixing editor freezes when controllers connect/disconnect.

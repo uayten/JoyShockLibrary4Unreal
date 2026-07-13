@@ -619,6 +619,7 @@ static EJSL4UControllerType JSL4UControllerTypeFromLegacy(int32 LegacyType)
 	case JS_TYPE_JOYCON_LEFT:    return EJSL4UControllerType::JoyConLeft;
 	case JS_TYPE_JOYCON_RIGHT:   return EJSL4UControllerType::JoyConRight;
 	case JS_TYPE_PRO_CONTROLLER: return EJSL4UControllerType::ProController;
+	case JS_TYPE_PRO_CONTROLLER_2: return EJSL4UControllerType::ProController2;
 	case JS_TYPE_DS4:            return EJSL4UControllerType::DualShock4;
 	case JS_TYPE_DS:             return EJSL4UControllerType::DualSense;
 	default:                     return EJSL4UControllerType::Undefined;
@@ -632,6 +633,7 @@ static FString JSL4UControllerNameFromLegacy(int32 LegacyType)
 	case JS_TYPE_JOYCON_LEFT:    return TEXT("JoyCon (L)");
 	case JS_TYPE_JOYCON_RIGHT:   return TEXT("JoyCon (R)");
 	case JS_TYPE_PRO_CONTROLLER: return TEXT("Pro Controller");
+	case JS_TYPE_PRO_CONTROLLER_2: return TEXT("Pro Controller 2");
 	case JS_TYPE_DS4:            return TEXT("DualShock 4");
 	case JS_TYPE_DS:             return TEXT("DualSense");
 	default:                     return TEXT("Unknown Controller");
@@ -1503,7 +1505,7 @@ FJSLSettings UJoyShockLibrary::JslGetControllerInfoAndSettings(int32 deviceId)
 			break;
 		default:
 		case ControllerType::n_switch:
-			settings.controllerType = jc->left_right;
+			settings.controllerType = jc->is_switch2_pro ? JS_TYPE_PRO_CONTROLLER_2 : jc->left_right;
 			settings.colour = jc->body_colour;
 			break;
 		}
@@ -1536,7 +1538,7 @@ int32 UJoyShockLibrary::JslGetControllerType(int32 deviceId)
 			return JS_TYPE_DS;
 		default:
 		case ControllerType::n_switch:
-			return jc->left_right;
+			return jc->is_switch2_pro ? JS_TYPE_PRO_CONTROLLER_2 : jc->left_right;
 		}
 	}
 	return 0;

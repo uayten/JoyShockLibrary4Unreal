@@ -158,6 +158,8 @@ FString FJoyShockInterface::GetDeviceName(int32 InControllerId)
 		return TEXT("Right Joy-Con");
 	case JS_TYPE_PRO_CONTROLLER:
 		return TEXT("Pro Controller");
+	case JS_TYPE_PRO_CONTROLLER_2:
+		return TEXT("Pro Controller 2");
 	case JS_TYPE_DS4:
 		return TEXT("DualShock 4");
 	case JS_TYPE_DS:
