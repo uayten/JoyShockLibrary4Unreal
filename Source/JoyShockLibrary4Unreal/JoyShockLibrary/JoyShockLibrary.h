@@ -345,22 +345,41 @@ enum class EJSL4UGyroSpace : uint8
 	PlayerSpace = 2 UMETA(DisplayName = "Player Space"), // a simple combination of local and world space that is as adaptive as world space but is as robust as local space
 };
 
+// Everything the plugin knows about a controller: its identity, its type, the player slot it feeds and
+// its live JSL settings. Returned for a single device by JSL4UGetControllerInfoAndSettings and for every
+// connected device by JSL4UGetConnectedControllers.
 USTRUCT(BlueprintType)
-struct JOYSHOCKLIBRARY4UNREAL_API FJSL4USettings // typedef struct JSL_SETTINGS {
+struct JOYSHOCKLIBRARY4UNREAL_API FJSL4UControllerInfo // typedef struct JSL_SETTINGS {
 {
 	GENERATED_BODY()
 
+	// Device id / handle (0, 1, 2, ...). This is what every other Jsl* / JSL4U* function takes.
 	UPROPERTY(BlueprintReadOnly)
-	int32 GyroSpace = 0;
+	int32 DeviceId = 0;
+
+	UPROPERTY(BlueprintReadOnly)
+	EJSL4UControllerType ControllerType = EJSL4UControllerType::Undefined;
+
+	// The player slot (0, 1, 2, ...) this controller's input is delivered to, or -1 if it isn't connected.
+	// Both halves of a joined Joy-Con pair share the same PlayerIndex.
+	UPROPERTY(BlueprintReadOnly)
+	int32 PlayerIndex = -1;
+
+	// If this controller is joined with another, the device id of its partner; otherwise -1.
+	UPROPERTY(BlueprintReadOnly)
+	int32 JoinedToDeviceId = -1;
+
+	// The number shown on the controller's player indicator (the Switch player LEDs, the DualSense light
+	// bar), as set by JslSetPlayerNumber. This is a display value, not an identity -- to identify a
+	// controller use DeviceId, and to know which player it feeds use PlayerIndex.
+	UPROPERTY(BlueprintReadOnly)
+	int32 PlayerLedNumber = 0;
 
 	UPROPERTY(BlueprintReadOnly)
 	FColor Color = FColor::Black;
 
 	UPROPERTY(BlueprintReadOnly)
-	int32 PlayerNumber = 0;
-
-	UPROPERTY(BlueprintReadOnly)
-	EJSL4UControllerType ControllerType = EJSL4UControllerType::Undefined;
+	int32 GyroSpace = 0;
 
 	UPROPERTY(BlueprintReadOnly)
 	int32 SplitType = 0;
@@ -405,49 +424,22 @@ struct JOYSHOCKLIBRARY4UNREAL_API FJSLSettings // typedef struct JSL_SETTINGS {
 	bool isConnected = false;
 }; // JSL_SETTINGS;
 
-// A connected controller as seen by Blueprint: its device id (player index), its type and a readable name.
-// Used to build a UI list so the user can pick which two Joy-Cons to join.
-USTRUCT(BlueprintType)
-struct JOYSHOCKLIBRARY4UNREAL_API FJSL4UConnectedController
-{
-	GENERATED_BODY()
-
-	// Device id / player index (0, 1, 2, ...). This is what you pass to JSL4UJoinJoyCons.
-	UPROPERTY(BlueprintReadOnly)
-	int32 DeviceId = 0;
-
-	UPROPERTY(BlueprintReadOnly)
-	EJSL4UControllerType ControllerType = EJSL4UControllerType::Undefined;
-
-	// Readable name, e.g. "JoyCon (L)", "DualSense".
-	UPROPERTY(BlueprintReadOnly)
-	FString Name;
-
-	// True for a left or right Joy-Con (the only types that can be joined into a pair).
-	UPROPERTY(BlueprintReadOnly)
-	bool bIsJoyCon = false;
-
-	// The player slot (0, 1, 2, ...) this controller's input is delivered to. Both halves of a joined
-	// Joy-Con pair share the same PlayerIndex.
-	UPROPERTY(BlueprintReadOnly)
-	int32 PlayerIndex = -1;
-
-	// If this controller is joined with another, the device id of the controller it's joined with;
-	// otherwise -1.
-	UPROPERTY(BlueprintReadOnly)
-	int32 JoinedToDeviceId = -1;
-};
-
 UCLASS()
 class JOYSHOCKLIBRARY4UNREAL_API UJoyShockLibrary : public UBlueprintFunctionLibrary
 {
 	GENERATED_BODY()
 
 public:
-	// Returns every currently connected controller with its device id, type and name. Use this to list
-	// controllers (e.g. "0 JoyCon (R), 1 DualSense, 2 JoyCon (L)") and pick which Joy-Cons to join.
+	// Returns every currently connected controller, sorted by device id. Use this to list controllers
+	// (e.g. "0 JoyCon (R), 1 DualSense, 2 JoyCon (L)") and pick which Joy-Cons to join. Use
+	// "Enum to String" on ControllerType for a readable name.
 	UFUNCTION(BlueprintCallable, Category = "JoyShockLibrary|JoyConPairing")
-	static TArray<FJSL4UConnectedController> JSL4UGetConnectedControllers();
+	static TArray<FJSL4UControllerInfo> JSL4UGetConnectedControllers();
+
+	// True for controller types that can be joined into a pair -- currently the left and right Joy-Cons.
+	// This is the single source of truth for "can this be joined": JSL4UJoinJoyCons validates with it too.
+	UFUNCTION(BlueprintPure, Category = "JoyShockLibrary|JoyConPairing")
+	static bool JSL4UIsJoinable(EJSL4UControllerType ControllerType);
 
 	// Joins two Joy-Cons so they act as a single controller for one player: their inputs are merged and
 	// delivered to the lower device id's player (e.g. joining 0 and 2 -> both feed player 0). Both ids must
@@ -668,9 +660,10 @@ public:
 	UFUNCTION(BlueprintCallable, BlueprintPure, Category = JoyShockLibrary)
 	/*extern "C"*/ static FJSLAutoCalibration JslGetAutoCalibrationStatus(int32 deviceId);
 
-	// NEW FUNCTION
+	// Everything the plugin knows about one controller. Returns a struct with bIsConnected == false if
+	// no controller has this device id.
 	UFUNCTION(BlueprintCallable, BlueprintPure, Category = JoyShockLibrary)
-	static FJSL4USettings JSL4UGetControllerInfoAndSettings(int32 DeviceId);
+	static FJSL4UControllerInfo JSL4UGetControllerInfoAndSettings(int32 DeviceId);
 
 	// super-getter for reading a whole lot of state at once
 	UFUNCTION(BlueprintCallable, BlueprintPure, Category = JoyShockLibrary)

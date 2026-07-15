@@ -68,7 +68,8 @@ Bluetooth is currently **not** supported for the Switch 2 Pro Controller: it use
 
 A left+right Joy-Con pair can act as a single controller for one player. New Blueprint nodes are available under **JoyShockLibrary | JoyConPairing**:
 
-- **JSL4U Get Connected Controllers** — lists connected controllers (device id, type, name, player index and join partner), e.g. to build a controller-assignment screen.
+- **JSL4U Get Connected Controllers** — lists every connected controller as an **FJSL4UControllerInfo** (device id, type, player index, join partner, plus its live settings), e.g. to build a controller-assignment screen. Use *Enum to String* on `ControllerType` for a readable name.
+- **JSL4U Is Joinable (Controller Type)** — whether a controller type can be joined into a pair (currently the left and right Joy-Cons). `JSL4U Join Joy Cons` validates with this same function.
 - **JSL4U Join Joy Cons (A, B)** — joins a left and a right Joy-Con so they feed a single player (left half = left stick and its buttons, right half = right stick and its buttons). The engine sees one player per joined pair.
 - **JSL4U Unjoin Joy Con / JSL4U Unjoin All Joy Cons** — dissolve joins (each Joy-Con becomes its own player again).
 - **JSL4U Get Player Index** — the player slot a controller's input is delivered to.

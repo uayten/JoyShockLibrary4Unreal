@@ -626,44 +626,111 @@ static EJSL4UControllerType JSL4UControllerTypeFromLegacy(int32 LegacyType)
 	}
 }
 
-static FString JSL4UControllerNameFromLegacy(int32 LegacyType)
+// Reads everything the JoyShock itself owns. The caller must hold _connectedLock (shared is enough) and
+// must have already null-checked jc. Kept separate from the locking so that callers which already hold
+// the lock for a whole batch of devices don't have to re-acquire it per device.
+static FJSLSettings JSL4UReadJslSettings(JoyShock* jc)
 {
-	switch (LegacyType)
+	FJSLSettings settings;
+
+	settings.gyroSpace = jc->gyroSpace;
+	settings.playerNumber = jc->player_number;
+	settings.splitType = jc->left_right;
+	settings.isConnected = true;
+	settings.isCalibrating = jc->use_continuous_calibration;
+	settings.autoCalibrationEnabled = jc->motion.GetCalibrationMode() != GamepadMotionHelpers::CalibrationMode::Manual;
+
+	switch (jc->controller_type)
 	{
-	case JS_TYPE_JOYCON_LEFT:    return TEXT("JoyCon (L)");
-	case JS_TYPE_JOYCON_RIGHT:   return TEXT("JoyCon (R)");
-	case JS_TYPE_PRO_CONTROLLER: return TEXT("Pro Controller");
-	case JS_TYPE_PRO_CONTROLLER_2: return TEXT("Pro Controller 2");
-	case JS_TYPE_DS4:            return TEXT("DualShock 4");
-	case JS_TYPE_DS:             return TEXT("DualSense");
-	default:                     return TEXT("Unknown Controller");
+	case ControllerType::s_ds4:
+		settings.controllerType = JS_TYPE_DS4;
+		break;
+	case ControllerType::s_ds:
+		settings.controllerType = JS_TYPE_DS;
+		break;
+	default:
+	case ControllerType::n_switch:
+		settings.controllerType = jc->is_switch2_pro ? JS_TYPE_PRO_CONTROLLER_2 : jc->left_right;
+		settings.colour = jc->body_colour;
+		break;
+	}
+
+	if (jc->controller_type != ControllerType::n_switch)
+	{
+		// get led colour
+		settings.colour = (int)(jc->led_b) | ((int)(jc->led_g) << 8) | ((int)(jc->led_r) << 16);
+	}
+
+	return settings;
+}
+
+// Builds the Blueprint-facing struct from the raw JSL settings. Leaves the interface-owned fields
+// (PlayerIndex / JoinedToDeviceId) at their defaults -- see JSL4UFillPlayerFields.
+static FJSL4UControllerInfo JSL4UMakeControllerInfo(int32 DeviceId, const FJSLSettings& JslSettings)
+{
+	const uint32 RGBColor = JslSettings.colour;
+	const uint8 Red = (RGBColor >> 16) & 0xff;
+	const uint8 Green = (RGBColor >> 8) & 0xff;
+	const uint8 Blue = RGBColor & 0xff;
+
+	FJSL4UControllerInfo Info;
+	Info.DeviceId = DeviceId;
+	Info.ControllerType = JSL4UControllerTypeFromLegacy(JslSettings.controllerType);
+	Info.PlayerLedNumber = JslSettings.playerNumber;
+	Info.Color = FColor(Blue, Green, Red);
+	Info.GyroSpace = JslSettings.gyroSpace;
+	Info.SplitType = JslSettings.splitType;
+	Info.bIsCalibrating = JslSettings.isCalibrating;
+	Info.bAutoCalibrationEnabled = JslSettings.autoCalibrationEnabled;
+	Info.bIsConnected = JslSettings.isConnected;
+	return Info;
+}
+
+// Fills the fields the input-device interface owns. Must NOT be called while holding _connectedLock:
+// the game thread takes the interface's lock and then calls Jsl* getters (which take _connectedLock),
+// so acquiring them in the opposite order here could deadlock.
+static void JSL4UFillPlayerFields(FJSL4UControllerInfo& Info, FJoyShockInterface* Interface)
+{
+	if (Interface != nullptr)
+	{
+		Info.PlayerIndex = Interface->GetPlayerIndexForDevice(Info.DeviceId);
+		Info.JoinedToDeviceId = Interface->GetJoinPartner(Info.DeviceId);
 	}
 }
 
-TArray<FJSL4UConnectedController> UJoyShockLibrary::JSL4UGetConnectedControllers()
+TArray<FJSL4UControllerInfo> UJoyShockLibrary::JSL4UGetConnectedControllers()
 {
-	FJoyShockInterface* Interface = FJoyShockLibrary4UnrealModule::GetInstance().GetActiveInterface();
+	FJoyShockLibrary4UnrealModule& JSL4UModule = FJoyShockLibrary4UnrealModule::GetInstance();
+	FJoyShockInterface* Interface = JSL4UModule.GetActiveInterface();
 
-	TArray<int32> Handles;
-	JslGetConnectedDeviceHandles(Handles);
-	Handles.Sort();
-
-	TArray<FJSL4UConnectedController> Result;
-	Result.Reserve(Handles.Num());
-	for (int32 Handle : Handles)
+	TArray<FJSL4UControllerInfo> Result;
 	{
-		const int32 LegacyType = JslGetControllerType(Handle);
+		// One shared lock for every device, rather than one per device per getter.
+		std::shared_lock<std::shared_timed_mutex> lock(JSL4UModule._connectedLock);
 
-		FJSL4UConnectedController Controller;
-		Controller.DeviceId = Handle;
-		Controller.ControllerType = JSL4UControllerTypeFromLegacy(LegacyType);
-		Controller.Name = JSL4UControllerNameFromLegacy(LegacyType);
-		Controller.bIsJoyCon = LegacyType == JS_TYPE_JOYCON_LEFT || LegacyType == JS_TYPE_JOYCON_RIGHT;
-		Controller.JoinedToDeviceId = Interface != nullptr ? Interface->GetJoinPartner(Handle) : INDEX_NONE;
-		Controller.PlayerIndex = Interface != nullptr ? Interface->GetPlayerIndexForDevice(Handle) : INDEX_NONE;
-		Result.Add(Controller);
+		Result.Reserve(_joyshocks.Num());
+		for (const TTuple<int32, JoyShock*>& Pair : _joyshocks)
+		{
+			if (Pair.Value != nullptr)
+			{
+				Result.Add(JSL4UMakeControllerInfo(Pair.Key, JSL4UReadJslSettings(Pair.Value)));
+			}
+		}
+	}
+
+	Result.Sort([](const FJSL4UControllerInfo& A, const FJSL4UControllerInfo& B) { return A.DeviceId < B.DeviceId; });
+
+	for (FJSL4UControllerInfo& Info : Result)
+	{
+		JSL4UFillPlayerFields(Info, Interface);
 	}
 	return Result;
+}
+
+bool UJoyShockLibrary::JSL4UIsJoinable(EJSL4UControllerType ControllerType)
+{
+	return ControllerType == EJSL4UControllerType::JoyConLeft
+		|| ControllerType == EJSL4UControllerType::JoyConRight;
 }
 
 bool UJoyShockLibrary::JSL4UJoinJoyCons(int32 DeviceIdA, int32 DeviceIdB)
@@ -673,12 +740,10 @@ bool UJoyShockLibrary::JSL4UJoinJoyCons(int32 DeviceIdA, int32 DeviceIdB)
 		return false;
 	}
 
-	const int32 TypeA = JslGetControllerType(DeviceIdA);
-	const int32 TypeB = JslGetControllerType(DeviceIdB);
+	const EJSL4UControllerType TypeA = JSL4UControllerTypeFromLegacy(JslGetControllerType(DeviceIdA));
+	const EJSL4UControllerType TypeB = JSL4UControllerTypeFromLegacy(JslGetControllerType(DeviceIdB));
 
-	const bool bAIsJoyCon = TypeA == JS_TYPE_JOYCON_LEFT || TypeA == JS_TYPE_JOYCON_RIGHT;
-	const bool bBIsJoyCon = TypeB == JS_TYPE_JOYCON_LEFT || TypeB == JS_TYPE_JOYCON_RIGHT;
-	if (!bAIsJoyCon || !bBIsJoyCon)
+	if (!JSL4UIsJoinable(TypeA) || !JSL4UIsJoinable(TypeB))
 	{
 		UE_LOG(LogJoyShockLibrary, Warning, TEXT("JSL4UJoinJoyCons: both device ids must be Joy-Cons (got %d and %d)."), DeviceIdA, DeviceIdB);
 		return false;
@@ -1456,25 +1521,25 @@ FJSLAutoCalibration UJoyShockLibrary::JslGetAutoCalibrationStatus(int32 deviceId
 	return {};
 }
 
-FJSL4USettings UJoyShockLibrary::JSL4UGetControllerInfoAndSettings(int32 DeviceId)
+FJSL4UControllerInfo UJoyShockLibrary::JSL4UGetControllerInfoAndSettings(int32 DeviceId)
 {
-	const FJSLSettings& JslSettings = JslGetControllerInfoAndSettings(DeviceId);
+	FJoyShockLibrary4UnrealModule& JSL4UModule = FJoyShockLibrary4UnrealModule::GetInstance();
+	FJoyShockInterface* Interface = JSL4UModule.GetActiveInterface();
 
-	uint32 RGBColor = JslSettings.colour;
-	uint8 Red = (RGBColor >> 16) & 0xff;
-	uint8 Green = (RGBColor >> 8) & 0xff;;
-	uint8 Blue = RGBColor & 0xff;
+	FJSL4UControllerInfo Info;
+	{
+		std::shared_lock<std::shared_timed_mutex> lock(JSL4UModule._connectedLock);
 
-	return {
-		.GyroSpace = JslSettings.gyroSpace,
-		.Color = FColor(Blue, Green, Red),
-		.PlayerNumber = JslSettings.playerNumber,
-		.ControllerType = static_cast<EJSL4UControllerType>(JslSettings.controllerType),
-		.SplitType = JslSettings.splitType,
-		.bIsCalibrating = JslSettings.isCalibrating,
-		.bAutoCalibrationEnabled = JslSettings.autoCalibrationEnabled,
-		.bIsConnected = JslSettings.isConnected
-	};
+		JoyShock* jc = GetJoyShockFromHandle(DeviceId);
+		if (jc == nullptr)
+		{
+			return {}; // bIsConnected stays false
+		}
+		Info = JSL4UMakeControllerInfo(DeviceId, JSL4UReadJslSettings(jc));
+	}
+
+	JSL4UFillPlayerFields(Info, Interface);
+	return Info;
 }
 
 // super-getter for reading a whole lot of state at once
@@ -1486,37 +1551,7 @@ FJSLSettings UJoyShockLibrary::JslGetControllerInfoAndSettings(int32 deviceId)
 	
 	JoyShock* jc = GetJoyShockFromHandle(deviceId);
 	if (jc != nullptr) {
-		FJSLSettings settings;
-
-		settings.gyroSpace = jc->gyroSpace;
-		settings.playerNumber = jc->player_number;
-		settings.splitType = jc->left_right;
-		settings.isConnected = true;
-		settings.isCalibrating = jc->use_continuous_calibration;
-		settings.autoCalibrationEnabled = jc->motion.GetCalibrationMode() != GamepadMotionHelpers::CalibrationMode::Manual;
-
-		switch (jc->controller_type)
-		{
-		case ControllerType::s_ds4:
-			settings.controllerType = JS_TYPE_DS4;
-			break;
-		case ControllerType::s_ds:
-			settings.controllerType = JS_TYPE_DS;
-			break;
-		default:
-		case ControllerType::n_switch:
-			settings.controllerType = jc->is_switch2_pro ? JS_TYPE_PRO_CONTROLLER_2 : jc->left_right;
-			settings.colour = jc->body_colour;
-			break;
-		}
-
-		if (jc->controller_type != ControllerType::n_switch)
-		{
-			// get led colour
-			settings.colour = (int)(jc->led_b) | ((int)(jc->led_g) << 8) | ((int)(jc->led_r) << 16);
-		}
-
-		return settings;
+		return JSL4UReadJslSettings(jc);
 	}
 	return {};
 }
