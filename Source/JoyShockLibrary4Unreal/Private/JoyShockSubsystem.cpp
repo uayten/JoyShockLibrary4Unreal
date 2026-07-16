@@ -35,6 +35,16 @@ void UJoyShockSubsystem::Initialize(FSubsystemCollectionBase& Collection)
 		UJoyShockLibrary::JSL4UGetConnectedControllers().Num());
 }
 
+void UJoyShockSubsystem::StopAllRumble()
+{
+	// Setting the values is enough: the polling thread is the sole writer and sends one stop packet when it
+	// sees them change to zero.
+	for (const FJSL4UControllerInfo& Info : UJoyShockLibrary::JSL4UGetConnectedControllers())
+	{
+		UJoyShockLibrary::JslSetRumble(Info.DeviceId, 0, 0);
+	}
+}
+
 void UJoyShockSubsystem::Deinitialize()
 {
 	// The module outlives the game instance, so leaving these bound would keep firing into a dead
@@ -44,6 +54,13 @@ void UJoyShockSubsystem::Deinitialize()
 		FJoyShockLibrary4UnrealModule& JSL4UModule = FJoyShockLibrary4UnrealModule::GetInstance();
 		JSL4UModule.GetOnDeviceConnected().Remove(ConnectedHandle);
 		JSL4UModule.GetOnDeviceDisconnected().Remove(DisconnectedHandle);
+
+		// Rumble is sustained by the polling threads, which belong to the module and keep running after the
+		// game stops -- so a controller still rumbling when the game ends would rumble until something set
+		// it back to zero, and nothing would. (This can't be left to the game: it may well be stopping
+		// *because* it crashed.) Stopping in PIE is what makes this urgent; a packaged game exiting tears
+		// the module down with it.
+		StopAllRumble();
 	}
 
 	ConnectedHandle.Reset();

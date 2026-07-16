@@ -34,6 +34,12 @@ public:
 	UPROPERTY(BlueprintAssignable, Category = "JoyShockLibrary|Events")
 	FJSL4UControllerDisconnectedDelegate OnControllerDisconnected;
 
+	// Stops rumble on every connected controller. Called automatically when the game shuts down -- rumble
+	// is sustained by threads that outlive the game, so a controller left rumbling would never stop on its
+	// own. Also useful on its own (pausing, a cutscene, losing focus).
+	UFUNCTION(BlueprintCallable, Category = "JoyShockLibrary|Rumble")
+	void StopAllRumble();
+
 private:
 	FDelegateHandle ConnectedHandle;
 	FDelegateHandle DisconnectedHandle;
