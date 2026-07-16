@@ -6,6 +6,8 @@
 
 DECLARE_LOG_CATEGORY_EXTERN(LogJoyShockLibrary, Verbose, All);
 
+class APlayerController;
+
 /*#if _MSC_VER // this is defined when compiling with Visual Studio
 #define JOY_SHOCK_API __declspec(dllexport) // Visual Studio needs annotating exported functions with this
 #else
@@ -462,10 +464,19 @@ public:
 
 	// The inverse of JSL4UGetPlayerIndex: every controller currently feeding a player slot. Two entries for
 	// a joined Joy-Con pair (rumble both to rumble "the player"), one for a standalone controller, none if
-	// nothing is assigned to that slot. PlayerIndex is Unreal's own player index, so feeding this the
-	// result of "Get Player Controller ID" gives you the controller(s) of whoever issued a command.
+	// nothing is assigned to that slot. PlayerIndex is a platform user index -- if you have a
+	// PlayerController, prefer JSL4UGetControllersForPlayerController, which converts it for you.
 	UFUNCTION(BlueprintCallable, BlueprintPure, Category = "JoyShockLibrary|JoyConPairing")
 	static TArray<FJSL4UControllerInfo> JSL4UGetControllersForPlayer(int32 PlayerIndex);
+
+	// The controller(s) of the player behind a PlayerController -- i.e. of whoever issued the command you
+	// are reacting to. Defaults to self inside a PlayerController Blueprint, so this is the one-node answer
+	// to "which controller is this player holding?" (e.g. to rumble it).
+	// Note: do NOT build this out of "Get Player Controller ID". That is the legacy controller id, which is
+	// a different number from the platform user index that player slots are assigned from -- this converts
+	// through the same IPlatformInputDeviceMapper the assignment uses.
+	UFUNCTION(BlueprintCallable, BlueprintPure, Category = "JoyShockLibrary|JoyConPairing", meta = (DefaultToSelf = "PlayerController"))
+	static TArray<FJSL4UControllerInfo> JSL4UGetControllersForPlayerController(APlayerController* PlayerController);
 
 	UFUNCTION(BlueprintCallable, Category = JoyShockLibrary)
 	static int32 JslConnectDevices();

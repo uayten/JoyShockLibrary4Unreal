@@ -14,6 +14,8 @@
 #include "InputHelpers.h"
 #include "JoyShockLibrary4Unreal.h"
 #include "JoyShockInterface.h"
+#include "GameFramework/PlayerController.h"
+#include "GenericPlatform/GenericPlatformInputDeviceMapper.h"
 
 DEFINE_LOG_CATEGORY(LogJoyShockLibrary)
 
@@ -791,6 +793,20 @@ TArray<FJSL4UControllerInfo> UJoyShockLibrary::JSL4UGetControllersForPlayer(int3
 		return Info.PlayerIndex != PlayerIndex;
 	});
 	return Result;
+}
+
+TArray<FJSL4UControllerInfo> UJoyShockLibrary::JSL4UGetControllersForPlayerController(APlayerController* PlayerController)
+{
+	if (PlayerController == nullptr)
+	{
+		return {};
+	}
+
+	// RefreshPlayerAssignments maps a device to GetPlatformUserForUserIndex(Slot), so convert back through
+	// the same mapper. The player's legacy controller id is a different number and would silently pick the
+	// wrong slot for anyone but player 0.
+	const int32 UserIndex = IPlatformInputDeviceMapper::Get().GetUserIndexForPlatformUser(PlayerController->GetPlatformUserId());
+	return JSL4UGetControllersForPlayer(UserIndex);
 }
 
 void UJoyShockLibrary::JslDisconnectAndDisposeAll()
