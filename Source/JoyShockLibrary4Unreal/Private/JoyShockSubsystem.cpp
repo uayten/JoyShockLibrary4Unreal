@@ -3,6 +3,7 @@
 #include "JoyShockSubsystem.h"
 
 #include "JoyShockLibrary4Unreal.h"
+#include "JoyShockLibrary4Unreal/JoyShockLibrary/JoyShockLibrary.h"
 
 void UJoyShockSubsystem::Initialize(FSubsystemCollectionBase& Collection)
 {
@@ -10,6 +11,8 @@ void UJoyShockSubsystem::Initialize(FSubsystemCollectionBase& Collection)
 
 	if (!FJoyShockLibrary4UnrealModule::IsAvailable())
 	{
+		// Without this the events would just never fire, with nothing to explain why.
+		UE_LOG(LogJoyShockLibrary, Warning, TEXT("UJoyShockSubsystem: the JoyShockLibrary4Unreal module is not loaded, so OnControllerConnected / OnControllerDisconnected will never fire."));
 		return;
 	}
 
@@ -25,6 +28,11 @@ void UJoyShockSubsystem::Initialize(FSubsystemCollectionBase& Collection)
 	{
 		OnControllerDisconnected.Broadcast(DeviceId, bTimedOut);
 	});
+
+	// Controllers already connected when this subsystem is created never produced an event for it to hear,
+	// so seed from JSL4UGetConnectedControllers on Init and use the events only for changes after that.
+	UE_LOG(LogJoyShockLibrary, Verbose, TEXT("UJoyShockSubsystem: listening for device changes (%d controller(s) already connected)."),
+		UJoyShockLibrary::JSL4UGetConnectedControllers().Num());
 }
 
 void UJoyShockSubsystem::Deinitialize()

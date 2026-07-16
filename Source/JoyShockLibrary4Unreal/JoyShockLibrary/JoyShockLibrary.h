@@ -460,6 +460,13 @@ public:
 	UFUNCTION(BlueprintCallable, BlueprintPure, Category = "JoyShockLibrary|JoyConPairing")
 	static int32 JSL4UGetPlayerIndex(int32 DeviceId);
 
+	// The inverse of JSL4UGetPlayerIndex: every controller currently feeding a player slot. Two entries for
+	// a joined Joy-Con pair (rumble both to rumble "the player"), one for a standalone controller, none if
+	// nothing is assigned to that slot. PlayerIndex is Unreal's own player index, so feeding this the
+	// result of "Get Player Controller ID" gives you the controller(s) of whoever issued a command.
+	UFUNCTION(BlueprintCallable, BlueprintPure, Category = "JoyShockLibrary|JoyConPairing")
+	static TArray<FJSL4UControllerInfo> JSL4UGetControllersForPlayer(int32 PlayerIndex);
+
 	UFUNCTION(BlueprintCallable, Category = JoyShockLibrary)
 	static int32 JslConnectDevices();
 

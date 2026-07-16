@@ -200,10 +200,14 @@ void FJoyShockInterface::SendControllerEvents()
 
 			for (const TPair<int32, bool>& Disconnected : DisconnectedThisTick)
 			{
+				UE_LOG(LogJoyShockLibrary, Verbose, TEXT("Broadcasting disconnect of device %d (timed out: %d), %d listener(s)."),
+					Disconnected.Key, Disconnected.Value ? 1 : 0, JSL4UModule.GetOnDeviceDisconnected().IsBound() ? 1 : 0);
 				JSL4UModule.GetOnDeviceDisconnected().Broadcast(Disconnected.Key, Disconnected.Value);
 			}
 			for (int32 ConnectedDeviceId : ConnectedThisTick)
 			{
+				UE_LOG(LogJoyShockLibrary, Verbose, TEXT("Broadcasting connect of device %d, %d listener(s)."),
+					ConnectedDeviceId, JSL4UModule.GetOnDeviceConnected().IsBound() ? 1 : 0);
 				JSL4UModule.GetOnDeviceConnected().Broadcast(ConnectedDeviceId);
 			}
 		}

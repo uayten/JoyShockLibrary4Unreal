@@ -781,6 +781,18 @@ int32 UJoyShockLibrary::JSL4UGetPlayerIndex(int32 DeviceId)
 	return Interface != nullptr ? Interface->GetPlayerIndexForDevice(DeviceId) : INDEX_NONE;
 }
 
+TArray<FJSL4UControllerInfo> UJoyShockLibrary::JSL4UGetControllersForPlayer(int32 PlayerIndex)
+{
+	// Filtering the full list keeps this on the single-pass path in JSL4UGetConnectedControllers rather
+	// than adding a second way to read the same state.
+	TArray<FJSL4UControllerInfo> Result = JSL4UGetConnectedControllers();
+	Result.RemoveAll([PlayerIndex](const FJSL4UControllerInfo& Info)
+	{
+		return Info.PlayerIndex != PlayerIndex;
+	});
+	return Result;
+}
+
 void UJoyShockLibrary::JslDisconnectAndDisposeAll()
 {
 	FJoyShockLibrary4UnrealModule& JSL4UModule = FJoyShockLibrary4UnrealModule::GetInstance();
