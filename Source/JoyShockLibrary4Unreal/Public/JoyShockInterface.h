@@ -184,16 +184,14 @@ private:
 	static constexpr float XInputRightStickDeadzone = XInputGamepadRightThumbDeadzone / 32768.0f;
 	static constexpr float XInputTriggerDeadzone = XInputGamepadTriggerThreshold / 255.0f;
 
-	// Additional input names
-	const FGamepadKeyNames::Type HomeButtonKeyName = "HomeButton";
-	const FKey HomeButtonKey = "HomeButton"; // "Home" is already taken by the keyboard key
-
+	// Additional input names.
+	// JSL aliases one bit per pair of equivalent buttons across controller families, so each of these is a
+	// single key covering both: PS == Home (JSMASK_PS == JSMASK_HOME) and TouchPadClick == Capture
+	// (JSMASK_TOUCHPAD_CLICK == JSMASK_CAPTURE). That matches how Plus/Options and Minus/Share are already
+	// handled (one abstract SpecialRight/SpecialLeft key), and how Unreal names shared positions.
 	const FGamepadKeyNames::Type PSButtonKeyName = "PS";
 	const FKey PSButtonKey = "PS";
-	
-	const FGamepadKeyNames::Type CaptureButtonKeyName = "Capture";
-	const FKey CaptureButtonKey = "Capture";
-	
+
 	const FGamepadKeyNames::Type TouchPadClickKeyName = "TouchPadClick";
 	const FKey TouchPadClickKey = "TouchPadClick";
 	
@@ -241,6 +239,9 @@ private:
 		{JSMASK_W, FGamepadKeyNames::FaceButtonLeft},
 		{JSMASK_N, FGamepadKeyNames::FaceButtonTop},
 
+		// These two masks are each shared by two names in JSL (PS == HOME, TOUCHPAD_CLICK == CAPTURE), so
+		// there is one entry -- and one key -- per bit. Registering a separate Home/Capture key here would
+		// be dead: the bit is already claimed, and nothing would ever emit it.
 		{JSMASK_PS, PSButtonKeyName}, // == JSMASK_HOME
 		{JSMASK_TOUCHPAD_CLICK, TouchPadClickKeyName}, // == JSMASK_CAPTURE
 		{JSMASK_MIC, MicButtonKeyName},

@@ -119,16 +119,14 @@ void FJoyShockInterface::InitializeAdditionalKeys()
 {
 	EKeys::AddMenuCategoryDisplayInfo(JoyShockControllerName, LOCTEXT("JoyShockSubCategory", "JoyShock"), TEXT("GraphEditor.PadEvent_16x"));
 	
-	EKeys::AddKey(FKeyDetails(HomeButtonKey, LOCTEXT("JoyShock_Home_Button", "JoyShock Home Button"), FKeyDetails::GamepadKey, JoyShockControllerName));
+	// One key per shared bit, named for both families it covers: JSL gives Home (Switch) and PS
+	// (PlayStation) the same mask, as it does for Capture and TouchPad Click, so a key per brand is not
+	// something the input can distinguish. Branch on FJSL4UControllerInfo::ControllerType if you need a
+	// brand-specific button prompt.
+	EKeys::AddKey(FKeyDetails(PSButtonKey, LOCTEXT("JoyShock_PS_Button", "JoyShock Home / PS Button"), FKeyDetails::GamepadKey, JoyShockControllerName));
+	EKeys::AddKey(FKeyDetails(TouchPadClickKey, LOCTEXT("JoyShock_TouchPad_Click", "JoyShock Capture / TouchPad Click"), FKeyDetails::GamepadKey, JoyShockControllerName));
 
 	// DualShock/DualSense
-	EKeys::AddKey(FKeyDetails(PSButtonKey, LOCTEXT("JoyShock_PS_Button", "JoyShock PS Button"), FKeyDetails::GamepadKey, JoyShockControllerName));
-
-	// Switch
-	EKeys::AddKey(FKeyDetails(CaptureButtonKey, LOCTEXT("JoyShock_Capture", "JoyShock Capture"), FKeyDetails::GamepadKey, JoyShockControllerName));
-
-	// DualShock/DualSense
-	EKeys::AddKey(FKeyDetails(TouchPadClickKey, LOCTEXT("JoyShock_TouchPad_Click", "JoyShock TouchPad Click"), FKeyDetails::GamepadKey, JoyShockControllerName));
 	EKeys::AddKey(FKeyDetails(MicButtonKey, LOCTEXT("JoyShock_Mic_Button", "JoyShock Mic Button"), FKeyDetails::GamepadKey, JoyShockControllerName));
 
 	// Single Joy-con
