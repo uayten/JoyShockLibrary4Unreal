@@ -176,39 +176,16 @@ void pollIndividualLoop(JoyShock *jc) {
 				}
 				break;
 			}
-			else
-			{
-				// try wake up the controller with the appropriate message
-				if (jc->controller_type != ControllerType::n_switch)
-				{
-					// TODO
-				}
-				else if (jc->is_switch2_pro)
-				{
-					// Don't re-run init on the Switch 2 while waiting for its stream to start. Its init was
-					// already done once; re-sending the handshake here (every timeout) resets it and stops it
-					// from ever settling into streaming its reports. Just keep reading.
-				}
-				else
-				{
-					if (jc->is_usb)
-					{
-						UE_LOG(LogJoyShockLibrary, Log, TEXT("Attempting to re-initialise controller %d\n"), jc->intHandle);
-						if (jc->init_usb())
-						{
-							numTimeOuts = 0;
-						}
-					}
-					else
-					{
-						UE_LOG(LogJoyShockLibrary, Log, TEXT("Attempting to re-initialise controller %d\n"), jc->intHandle);
-						if (jc->init_bt())
-						{
-							numTimeOuts = 0;
-						}
-					}
-				}
-			}
+			// Deliberately no re-init here to "wake up" a quiet controller: the full handshake is
+			// destructive, not restorative. A silent device is still present (hid_read returns 0, not -1),
+			// but re-running init_bt on it drops the Bluetooth link outright -- the very next read returns
+			// -1 -- so a one-second hiccup was being turned into a disconnect/reconnect cycle. The Switch 2
+			// already had to be excluded here for the same reason (its handshake resets the stream so it
+			// never settles), and there is nothing Switch 1 specific about the problem.
+			//
+			// Doing nothing is strictly better: a hiccuping controller recovers for free on the next read,
+			// and one that is genuinely gone still gets dropped by the timeout above and recreated by
+			// enumeration -- with a fresh handle and a clean init, which is the path that actually works.
 		}
 		else
 		{
