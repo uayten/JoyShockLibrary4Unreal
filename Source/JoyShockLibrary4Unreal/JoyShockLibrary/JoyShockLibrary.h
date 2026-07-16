@@ -464,13 +464,13 @@ public:
 	static int32 JslConnectDevices();
 
 	UFUNCTION(BlueprintCallable, Category = JoyShockLibrary)
-	/*extern "C"*/ static int32 JslGetConnectedDeviceHandles(/* int* */ TArray<int32>& OutDeviceHandleArray); //, int32 InSize);
+	static int32 JslGetConnectedDeviceHandles(/* int* */ TArray<int32>& OutDeviceHandleArray); //, int32 InSize);
 
 	UFUNCTION(BlueprintCallable, Category = JoyShockLibrary)
-	/*extern "C"*/ static void JslDisconnectAndDisposeAll();
+	static void JslDisconnectAndDisposeAll();
 
 	UFUNCTION(BlueprintCallable, Category = JoyShockLibrary)
-	/*extern "C"*/ static bool JslStillConnected(int32 deviceId);
+	static bool JslStillConnected(int32 deviceId);
 
 	// TODO: Remove temporary debug function
 	UFUNCTION(BlueprintCallable, Category = "JoyShockLibrary|Debug", meta = (WorldContext = "WorldContextObject"))
@@ -503,13 +503,13 @@ public:
 	// 0x80000: SR
 	// These are the best way to get all the buttons/triggers/sticks, gyro/accelerometer (IMU), orientation/acceleration/gravity (Motion), or touchpad
 	UFUNCTION(BlueprintCallable, BlueprintPure, Category = JoyShockLibrary)
-	/*extern "C"*/ static FJoyShockState JslGetSimpleState(int32 deviceId);
+	static FJoyShockState JslGetSimpleState(int32 deviceId);
 
 	UFUNCTION(BlueprintCallable, BlueprintPure, Category = JoyShockLibrary)
-	/*extern "C"*/ static FJSL4UJoyShockState JSL4UGetSimpleState(int32 DeviceId);
+	static FJSL4UJoyShockState JSL4UGetSimpleState(int32 DeviceId);
 	
 	UFUNCTION(BlueprintCallable, BlueprintPure, Category = JoyShockLibrary)
-	/*extern "C"*/ static FIMUState JslGetIMUState(int32 deviceId);
+	static FIMUState JslGetIMUState(int32 deviceId);
 
 	// NEW FUNCTION
 	UFUNCTION(BlueprintCallable, BlueprintPure, Category = JoyShockLibrary)
@@ -520,7 +520,7 @@ public:
 	static FJSL4UIMUState JSL4UGetRawIMUState(int32 DeviceID);
 	
 	UFUNCTION(BlueprintCallable, BlueprintPure, Category = JoyShockLibrary)
-	/*extern "C"*/ static FMotionState JslGetMotionState(int32 deviceId);
+	static FMotionState JslGetMotionState(int32 deviceId);
 
 	// NEW FUNCTION
 	UFUNCTION(BlueprintCallable, BlueprintPure, Category = JoyShockLibrary)
@@ -531,16 +531,16 @@ public:
 	static FJSL4UMotionState JSL4UGetRawMotionState(int32 DeviceID);
 
 	UFUNCTION(BlueprintCallable, BlueprintPure, Category = JoyShockLibrary)
-	/*extern "C"*/ static FTouchState JslGetTouchState(int32 deviceId, bool previous = false);
+	static FTouchState JslGetTouchState(int32 deviceId, bool previous = false);
 
 	UFUNCTION(BlueprintCallable, BlueprintPure, Category = JoyShockLibrary)
-	/*extern "C"*/ static FJSL4UTouchState JSL4UGetTouchState(int32 DeviceId, bool bPrevious = false);
+	static FJSL4UTouchState JSL4UGetTouchState(int32 DeviceId, bool bPrevious = false);
 
 	UFUNCTION(BlueprintCallable, BlueprintPure, Category = JoyShockLibrary)
-	/*extern "C"*/ static bool JslGetTouchpadDimension(int32 deviceId, int32 &sizeX, int32 &sizeY);
+	static bool JslGetTouchpadDimension(int32 deviceId, int32 &sizeX, int32 &sizeY);
 
 	UFUNCTION(BlueprintCallable, BlueprintPure, Category = JoyShockLibrary)
-	/*extern "C"*/ static int32 JslGetButtons(int32 deviceId);
+	static int32 JslGetButtons(int32 deviceId);
 
 	// get thumbsticks
 
@@ -549,116 +549,116 @@ public:
 	static FVector2D JSL4UGetLeftStick(int32 DeviceId);
 	
 	UFUNCTION(BlueprintCallable, BlueprintPure, Category = JoyShockLibrary)
-	/*extern "C"*/ static float JslGetLeftX(int32 deviceId);
+	static float JslGetLeftX(int32 deviceId);
 
 	UFUNCTION(BlueprintCallable, BlueprintPure, Category = JoyShockLibrary)
-	/*extern "C"*/ static float JslGetLeftY(int32 deviceId);
+	static float JslGetLeftY(int32 deviceId);
 
 	UFUNCTION(BlueprintCallable, BlueprintPure, Category = JoyShockLibrary)
 	static FVector2D JSL4UGetRightStick(int32 DeviceId);
 
 	UFUNCTION(BlueprintCallable, BlueprintPure, Category = JoyShockLibrary)
-	/*extern "C"*/ static float JslGetRightX(int32 deviceId);
+	static float JslGetRightX(int32 deviceId);
 
 	UFUNCTION(BlueprintCallable, BlueprintPure, Category = JoyShockLibrary)
-	/*extern "C"*/ static float JslGetRightY(int32 deviceId);
+	static float JslGetRightY(int32 deviceId);
 
 	// get triggers. Switch controllers don't have analogue triggers, but will report 0.0 or 1.0 so they can be used in the same way as others
 	UFUNCTION(BlueprintCallable, BlueprintPure, Category = JoyShockLibrary)
-	/*extern "C"*/ static float JslGetLeftTrigger(int32 deviceId);
+	static float JslGetLeftTrigger(int32 deviceId);
 
 	UFUNCTION(BlueprintCallable, BlueprintPure, Category = JoyShockLibrary)
-	/*extern "C"*/ static float JslGetRightTrigger(int32 deviceId);
+	static float JslGetRightTrigger(int32 deviceId);
 
 	// get gyro
 	UFUNCTION(BlueprintCallable, BlueprintPure, Category = JoyShockLibrary)
-	/*extern "C"*/ static float JslGetGyroX(int32 deviceId);
+	static float JslGetGyroX(int32 deviceId);
 
 	UFUNCTION(BlueprintCallable, BlueprintPure, Category = JoyShockLibrary)
-	/*extern "C"*/ static float JslGetGyroY(int32 deviceId);
+	static float JslGetGyroY(int32 deviceId);
 
 	UFUNCTION(BlueprintCallable, BlueprintPure, Category = JoyShockLibrary)
-	/*extern "C"*/ static float JslGetGyroZ(int32 deviceId);
+	static float JslGetGyroZ(int32 deviceId);
 
 	// get accumulated average gyro since this function was last called or last flushed values
 	UFUNCTION(BlueprintCallable, Category = JoyShockLibrary)
-	/*extern "C"*/ static void JslGetAndFlushAccumulatedGyro(int32 deviceId, float& gyroX, float& gyroY, float& gyroZ);
+	static void JslGetAndFlushAccumulatedGyro(int32 deviceId, float& gyroX, float& gyroY, float& gyroZ);
 
 	// NEW FUNCTION
 	UFUNCTION(BlueprintCallable, Category = JoyShockLibrary)
-	/*extern "C"*/ static FVector JSL4UGetAndFlushAccumulatedGyro(int32 InDeviceId);
+	static FVector JSL4UGetAndFlushAccumulatedGyro(int32 InDeviceId);
 
 	// set gyro space. JslGetGyro*, JslGetAndFlushAccumulatedGyro, JslGetIMUState, and the IMU_STATEs reported in the callback functions will use one of 3 transformations:
 	// 0 = local space -> no transformation is done on gyro input
 	// 1 = world space -> gyro input is transformed based on the calculated gravity direction to account for the player's preferred controller orientation
 	// 2 = player space -> a simple combination of local and world space that is as adaptive as world space but is as robust as local space
 	UFUNCTION(BlueprintCallable, Category = JoyShockLibrary)
-	/*extern "C"*/ static void JslSetGyroSpace(int32 deviceId, int32 gyroSpace);
+	static void JslSetGyroSpace(int32 deviceId, int32 gyroSpace);
 
 	UFUNCTION(BlueprintCallable, Category = JoyShockLibrary)
-	/*extern "C"*/ static void JSL4USetGyroSpace(int32 InDeviceID, EJSL4UGyroSpace InGyroSpace);
+	static void JSL4USetGyroSpace(int32 InDeviceID, EJSL4UGyroSpace InGyroSpace);
 
 	// get accelerometer
 	UFUNCTION(BlueprintCallable, BlueprintPure, Category = JoyShockLibrary)
-	/*extern "C"*/ static float JslGetAccelX(int32 deviceId);
+	static float JslGetAccelX(int32 deviceId);
 
 	UFUNCTION(BlueprintCallable, BlueprintPure, Category = JoyShockLibrary)
-	/*extern "C"*/ static float JslGetAccelY(int32 deviceId);
+	static float JslGetAccelY(int32 deviceId);
 
 	UFUNCTION(BlueprintCallable, BlueprintPure, Category = JoyShockLibrary)
-	/*extern "C"*/ static float JslGetAccelZ(int32 deviceId);
+	static float JslGetAccelZ(int32 deviceId);
 
 	// get touchpad
 	UFUNCTION(BlueprintCallable, BlueprintPure, Category = JoyShockLibrary)
-	/*extern "C"*/ static int32 JslGetTouchId(int32 deviceId, bool secondTouch = false);
+	static int32 JslGetTouchId(int32 deviceId, bool secondTouch = false);
 
 	UFUNCTION(BlueprintCallable, BlueprintPure, Category = JoyShockLibrary)
-	/*extern "C"*/ static bool JslGetTouchDown(int32 deviceId, bool secondTouch = false);
+	static bool JslGetTouchDown(int32 deviceId, bool secondTouch = false);
 
 	// NEW FUNCTION
 	UFUNCTION(BlueprintCallable, BlueprintPure, Category = JoyShockLibrary)
 	static FVector2D JSL4UGetTouch(int32 DeviceId, bool bSecondTouch = false);
 
 	UFUNCTION(BlueprintCallable, BlueprintPure, Category = JoyShockLibrary)
-	/*extern "C"*/ static float JslGetTouchX(int32 deviceId, bool secondTouch = false);
+	static float JslGetTouchX(int32 deviceId, bool secondTouch = false);
 
 	UFUNCTION(BlueprintCallable, BlueprintPure, Category = JoyShockLibrary)
-	/*extern "C"*/ static float JslGetTouchY(int32 deviceId, bool secondTouch = false);
+	static float JslGetTouchY(int32 deviceId, bool secondTouch = false);
 
 	// analog parameters have different resolutions depending on device
 	UFUNCTION(BlueprintCallable, BlueprintPure, Category = JoyShockLibrary)
-	/*extern "C"*/ static float JslGetStickStep(int32 deviceId);
+	static float JslGetStickStep(int32 deviceId);
 
 	UFUNCTION(BlueprintCallable, BlueprintPure, Category = JoyShockLibrary)
-	/*extern "C"*/ static float JslGetTriggerStep(int32 deviceId);
+	static float JslGetTriggerStep(int32 deviceId);
 
 	UFUNCTION(BlueprintCallable, BlueprintPure, Category = JoyShockLibrary)
-	/*extern "C"*/ static float JslGetPollRate(int32 deviceId);
+	static float JslGetPollRate(int32 deviceId);
 
 	UFUNCTION(BlueprintCallable, BlueprintPure, Category = JoyShockLibrary)
-	/*extern "C"*/ static float JslGetTimeSinceLastUpdate(int32 deviceId);
+	static float JslGetTimeSinceLastUpdate(int32 deviceId);
 
 	// calibration
 	UFUNCTION(BlueprintCallable, Category = JoyShockLibrary)
-	/*extern "C"*/ static void JslResetContinuousCalibration(int32 deviceId);
+	static void JslResetContinuousCalibration(int32 deviceId);
 
 	UFUNCTION(BlueprintCallable, Category = JoyShockLibrary)
-	/*extern "C"*/ static void JslStartContinuousCalibration(int32 deviceId);
+	static void JslStartContinuousCalibration(int32 deviceId);
 
 	UFUNCTION(BlueprintCallable, Category = JoyShockLibrary)
-	/*extern "C"*/ static void JslPauseContinuousCalibration(int32 deviceId);
+	static void JslPauseContinuousCalibration(int32 deviceId);
 
 	UFUNCTION(BlueprintCallable, Category = JoyShockLibrary)
-	/*extern "C"*/ static void JslSetAutomaticCalibration(int32 deviceId, bool enabled);
+	static void JslSetAutomaticCalibration(int32 deviceId, bool enabled);
 
 	UFUNCTION(BlueprintCallable, BlueprintPure, Category = JoyShockLibrary)
-	/*extern "C"*/ static void JslGetCalibrationOffset(int32 deviceId, float& xOffset, float& yOffset, float& zOffset);
+	static void JslGetCalibrationOffset(int32 deviceId, float& xOffset, float& yOffset, float& zOffset);
 
 	UFUNCTION(BlueprintCallable, Category = JoyShockLibrary)
-	/*extern "C"*/ static void JslSetCalibrationOffset(int32 deviceId, float xOffset, float yOffset, float zOffset);
+	static void JslSetCalibrationOffset(int32 deviceId, float xOffset, float yOffset, float zOffset);
 
 	UFUNCTION(BlueprintCallable, BlueprintPure, Category = JoyShockLibrary)
-	/*extern "C"*/ static FJSLAutoCalibration JslGetAutoCalibrationStatus(int32 deviceId);
+	static FJSLAutoCalibration JslGetAutoCalibrationStatus(int32 deviceId);
 
 	// Everything the plugin knows about one controller. Returns a struct with bIsConnected == false if
 	// no controller has this device id.
@@ -667,24 +667,22 @@ public:
 
 	// super-getter for reading a whole lot of state at once
 	UFUNCTION(BlueprintCallable, BlueprintPure, Category = JoyShockLibrary)
-	/*extern "C"*/ static FJSLSettings JslGetControllerInfoAndSettings(int32 deviceId);
+	static FJSLSettings JslGetControllerInfoAndSettings(int32 deviceId);
 
 	// what kind of controller is this?
 	UFUNCTION(BlueprintCallable, BlueprintPure, Category = JoyShockLibrary)
-	/*extern "C"*/ static int32 JslGetControllerType(int32 deviceId);
+	static int32 JslGetControllerType(int32 deviceId);
 
 	// is this a left, right, or full controller?
 	UFUNCTION(BlueprintCallable, BlueprintPure, Category = JoyShockLibrary)
-	/*extern "C"*/ static int32 JslGetControllerSplitType(int32 deviceId);
+	static int32 JslGetControllerSplitType(int32 deviceId);
 
 	// what colour is the controller (not all controllers support this; those that don't will report white)
 	UFUNCTION(BlueprintCallable, BlueprintPure, Category = JoyShockLibrary)
-	/*extern "C" static int32 JslGetControllerColour(int32 deviceId); */
 	static FColor JslGetControllerColor(int32 InDeviceId);
 
 	// set controller light colour (not all controllers have a light whose colour can be set, but that just means nothing will be done when this is called -- no harm)
 	UFUNCTION(BlueprintCallable, Category = JoyShockLibrary)
-	/*extern "C" static void JslSetLightColour(int32 deviceId, int32 colour); */
 	static void JslSetLightColor(int32 InDeviceId, FColor InColor);
 
 	/**
@@ -704,6 +702,6 @@ public:
 
 	// set controller player number indicator (not all controllers have a number indicator which can be set, but that just means nothing will be done when this is called -- no harm)
 	UFUNCTION(BlueprintCallable, Category = JoyShockLibrary)
-	/*extern "C"*/ static void JslSetPlayerNumber(int32 deviceId, int32 number);
+	static void JslSetPlayerNumber(int32 deviceId, int32 number);
 	
 };
