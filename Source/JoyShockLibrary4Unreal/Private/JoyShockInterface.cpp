@@ -176,16 +176,38 @@ void FJoyShockInterface::SendControllerEvents()
 	// game thread. Disconnects are processed before connects so that if a handle was freed and reused in
 	// the same frame (reconnect), the device ends up connected rather than disconnected.
 	{
+		// Collected while draining and broadcast afterwards: a listener is free to call back into the
+		// JSL4U* API, so we must not still be inside the callbacks (which take ControllerContainerLock)
+		// when we fire, and the containers must already be consistent.
+		TArray<TPair<int32, bool>> DisconnectedThisTick;
+		TArray<int32> ConnectedThisTick;
+
 		TPair<int32, bool> PendingDisconnect;
 		while (PendingDisconnects.Dequeue(PendingDisconnect))
 		{
 			OnDisconnectCallback(PendingDisconnect.Key, PendingDisconnect.Value);
+			DisconnectedThisTick.Add(PendingDisconnect);
 		}
 
 		int32 PendingConnect;
 		while (PendingConnects.Dequeue(PendingConnect))
 		{
 			OnConnectCallback(PendingConnect);
+			ConnectedThisTick.Add(PendingConnect);
+		}
+
+		if (DisconnectedThisTick.Num() > 0 || ConnectedThisTick.Num() > 0)
+		{
+			FJoyShockLibrary4UnrealModule& JSL4UModule = FJoyShockLibrary4UnrealModule::GetInstance();
+
+			for (const TPair<int32, bool>& Disconnected : DisconnectedThisTick)
+			{
+				JSL4UModule.GetOnDeviceDisconnected().Broadcast(Disconnected.Key, Disconnected.Value);
+			}
+			for (int32 ConnectedDeviceId : ConnectedThisTick)
+			{
+				JSL4UModule.GetOnDeviceConnected().Broadcast(ConnectedDeviceId);
+			}
 		}
 	}
 

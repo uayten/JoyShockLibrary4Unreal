@@ -17,6 +17,13 @@ DECLARE_DELEGATE_TwoParams(FJoyShockDisconnectedDelegate, int32, bool);
 DECLARE_DELEGATE_SixParams(FJoyShockPollDelegate, int32, FJoyShockState, FJoyShockState, FIMUState, FIMUState, float);
 DECLARE_DELEGATE_FourParams(FJoyShockPollTouchDelegate, int32, FTouchState, FTouchState, float);
 
+// Fired on the game thread once a device has been fully added to / removed from the input device
+// interface, so listeners can safely call the JSL4U* API from them (e.g. to rebuild a controller list).
+// These are multicast, unlike the single-cast OnConnected/OnDisconnected above: those are the transport
+// from the background threads and the interface itself consumes them, so nothing else can bind to them.
+DECLARE_MULTICAST_DELEGATE_OneParam(FJSL4UDeviceConnectedEvent, int32 /*DeviceId*/);
+DECLARE_MULTICAST_DELEGATE_TwoParams(FJSL4UDeviceDisconnectedEvent, int32 /*DeviceId*/, bool /*bTimedOut*/);
+
 
 #define JoyShockLockedBindLambda(Module, Delegate, Lambda) { \
 	(Module)._callbackLock.lock(); \
@@ -66,6 +73,11 @@ public:
 	FORCEINLINE FJoyShockPollDelegate& GetOnPoll() { return OnPoll; }
 	FORCEINLINE FJoyShockPollTouchDelegate& GetOnPollTouch() { return OnPollTouch; }
 
+	// Game-thread device add/remove events. UJoyShockSubsystem re-exposes these to Blueprint; bind here
+	// from C++ if you need them before/without a GameInstance.
+	FORCEINLINE FJSL4UDeviceConnectedEvent& GetOnDeviceConnected() { return OnDeviceConnected; }
+	FORCEINLINE FJSL4UDeviceDisconnectedEvent& GetOnDeviceDisconnected() { return OnDeviceDisconnected; }
+
 	// The live input-device interface owns the controller state, player-slot assignment and Joy-Con joining.
 	// It registers itself here on creation so the Blueprint pairing API can reach it. May be null before the
 	// input device is created or after it's destroyed.
@@ -80,6 +92,9 @@ protected:
 	FJoyShockDisconnectedDelegate OnDisconnected;
 	FJoyShockPollDelegate OnPoll;
 	FJoyShockPollTouchDelegate OnPollTouch;
+
+	FJSL4UDeviceConnectedEvent OnDeviceConnected;
+	FJSL4UDeviceDisconnectedEvent OnDeviceDisconnected;
 
 #if PLATFORM_WINDOWS
 	FWindowsDeviceChangeMessageHandler WindowsDeviceChangeMessageHandler;
