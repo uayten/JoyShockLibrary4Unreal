@@ -469,21 +469,23 @@ int32 UJoyShockLibrary::JslConnectDevices()
 		{
 			jc->initialised = true;
 		} // charging grip
+		// init_usb/init_bt don't set this themselves, and it has to be set on success: without it a Switch
+		// controller is never considered initialised, so every JslConnectDevices call re-runs init (blocking
+		// HID I/O while holding _connectedLock) on every already-connected one -- which freezes the game
+		// thread's Jsl* getters during play.
+		//
+		// It equally has to NOT be set on failure. Marking a failed init as initialised is silent and
+		// permanent: init is where vibration and the IMU get switched on, so the controller streams buttons
+		// and looks connected while its rumble does nothing and its IMU reports zeroes forever. The `continue`
+		// above is the retry -- leaving the flag false is what arms it for the next enumeration, and costs
+		// nothing for a controller that initialised fine.
 		else if (jc->is_usb) {
 			//UE_LOG(LibraryLogJoyShock, Log, TEXT("USB\n"));
-			jc->init_usb();
-			// init_usb() doesn't set this itself; without it a Switch controller is never considered
-			// initialised, so every JslConnectDevices call re-runs init (blocking HID I/O while holding
-			// _connectedLock) on every already-connected Switch controller -- which freezes the game
-			// thread's Jsl* getters during play.
-			jc->initialised = true;
+			jc->initialised = jc->init_usb();
 		}
 		else {
 			//UE_LOG(LibraryLogJoyShock, Log, TEXT("BT\n"));
-			jc->init_bt();
-			// See the init_usb() note above: init_bt() doesn't set this, so mark it here to stop the
-			// per-device-change re-initialisation churn that blocks _connectedLock.
-			jc->initialised = true;
+			jc->initialised = jc->init_bt();
 		}
 		// all get time now for polling
 		jc->last_polled = std::chrono::steady_clock::now();
