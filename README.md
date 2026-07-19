@@ -103,11 +103,23 @@ They each have their different use cases. Steam Input and DS4Windows do a fantas
 No official Sony or Nintendo libraries were used in the development or testing of JoyShockLibrary4Unreal, so I'm unable to answer that. However, you are welcome to modify the plug-in as you see fit. The functions in GamepadMotion.hpp should help you process motion data regardless of how you got it.
 
 ## Planned future updates
+
+### Plugin
 - Improved multiplayer support, especially when mixed with XInput controllers
-- Expand the test level further: easier calibration, and demonstrating more features such as Touch
-- Player-indicator LEDs on the Switch 2 Pro Controller (it doesn't speak the Switch 1 subcommand that sets them, so its lights currently stay off)
+- Assigning a controller to a specific player slot. Right now `PlayerIndex` is decided by connection order and is what actually routes the controller's input, so a game can't say "this controller is player 2" — a node to pin a controller to a chosen slot would allow that
+- Generalising Joy-Con joining, so that any set of controllers can drive a single player rather than only a left + right Joy-Con pair
+- Player-indicator LEDs on the Switch 2 Pro Controller. It doesn't speak the Switch 1 subcommand that sets them, so unlike every other supported controller its lights stay off; setting them needs the command to be reverse-engineered from its own protocol
 - Bluetooth (BLE) support for the Switch 2 Pro Controller
 - Amplitude-accurate rumble for the Switch 2 Pro Controller (requires mapping its dedicated vibration channel over USB)
+- Check whether tracked controllers are released when a play session ends. `JslDisconnectAndDisposeAll` exists but may not be wired to the end of PIE, which would leave devices tracked between runs
+
+### Demo level
+- Easier calibration, and demonstrating more features such as Touch
+- Joy-Con LED materials that light up and turn off to match the physical controller, driven by the reported player LED
+- A Joy-Con strap accessory on the Joy-Con models
+- A Grip model with both Joy-Cons seated in it
+- An example playable pawn, controllable by one or more controllers at the same time
+- HUD buttons to create a playable pawn, delete it, and hand it over to another controller
 
 ## Credits
 - A massive thanks to JibbSmart for creating the original JoyShockLibrary plug-in, and for answering the questions I sent to his Twitter DMs. For the full credits of the original JoyShockLibrary, check out his [JoyShockLibrary](https://github.com/JibbSmart/JoyShockLibrary) repo.
