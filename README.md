@@ -10,7 +10,11 @@ This is a fork of JibbSmart's [JoyShockLibrary](https://github.com/JibbSmart/Joy
 - There's a demo level called LV_JoyShockDemo in the Content folder! You can find it in your Content Browser, as long as you enable showing Plugin Content in your Content Browser settings:
 ![Accessing Test Level](https://github.com/user-attachments/assets/920f87a8-6de6-4efd-a3bd-b8787ea1a9d4)
 
-If you connect a compatible controller and press Play in your editor, you'll be able to see your controller's rotation in real time! It'll probably need calibration the first time you start it. I'll add a shortcut for this in a future update, but for now, you'll have to select the actor called BP_JoyShockVisualizer in the Outliner. This actor contains most of the logic behind this demo level, so feel free to look at its Blueprint later, but for now, go to the Details pane and click the button that says "Start Continuous Calibration" with the controller in a relaxed position, wait a couple of seconds, and then click on "Pause Continuous Calibration".
+Connect your controllers and press Play: the level spawns one visualiser per connected controller, side by side, each using the 3D model for its own type (Joy-Con L, Joy-Con R, Pro Controller or DualSense). Each model is tinted with the colour the controller itself reports, and mirrors its player-indicator LEDs, so the scene matches the hardware in your hands. Move a controller and you'll see its rotation in real time.
+
+The HUD lists every connected controller; click a controller's name to switch the readout to that one. Alongside the identity it reports (device id, type, player index, join partner) you get its live motion values: IMU and quaternion orientation, acceleration and gravity.
+
+The visualisers are spawned by BP_JoyShockInitializer, and BP_JoyShockVisualizer holds most of the per-controller logic, so both are worth a look. A controller will probably need calibration the first time you start it. I'll add a shortcut for this in a future update, but for now, select a spawned BP_JoyShockVisualizer in the Outliner while playing, go to the Details pane and click the button that says "Start Continuous Calibration" with the controller in a relaxed position, wait a couple of seconds, and then click on "Pause Continuous Calibration".
 
 
 | Outliner  | Details pane |
@@ -100,7 +104,8 @@ No official Sony or Nintendo libraries were used in the development or testing o
 
 ## Planned future updates
 - Improved multiplayer support, especially when mixed with XInput controllers
-- Expand test level, with easier calibration, different 3D models for each controller type, and demonstrating more features such as Touch.
+- Expand the test level further: easier calibration, and demonstrating more features such as Touch
+- Player-indicator LEDs on the Switch 2 Pro Controller (it doesn't speak the Switch 1 subcommand that sets them, so its lights currently stay off)
 - Bluetooth (BLE) support for the Switch 2 Pro Controller
 - Amplitude-accurate rumble for the Switch 2 Pro Controller (requires mapping its dedicated vibration channel over USB)
 
