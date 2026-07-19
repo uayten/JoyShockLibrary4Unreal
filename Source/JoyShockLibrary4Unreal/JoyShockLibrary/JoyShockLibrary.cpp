@@ -657,6 +657,9 @@ static FJSLSettings JSL4UReadJslSettings(JoyShock* jc)
 // (PlayerIndex / JoinedToDeviceId) at their defaults -- see JSL4UFillPlayerFields.
 static FJSL4UControllerInfo JSL4UMakeControllerInfo(int32 DeviceId, const FJSLSettings& JslSettings)
 {
+	// The colour arrives packed as 0xRRGGBB (both the Switch body colour read over SPI and the DS4/DualSense
+	// LED colour are assembled that way), so it has to go into FColor as (R, G, B) -- passing it reversed
+	// swapped red and blue, turning a blue Joy-Con red on screen.
 	const uint32 RGBColor = JslSettings.colour;
 	const uint8 Red = (RGBColor >> 16) & 0xff;
 	const uint8 Green = (RGBColor >> 8) & 0xff;
@@ -666,7 +669,7 @@ static FJSL4UControllerInfo JSL4UMakeControllerInfo(int32 DeviceId, const FJSLSe
 	Info.DeviceId = DeviceId;
 	Info.ControllerType = JSL4UControllerTypeFromLegacy(JslSettings.controllerType);
 	Info.PlayerLedNumber = JslSettings.playerNumber;
-	Info.Color = FColor(Blue, Green, Red);
+	Info.Color = FColor(Red, Green, Blue);
 	Info.GyroSpace = JslSettings.gyroSpace;
 	Info.SplitType = JslSettings.splitType;
 	Info.bIsCalibrating = JslSettings.isCalibrating;
@@ -1618,11 +1621,13 @@ FColor UJoyShockLibrary::JslGetControllerColor(int32 InDeviceId)
 	// this just reports body colour. Switch controllers also give buttons colour, and in Pro's case, left and right grips
 	JoyShock* jc = GetJoyShockFromHandle(InDeviceId);
 	if (jc != nullptr) {
+		// body_colour is packed 0xRRGGBB, so it goes into FColor as (R, G, B) -- see the note in
+		// JSL4UMakeControllerInfo; this was reversed and reported a blue controller as red.
 		uint32 RGBColor = jc->body_colour;
 		uint8 Red = (RGBColor >> 16) & 0xff;
 		uint8 Green = (RGBColor >> 8) & 0xff;
 		uint8 Blue = RGBColor & 0xff;
-		return FColor(Blue, Green, Red);
+		return FColor(Red, Green, Blue);
 	}
 	return FColor::White;
 }
