@@ -560,26 +560,54 @@ void FJoyShockInterface::RefreshPlayerAssignments()
 		GroupPrimaries.AddUnique(GetGroupPrimary(Handle));
 	}
 
-	// 2. Assign dense player slots (0..N-1). Groups that already had a slot keep their relative order;
-	//    new groups go after them (by handle). Compacting means that when a lower-numbered player
-	//    disconnects, the remaining controllers shift down -- e.g. the last controller left always becomes
-	//    player 0. (Trade-off: if player 0 drops mid-match, player 1 becomes player 0.)
-	TArray<int32> OrderedPrimaries = GroupPrimaries;
-	OrderedPrimaries.Sort([this](const int32& A, const int32& B)
-	{
-		const int32* SlotA = PlayerSlotByPrimary.Find(A);
-		const int32* SlotB = PlayerSlotByPrimary.Find(B);
-		const int32 KeyA = SlotA != nullptr ? *SlotA : MAX_int32;
-		const int32 KeyB = SlotB != nullptr ? *SlotB : MAX_int32;
-		return KeyA != KeyB ? KeyA < KeyB : A < B;
-	});
+	// 2. Stable player slots: a controller keeps the same slot for its whole lifetime, so nobody's slot
+	//    changes just because another controller connected or dropped. Release the slots of controllers
+	//    that are gone, then give each newly-connected controller the lowest slot no one currently holds.
+	//    This is what split-screen / party games (Overcooked-style) need: if player 0 drops mid-match,
+	//    players 1 and 2 stay on their own characters instead of shuffling down onto each other's. The
+	//    freed slot is left as a hole and reused by the next controller to connect. (The previous policy
+	//    kept slots dense 0..N-1 but reassigned everyone on every disconnect, which is only ever right for
+	//    a single grab-any-controller game and silently swaps characters for anything with more players.)
 
-	TMap<int32, int32> NewSlotByPrimary;
-	for (int32 Index = 0; Index < OrderedPrimaries.Num(); Index++)
+	// Release slots held by primaries that are no longer connected.
+	for (auto It = PlayerSlotByPrimary.CreateIterator(); It; ++It)
 	{
-		NewSlotByPrimary.Add(OrderedPrimaries[Index], Index);
+		if (!GroupPrimaries.Contains(It.Key()))
+		{
+			It.RemoveCurrent();
+		}
 	}
-	PlayerSlotByPrimary = MoveTemp(NewSlotByPrimary);
+
+	// Assign the lowest free slot to each connected primary that doesn't have one yet, in handle order so
+	// simultaneous connections are deterministic.
+	TArray<int32> NewPrimaries;
+	for (int32 Primary : GroupPrimaries)
+	{
+		if (!PlayerSlotByPrimary.Contains(Primary))
+		{
+			NewPrimaries.Add(Primary);
+		}
+	}
+	NewPrimaries.Sort();
+
+	for (int32 Primary : NewPrimaries)
+	{
+		int32 Slot = 0;
+		for (bool bSlotTaken = true; bSlotTaken; )
+		{
+			bSlotTaken = false;
+			for (const TTuple<int32, int32>& Pair : PlayerSlotByPrimary)
+			{
+				if (Pair.Value == Slot)
+				{
+					bSlotTaken = true;
+					++Slot;
+					break;
+				}
+			}
+		}
+		PlayerSlotByPrimary.Add(Primary, Slot);
+	}
 
 	// 3. Map every connected device to its logical controller's player slot. Both halves of a joined pair
 	//    map to the same platform user, so the engine sees one player for the pair.
