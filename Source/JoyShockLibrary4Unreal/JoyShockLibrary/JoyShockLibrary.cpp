@@ -531,15 +531,23 @@ int32 UJoyShockLibrary::JslConnectDevices()
 			}
 			break;
 		case ControllerType::n_switch:
+			// Skip the Switch 2 entirely: it doesn't speak this Switch 1 subcommand (the write/read could
+			// block or interfere with its raw reports), AND it must not consume a player-LED number -- if it
+			// did, a Pro 2 sitting between two Joy-Cons would push the second Joy-Con's number past it
+			// (1, [2 spent on the Pro 2], 3). The index is still advanced for already-connected Switch 1
+			// controllers so a newly connected one doesn't collide with their numbers.
+			if (!jc->is_switch2_pro)
 			{
 				const int thisSwitchIndex = switchIndex++;
-				// Skip the player-LED subcommand for the Switch 2 -- it doesn't speak the Switch 1 subcommand
-				// protocol, and the write/read could block or interfere with reading its raw reports.
-				if (bIsNewDevice && !jc->is_switch2_pro)
+				if (bIsNewDevice)
 				{
 					jc->player_number = thisSwitchIndex;
 					memset(buf, 0x00, 0x40);
-					buf[0] = static_cast<unsigned char>(jc->player_number);
+					// 0x30 takes a bitmask of which LEDs to light (one bit per position), so player N is
+					// 1 << (N-1): a single LED at that player's spot. Sending the number raw lights the wrong
+					// LEDs from player 3 on -- 3 would light LEDs 1+2 instead of LED 3, which reads as two
+					// controllers sharing player 1.
+					buf[0] = static_cast<unsigned char>(1 << (jc->player_number - 1));
 					jc->send_subcommand(0x01, 0x30, buf, 1);
 				}
 			}
