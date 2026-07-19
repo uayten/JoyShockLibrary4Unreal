@@ -409,14 +409,40 @@ bool JoyShock::get_switch_controller_info() {
 	memset(stick_cal_y_r, 0, sizeof(stick_cal_y_r));
 
 
-	if (!get_spi_data(0x6020, 0x18, factory_sensor_cal)) { return false; }
-	if (!get_spi_data(0x603D, 0x12, factory_stick_cal)) { return false; }
-	if (!get_spi_data(0x6050, 0xC, device_colours)) { return false; }
-	if (!get_spi_data(0x6080, 0x6, sensor_model)) { return false; }
-	if (!get_spi_data(0x6086, 0x12, stick_model)) { return false; }
-	if (!get_spi_data(0x6098, 0x12, &stick_model[0x12])) { return false; }
-	if (!get_spi_data(0x8010, 0x16, user_stick_cal)) { return false; }
-	if (!get_spi_data(0x8026, 0x1A, user_sensor_cal)) { return false; }
+	// These reads used to be all-or-nothing: eight SPI transactions in a row, any one of which failed the
+	// whole init -- and with it vibration, the IMU, the report mode and the player LED, since those are set
+	// up by the caller before this point. At ~95% per read over a busy Bluetooth link that is 0.95^8, about
+	// two connects in three succeeding, which matches the observed flakiness.
+	//
+	// Only the factory stick calibration is actually load-bearing; without it the sticks have no range.
+	// Everything else degrades gracefully, so it warns and carries on: the sensor calibration falls back to
+	// the uncalibrated coefficients computed below, the colours are cosmetic, and the two user-calibration
+	// blocks are optional anyway (the code below only uses them if they carry their own 0xA1B2 magic, and a
+	// failed read leaves them zeroed by the memsets above).
+	//
+	// The old reads of sensor_model (0x6080) and stick_model (0x6086, 0x6098) are gone entirely: nothing
+	// ever read those buffers back, so they were three failure opportunities for data we discard.
+	if (!get_spi_data(0x6020, 0x18, factory_sensor_cal))
+	{
+		UE_LOG(LogJoyShockLibrary, Warning, TEXT("Controller %d: couldn't read factory sensor calibration; continuing with an uncalibrated gyro/accelerometer.\n"), intHandle);
+	}
+	if (!get_spi_data(0x603D, 0x12, factory_stick_cal))
+	{
+		UE_LOG(LogJoyShockLibrary, Warning, TEXT("Controller %d: couldn't read factory stick calibration; failing init so it gets retried (the sticks would have no range).\n"), intHandle);
+		return false;
+	}
+	if (!get_spi_data(0x6050, 0xC, device_colours))
+	{
+		UE_LOG(LogJoyShockLibrary, Warning, TEXT("Controller %d: couldn't read colours; continuing.\n"), intHandle);
+	}
+	if (!get_spi_data(0x8010, 0x16, user_stick_cal))
+	{
+		UE_LOG(LogJoyShockLibrary, Warning, TEXT("Controller %d: couldn't read user stick calibration; using the factory values.\n"), intHandle);
+	}
+	if (!get_spi_data(0x8026, 0x1A, user_sensor_cal))
+	{
+		UE_LOG(LogJoyShockLibrary, Warning, TEXT("Controller %d: couldn't read user sensor calibration; using the factory values.\n"), intHandle);
+	}
 
 
 	// get stick calibration data:
@@ -1767,10 +1793,11 @@ bool JoyShock::get_spi_data(uint32_t offset, const uint8_t read_len, uint8_t *te
 	int res;
 	uint8_t buf[0x100];
 	// Bounded retries: once the controller is in report mode 0x30 it streams input at 60Hz, so
-	// hid_read_timeout almost always returns *something*. If the SPI response itself is lost (flaky
-	// Bluetooth), an unbounded loop here spins forever -- while the enumeration thread holds the exclusive
-	// connected lock, freezing connects AND (via the shared lock) the game thread. Also treat res < 0
-	// (device gone) as failure; the old `res == 0` check looped forever on -1.
+	// hid_read_timeout almost always returns *something* -- usually an ordinary input report rather than
+	// our SPI reply, and most of these attempts are spent skipping past those. If the SPI response itself
+	// is lost (flaky Bluetooth), an unbounded loop here spins forever -- while the enumeration thread holds
+	// the exclusive connected lock, freezing connects AND (via the shared lock) the game thread.
+	int timeouts = 0;
 	for (int attempt = 0; attempt < 32; attempt++) {
 		memset(buf, 0, sizeof(buf));
 		auto hdr = (brcm_hdr *)buf;
@@ -1795,9 +1822,23 @@ bool JoyShock::get_spi_data(uint32_t offset, const uint8_t read_len, uint8_t *te
 		res = hid_write(handle, buf, sizeof(*hdr) + sizeof(*pkt));
 
 		res = hid_read_timeout(handle, buf, sizeof(buf), 1000);
-		if (res <= 0)
+		if (res < 0)
 		{
+			// The device is gone -- retrying can't bring it back.
 			return false;
+		}
+		if (res == 0)
+		{
+			// Nothing came back this time. On a busy Bluetooth link that is transient, but it used to be
+			// treated as fatal, which threw away the 32 retries below and failed the read on a single
+			// hiccup. Retry -- with its own small bound, so a genuinely silent controller can't hold the
+			// connected lock for 32 seconds.
+			if (++timeouts >= 3)
+			{
+				UE_LOG(LogJoyShockLibrary, Warning, TEXT("SPI read at 0x%04X timed out %d times; giving up.\n"), offset, timeouts);
+				return false;
+			}
+			continue;
 		}
 
 		if ((*(uint16_t*)&buf[0xD] == 0x1090) && (*(uint32_t*)&buf[0xF] == offset)) {
