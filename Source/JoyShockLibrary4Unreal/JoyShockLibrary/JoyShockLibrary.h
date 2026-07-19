@@ -481,6 +481,12 @@ public:
 	UFUNCTION(BlueprintCallable, Category = JoyShockLibrary)
 	static int32 JslConnectDevices();
 
+	/**
+	 * Fills OutDeviceHandleArray with the device id of every connected controller and returns how many
+	 * there were. The device id is the handle every other Jsl* / JSL4U* node takes.
+	 * For new Blueprints, prefer JSL4UGetConnectedControllers: it returns the same handles (as DeviceId)
+	 * plus each controller's type, player slot and settings, so you rarely need this raw handle list.
+	 */
 	UFUNCTION(BlueprintCallable, Category = JoyShockLibrary)
 	static int32 JslGetConnectedDeviceHandles(/* int* */ TArray<int32>& OutDeviceHandleArray); //, int32 InSize);
 
