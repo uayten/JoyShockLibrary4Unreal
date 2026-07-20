@@ -837,6 +837,25 @@ int32 UJoyShockLibrary::JSL4UGetPlayerIndex(int32 DeviceId)
 	return Interface != nullptr ? Interface->GetPlayerIndexForDevice(DeviceId) : INDEX_NONE;
 }
 
+bool UJoyShockLibrary::JSL4USetPlayerIndex(int32 DeviceId, int32 PlayerIndex)
+{
+	FJoyShockInterface* Interface = FJoyShockLibrary4UnrealModule::GetInstance().GetActiveInterface();
+	return Interface != nullptr && Interface->SetPlayerIndexForDevice(DeviceId, PlayerIndex);
+}
+
+bool UJoyShockLibrary::JSL4USetControllerForPlayerController(int32 DeviceId, APlayerController* PlayerController)
+{
+	if (PlayerController == nullptr)
+	{
+		return false;
+	}
+
+	// Convert through the same IPlatformInputDeviceMapper the slot assignment uses -- see the note on
+	// JSL4UGetControllersForPlayerController about why the legacy controller id is the wrong number here.
+	const int32 UserIndex = IPlatformInputDeviceMapper::Get().GetUserIndexForPlatformUser(PlayerController->GetPlatformUserId());
+	return JSL4USetPlayerIndex(DeviceId, UserIndex);
+}
+
 TArray<FJSL4UControllerInfo> UJoyShockLibrary::JSL4UGetControllersForPlayer(int32 PlayerIndex)
 {
 	// Filtering the full list keeps this on the single-pass path in JSL4UGetConnectedControllers rather

@@ -71,9 +71,14 @@ public:
 	void UnjoinAllControllers();
 	// Returns the handle joined with this one, or INDEX_NONE if it isn't joined.
 	int32 GetJoinPartner(int32 Handle) const;
-	// Returns the dense player slot (0, 1, 2, ...) this device's input is delivered to, or INDEX_NONE if
+	// Returns the player slot (0, 1, 2, ...) this device's input is delivered to, or INDEX_NONE if
 	// the device isn't connected.
 	int32 GetPlayerIndexForDevice(int32 Handle) const;
+	// Assigns this device's logical controller to a player slot, overriding the slot it was given on
+	// connection. Pass INDEX_NONE to hand it back to automatic assignment. Returns false if the handle is
+	// not a connected controller. Slots may be shared: assigning two controllers to one slot makes both
+	// drive that player, which is what a joined Joy-Con pair already does.
+	bool SetPlayerIndexForDevice(int32 Handle, int32 PlayerIndex);
 
 private:
 	FJoyShockInterface(const TSharedRef<FGenericApplicationMessageHandler>& MessageHandler);
@@ -137,10 +142,13 @@ private:
 	TMap<int32, int32> JoinPartner;
 
 	// Player-slot assignment: maps each "logical controller" (a standalone device or a joined pair,
-	// identified by its lower "primary" handle) to a dense player slot (0, 1, 2, ...). Slots are kept
-	// compact: relative order is preserved, but when a controller disconnects the remaining ones shift
-	// down (the last controller left is always player 0). Recomputed by RefreshPlayerAssignments()
-	// whenever devices connect/disconnect or joins change.
+	// identified by its lower "primary" handle) to a player slot (0, 1, 2, ...). Slots are STABLE, not
+	// compact: a controller keeps its slot for as long as it stays connected, and a disconnect leaves its
+	// slot as a hole rather than shifting the others down, so nobody swaps characters mid-game. The hole is
+	// reused by the next controller to connect. A game that wants a specific controller on a specific
+	// player calls SetPlayerIndexForDevice -- connection order is otherwise the only thing deciding this,
+	// and the plugin will not second-guess it. Recomputed by RefreshPlayerAssignments() whenever devices
+	// connect/disconnect or joins change.
 	TMap<int32, int32> PlayerSlotByPrimary;
 
 	// Recomputes player slots and maps every connected device to its logical controller's platform user in

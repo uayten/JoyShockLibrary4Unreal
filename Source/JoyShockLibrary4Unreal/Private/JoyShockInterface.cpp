@@ -756,6 +756,37 @@ int32 FJoyShockInterface::GetJoinPartner(int32 Handle) const
 	return Partner != nullptr ? *Partner : INDEX_NONE;
 }
 
+bool FJoyShockInterface::SetPlayerIndexForDevice(int32 Handle, int32 PlayerIndex)
+{
+	FScopeLock ContainerLock(&ControllerContainerLock);
+
+	const FControllerState* State = ControllerStateByDeviceHandle.Find(Handle);
+	if (State == nullptr || !State->bIsConnected)
+	{
+		return false;
+	}
+
+	// Keyed on the group primary so assigning either half of a joined Joy-Con pair moves the pair.
+	const int32 Primary = GetGroupPrimary(Handle);
+
+	if (PlayerIndex < 0)
+	{
+		// Back to automatic: dropping the entry makes RefreshPlayerAssignments treat this as a controller
+		// without a slot, so it takes the lowest one nobody holds.
+		PlayerSlotByPrimary.Remove(Primary);
+	}
+	else
+	{
+		// Deliberately no check for the slot already being taken. Assignment is the game's call, and two
+		// controllers sharing a player is a legitimate setup (it is exactly what a joined Joy-Con pair is),
+		// so silently swapping or refusing here would be second-guessing the caller.
+		PlayerSlotByPrimary.Add(Primary, PlayerIndex);
+	}
+
+	RefreshPlayerAssignments();
+	return true;
+}
+
 int32 FJoyShockInterface::GetPlayerIndexForDevice(int32 Handle) const
 {
 	FScopeLock ContainerLock(&ControllerContainerLock);

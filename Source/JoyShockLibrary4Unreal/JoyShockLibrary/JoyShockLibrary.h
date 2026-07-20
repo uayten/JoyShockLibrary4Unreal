@@ -462,6 +462,36 @@ public:
 	UFUNCTION(BlueprintCallable, BlueprintPure, Category = "JoyShockLibrary|JoyConPairing")
 	static int32 JSL4UGetPlayerIndex(int32 DeviceId);
 
+	/**
+	 * Assigns a controller to a player slot, overriding the slot it was given when it connected.
+	 *
+	 * Slots are otherwise decided by connection order and are stable: a controller keeps its slot until it
+	 * disconnects, and its slot is then left as a hole rather than shifting the others down, so nobody
+	 * swaps characters mid-game. The consequence is that the slots you end up with depend on the order
+	 * controllers were switched on -- if the player 1 controller disconnects, the remaining ones do NOT
+	 * move down into slot 0. This is the node that fixes that, and it is the only thing that decides slots
+	 * other than connection order.
+	 *
+	 * Slots may be shared: assigning two controllers to one slot makes both drive that player, which is
+	 * exactly what a joined Joy-Con pair already does. Assigning either half of a joined pair moves the
+	 * pair. The assignment lasts as long as the controller stays connected -- on reconnect it is a new
+	 * controller and gets a slot automatically again.
+	 *
+	 * @param DeviceId     The controller to assign (see JSL4UGetConnectedControllers).
+	 * @param PlayerIndex  The player slot to put it on, counting from 0. Pass -1 to hand the controller
+	 *                     back to automatic assignment.
+	 * @return False if DeviceId is not a connected controller.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "JoyShockLibrary|JoyConPairing")
+	static bool JSL4USetPlayerIndex(int32 DeviceId, int32 PlayerIndex);
+
+	// Assigns a controller to the player behind a PlayerController -- the setter counterpart of
+	// JSL4UGetControllersForPlayerController, and the one-node answer to "make this controller drive this
+	// player". Same caveat as the getter: do NOT build this out of "Get Player Controller ID", which is the
+	// legacy controller id rather than the platform user index slots are assigned from.
+	UFUNCTION(BlueprintCallable, Category = "JoyShockLibrary|JoyConPairing", meta = (DefaultToSelf = "PlayerController"))
+	static bool JSL4USetControllerForPlayerController(int32 DeviceId, APlayerController* PlayerController);
+
 	// The inverse of JSL4UGetPlayerIndex: every controller currently feeding a player slot. Two entries for
 	// a joined Joy-Con pair (rumble both to rumble "the player"), one for a standalone controller, none if
 	// nothing is assigned to that slot. PlayerIndex is a platform user index -- if you have a

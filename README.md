@@ -77,8 +77,12 @@ A left+right Joy-Con pair can act as a single controller for one player. New Blu
 - **JSL4U Join Joy Cons (A, B)** — joins a left and a right Joy-Con so they feed a single player (left half = left stick and its buttons, right half = right stick and its buttons). The engine sees one player per joined pair.
 - **JSL4U Unjoin Joy Con / JSL4U Unjoin All Joy Cons** — dissolve joins (each Joy-Con becomes its own player again).
 - **JSL4U Get Player Index** — the player slot a controller's input is delivered to.
+- **JSL4U Set Player Index (Device Id, Player Index)** — puts a controller on a chosen player slot. Pass -1 to hand it back to automatic assignment.
+- **JSL4U Set Controller For Player Controller (Device Id, Player Controller)** — the same thing addressed by **PlayerController** instead of slot number, and the setter counterpart of *JSL4U Get Controllers For Player Controller*.
 
-Player slots are dense and stable: 4 solo Joy-Cons = 4 players; two joined pairs = 2 players. Joins dissolve automatically if one of the Joy-Cons disconnects.
+Player slots are **stable**: a controller keeps its slot for as long as it stays connected, and a disconnect leaves that slot as a hole rather than shifting the others down — so if the player 1 controller drops mid-match, players 2 and 3 stay on their own characters instead of shuffling. The hole is reused by the next controller to connect. 4 solo Joy-Cons = 4 players; two joined pairs = 2 players. Joins dissolve automatically if one of the Joy-Cons disconnects.
+
+The flip side is that slots otherwise follow the order controllers were switched on, and a controller that connected second stays on slot 1 even once it is the only one left — which in a single-player game means its input goes to a player that does not exist. Use **JSL4U Set Player Index** to decide this yourself rather than inheriting connection order; it is the only thing that overrides it. Slots may be shared: two controllers on one slot both drive that player, which is exactly what a joined Joy-Con pair is.
 
 ## Blueprint nodes
 
@@ -106,7 +110,7 @@ No official Sony or Nintendo libraries were used in the development or testing o
 
 ### Plugin
 - Improved multiplayer support, especially when mixed with XInput controllers
-- Assigning a controller to a specific player slot. Right now `PlayerIndex` is decided by connection order and is what actually routes the controller's input, so a game can't say "this controller is player 2" — a node to pin a controller to a chosen slot would allow that
+- Force feedback through Unreal's own system. `Play Force Feedback Effect`, Enhanced Input's force feedback effects and anything else built on `SetChannelValues` currently do nothing on these controllers — rumble has to be driven by calling `JSL4U Set Rumble` directly, so an Xbox pad and a DualShock 4 in the same project don't behave alike
 - Generalising Joy-Con joining, so that any set of controllers can drive a single player rather than only a left + right Joy-Con pair
 - Player-indicator LEDs on the Switch 2 Pro Controller. It doesn't speak the Switch 1 subcommand that sets them, so unlike every other supported controller its lights stay off; setting them needs the command to be reverse-engineered from its own protocol
 - Bluetooth (BLE) support for the Switch 2 Pro Controller
