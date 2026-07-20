@@ -320,8 +320,16 @@ void FJoyShockInterface::SendForceFeedback(int32 DeviceHandle, const FForceFeedb
 	//
 	// This only stores the values: the controller's own polling thread is the sole writer of rumble packets,
 	// which is what keeps a blocking HID write off the game thread even while an effect is running every
-	// frame. Native force feedback and JSL4USetRumble write the same two values, so whichever ran last wins.
-	UJoyShockLibrary::JSL4USetRumble(DeviceHandle, Values.RightSmall, Values.LeftLarge);
+	// frame.
+	//
+	// It writes to force feedback's own channel rather than through JSL4USetRumble, because Unreal calls in
+	// here every frame -- with zeroes whenever no effect is playing. Sharing one pair of values meant that
+	// per-frame zero wiped anything a game had set with JSL4USetRumble before the controller could act on
+	// it, so direct rumble simply never happened. The polling thread takes the stronger of the two sources
+	// per motor instead.
+	UJoyShockLibrary::SetForceFeedbackRumble(DeviceHandle,
+		FMath::RoundToInt(FMath::Clamp(Values.RightSmall, 0.0f, 1.0f) * 255.0f),
+		FMath::RoundToInt(FMath::Clamp(Values.LeftLarge, 0.0f, 1.0f) * 255.0f));
 }
 
 void FJoyShockInterface::SetChannelValue(int32 ControllerId, const FForceFeedbackChannelType ChannelType, const float Value)

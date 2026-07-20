@@ -896,9 +896,17 @@ public:
 	 * You often don't need this node. These controllers work with Unreal's own force feedback, so
 	 * "Play Force Feedback Effect" and "Client Play Force Feedback" drive them exactly as they drive an
 	 * Xbox pad -- which gets you authored effects with curves, falloff and looping for free, and one code
-	 * path for every gamepad. Reach for this node when you want to hold a constant intensity yourself, or
-	 * to rumble one specific controller rather than "the player's" (both halves of a joined Joy-Con pair,
-	 * for instance, take the same force feedback but have separate device ids here).
+	 * path for every gamepad. Both reach the same maximum: force feedback is clamped to 0-1 and 1 arrives
+	 * here as full strength, so an effect that feels weak is a weak curve in the asset, not a limit of the
+	 * plugin.
+	 *
+	 * Three things this node does that force feedback cannot, because force feedback is aimed at a *player*:
+	 *  - Rumble one specific controller. Both halves of a joined Joy-Con pair are one player but two device
+	 *    ids, so only this can buzz just the left one.
+	 *  - Rumble a controller that is not assigned to a player at all. A controller-assignment screen
+	 *    usually wants "press here and feel which controller this is" before any players exist, and force
+	 *    feedback delivers nothing to a slot with no local player behind it.
+	 *  - Hold a constant intensity without authoring a looping effect asset.
 	 *
 	 * BigRumble drives the heavy/low-frequency motor (strong shake, e.g. explosions, impacts);
 	 * SmallRumble drives the light/high-frequency motor (fine buzz, e.g. UI feedback, engines).
@@ -920,6 +928,11 @@ public:
 	 */
 	UFUNCTION(BlueprintCallable, Category = JoyShockLibrary)
 	static void JSL4USetRumble(int32 DeviceId, float SmallRumble, float BigRumble);
+
+	// The channel Unreal's own force feedback writes to, kept separate from JSL4USetRumble's so the two
+	// cannot cancel each other -- the engine pushes force feedback values every frame, zeroes included.
+	// Not exposed to Blueprint: games drive this through Play Force Feedback Effect and friends.
+	static void SetForceFeedbackRumble(int32 DeviceId, int32 SmallRumble, int32 BigRumble);
 
 	/**
 	 * Sets the controller's player number indicator (the DualSense's player LEDs, or a Switch controller's

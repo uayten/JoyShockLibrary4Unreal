@@ -140,8 +140,21 @@ public:
 	// Fails with a clear warning when another application (e.g. Steam) holds the interface exclusively.
 	bool sw2_open_winusb();
 
+	// Rumble has two independent sources and they must not overwrite each other. These two are what a game
+	// asks for directly through JSL4USetRumble, and hold until it asks for something else.
 	unsigned char small_rumble = 0;
 	unsigned char big_rumble = 0;
+
+	// ...and these are what Unreal's own force feedback asks for. The engine pushes its values every single
+	// frame -- zeroes when no effect is playing -- so routing both sources through the same two fields meant
+	// force feedback silently wiped any directly-set rumble on the very next frame.
+	// The polling thread sends the stronger of the two per motor, so an effect can play over a held rumble
+	// and neither API can cancel the other.
+	unsigned char ff_small_rumble = 0;
+	unsigned char ff_big_rumble = 0;
+
+	unsigned char get_wanted_small_rumble() const { return small_rumble > ff_small_rumble ? small_rumble : ff_small_rumble; }
+	unsigned char get_wanted_big_rumble() const { return big_rumble > ff_big_rumble ? big_rumble : ff_big_rumble; }
 	unsigned char led_r = 0;
 	unsigned char led_g = 0;
 	unsigned char led_b = 0;

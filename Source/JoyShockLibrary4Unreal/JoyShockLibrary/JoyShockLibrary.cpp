@@ -213,8 +213,8 @@ void pollIndividualLoop(JoyShock *jc) {
 			if (jc->controller_type == ControllerType::n_switch && !jc->is_switch2_pro)
 			{
 				jc->modifying_lock.Lock();
-				const unsigned char wantedSmallRumble = jc->small_rumble;
-				const unsigned char wantedBigRumble = jc->big_rumble;
+				const unsigned char wantedSmallRumble = jc->get_wanted_small_rumble();
+				const unsigned char wantedBigRumble = jc->get_wanted_big_rumble();
 				jc->modifying_lock.Unlock();
 
 				const bool bRumbleActive = wantedSmallRumble != 0 || wantedBigRumble != 0;
@@ -235,8 +235,8 @@ void pollIndividualLoop(JoyShock *jc) {
 			if (jc->is_switch2_pro)
 			{
 				jc->modifying_lock.Lock();
-				const unsigned char wantedSmallRumble = jc->small_rumble;
-				const unsigned char wantedBigRumble = jc->big_rumble;
+				const unsigned char wantedSmallRumble = jc->get_wanted_small_rumble();
+				const unsigned char wantedBigRumble = jc->get_wanted_big_rumble();
 				jc->modifying_lock.Unlock();
 
 				const bool bRumbleActive = wantedSmallRumble != 0 || wantedBigRumble != 0;
@@ -263,8 +263,8 @@ void pollIndividualLoop(JoyShock *jc) {
 			if (jc->controller_type == ControllerType::s_ds4 || jc->controller_type == ControllerType::s_ds)
 			{
 				jc->modifying_lock.Lock();
-				const unsigned char wantedSmallRumble = jc->small_rumble;
-				const unsigned char wantedBigRumble = jc->big_rumble;
+				const unsigned char wantedSmallRumble = jc->get_wanted_small_rumble();
+				const unsigned char wantedBigRumble = jc->get_wanted_big_rumble();
 				const unsigned char wantedLedR = jc->led_r;
 				const unsigned char wantedLedG = jc->led_g;
 				const unsigned char wantedLedB = jc->led_b;
@@ -1847,6 +1847,26 @@ static void SetRumbleRaw(int32 DeviceId, int32 SmallRumble, int32 BigRumble)
 	jc->modifying_lock.Lock();
 	jc->small_rumble = static_cast<unsigned char>(FMath::Clamp(SmallRumble, 0, 255));
 	jc->big_rumble = static_cast<unsigned char>(FMath::Clamp(BigRumble, 0, 255));
+	jc->modifying_lock.Unlock();
+}
+
+void UJoyShockLibrary::SetForceFeedbackRumble(int32 DeviceId, int32 SmallRumble, int32 BigRumble)
+{
+	FJoyShockLibrary4UnrealModule& JSL4UModule = FJoyShockLibrary4UnrealModule::GetInstance();
+
+	std::shared_lock<std::shared_timed_mutex> lock(JSL4UModule._connectedLock);
+
+	// Deliberately unlogged: Unreal pushes force feedback values every frame, so logging here would bury
+	// everything else in the log at Verbose.
+	JoyShock* jc = GetJoyShockFromHandle(DeviceId);
+	if (jc == nullptr)
+	{
+		return;
+	}
+
+	jc->modifying_lock.Lock();
+	jc->ff_small_rumble = static_cast<unsigned char>(FMath::Clamp(SmallRumble, 0, 255));
+	jc->ff_big_rumble = static_cast<unsigned char>(FMath::Clamp(BigRumble, 0, 255));
 	jc->modifying_lock.Unlock();
 }
 
