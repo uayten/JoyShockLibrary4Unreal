@@ -41,7 +41,7 @@ void UJoyShockSubsystem::StopAllRumble()
 	// sees them change to zero.
 	for (const FJSL4UControllerInfo& Info : UJoyShockLibrary::JSL4UGetConnectedControllers())
 	{
-		UJoyShockLibrary::JslSetRumble(Info.DeviceId, 0, 0);
+		UJoyShockLibrary::JSL4USetRumble(Info.DeviceId, 0.0f, 0.0f);
 	}
 }
 

@@ -224,6 +224,28 @@ void FJoyShockInterface::SendControllerEvents()
 		FControllerState& ControllerState = ControllerStateByDeviceHandle[DeviceHandle];
 		if (ControllerState.bIsConnected)
 		{
+			// Diagnostic: a controller that is still "connected" but has stopped delivering reports is
+			// invisible from the game -- input just goes quiet, exactly as if the engine had stopped routing
+			// it. Say which of the two it is. (A healthy controller reports at 60Hz or faster, so a whole
+			// second of silence is already far outside normal.)
+			const double SecondsSinceLastReport = FPlatformTime::Seconds() - ControllerState.LastReportTime;
+			if (SecondsSinceLastReport > 1.0)
+			{
+				if (!ControllerState.bReportedInputStall)
+				{
+					ControllerState.bReportedInputStall = true;
+					UE_LOG(LogJoyShockLibrary, Warning,
+						TEXT("Device %d (%s) is still connected but has not delivered an input report for %.1fs -- input has stalled below the engine, not in it."),
+						DeviceHandle, *ControllerState.DeviceName, SecondsSinceLastReport);
+				}
+			}
+			else if (ControllerState.bReportedInputStall)
+			{
+				ControllerState.bReportedInputStall = false;
+				UE_LOG(LogJoyShockLibrary, Warning, TEXT("Device %d (%s) is delivering input reports again."),
+					DeviceHandle, *ControllerState.DeviceName);
+			}
+
 			// if (CachedSettings->bControllerEventsWaitForEngineTick) // TODO: Implement this setting
 			{
 				// PlatformUser is the player slot this device is assigned to (see RefreshPlayerAssignments).
@@ -385,6 +407,8 @@ void FJoyShockInterface::OnPollCallback(int32 DeviceHandle, const FJoyShockState
 	if (State == nullptr)
 		return;
 
+	State->LastReportTime = FPlatformTime::Seconds();
+
 	// if (CachedSettings->bControllerEventsWaitForEngineTick) // TODO: Implement this setting
 	{
 		FScopeLock Lock(&SimpleStateLock);
@@ -470,6 +494,18 @@ void FJoyShockInterface::OnConnectCallback(int32 InDeviceHandle)
 	// UE_LOG(LogJoyShockLibrary, Log, TEXT(">>>>>OnConnectCallback %d"), InDeviceHandle);
 	FScopeLock ContainerLock(&ControllerContainerLock);
 
+	// A device can be announced twice: it announces itself from its poll thread on first input, and this
+	// interface also sweeps up already-connected devices when it is created (a device that announced before
+	// the delegate was bound would otherwise be invisible). Handling the second one would allocate a second
+	// input device id for the same controller and leave the first mapped as connected forever, so ignore it.
+	if (const FControllerState* Existing = ControllerStateByDeviceHandle.Find(InDeviceHandle))
+	{
+		if (Existing->bIsConnected)
+		{
+			return;
+		}
+	}
+
 	DeviceHandles.AddUnique(InDeviceHandle);
 
 	IPlatformInputDeviceMapper& DeviceMapper = IPlatformInputDeviceMapper::Get();
@@ -477,6 +513,26 @@ void FJoyShockInterface::OnConnectCallback(int32 InDeviceHandle)
 	FControllerState& State = ControllerStateByDeviceHandle.FindOrAdd(InDeviceHandle);
 
 	State.bIsConnected = true;
+	// Seed the stall diagnostic from now, so the gap before the first report doesn't read as a stall.
+	State.LastReportTime = FPlatformTime::Seconds();
+	State.bReportedInputStall = false;
+
+	// JSL reuses a freed device handle for the next controller to connect, so this entry may still hold the
+	// previous occupant's buttons and axes. Clear them, or the first tick compares the new controller's
+	// state against the old one's and fires phantom presses/releases.
+	{
+		FScopeLock StateLock(&SimpleStateLock);
+		State.SimpleState = {};
+		State.PreviousSimpleState = {};
+		State.IMUState = {};
+		State.PreviousIMUState = {};
+	}
+	{
+		FScopeLock StateLock(&TouchStateLock);
+		State.TouchState = {};
+		State.PreviousTouchState = {};
+	}
+
 	// Allocate a globally-unique input device id for this physical controller. (Using the legacy
 	// RemapControllerIdToPlatformUserAndDevice "best guess" device id here can collide with the keyboard's
 	// device 0 / other controllers, which corrupts the input-device mapper and hangs Enhanced Input's

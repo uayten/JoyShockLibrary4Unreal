@@ -372,7 +372,7 @@ struct JOYSHOCKLIBRARY4UNREAL_API FJSL4UControllerInfo // typedef struct JSL_SET
 	int32 JoinedToDeviceId = -1;
 
 	// The number shown on the controller's player indicator (the Switch player LEDs, the DualSense light
-	// bar), as set by JslSetPlayerNumber. This is a display value, not an identity -- to identify a
+	// bar), as set by JSL4USetPlayerNumber. This is a display value, not an identity -- to identify a
 	// controller use DeviceId, and to know which player it feeds use PlayerIndex.
 	UPROPERTY(BlueprintReadOnly)
 	int32 PlayerLedNumber = 0;
@@ -484,6 +484,9 @@ public:
 	/**
 	 * Fills OutDeviceHandleArray with the device id of every connected controller and returns how many
 	 * there were. The device id is the handle every other Jsl* / JSL4U* node takes.
+	 * "Connected" means the controller has actually delivered input, not merely that it turned up in HID
+	 * enumeration -- a controller that has just been switched off can linger in enumeration for a moment,
+	 * and is deliberately not listed (nor reported as connected) during that window.
 	 * For new Blueprints, prefer JSL4UGetConnectedControllers: it returns the same handles (as DeviceId)
 	 * plus each controller's type, player slot and settings, so you rarely need this raw handle list.
 	 */
@@ -705,27 +708,55 @@ public:
 	UFUNCTION(BlueprintCallable, BlueprintPure, Category = JoyShockLibrary)
 	static FColor JslGetControllerColor(int32 InDeviceId);
 
-	// set controller light colour (not all controllers have a light whose colour can be set, but that just means nothing will be done when this is called -- no harm)
+	/**
+	 * Sets the controller's light: the DualShock 4's light bar or the DualSense's. Controllers without a
+	 * settable light ignore this (Switch controllers report a fixed body colour instead -- see
+	 * JSL4UGetConnectedControllers).
+	 * @param DeviceId  The controller's device id (see JSL4UGetConnectedControllers).
+	 * @param Color     The colour to display. Alpha is ignored.
+	 */
 	UFUNCTION(BlueprintCallable, Category = JoyShockLibrary)
-	static void JslSetLightColor(int32 InDeviceId, FColor InColor);
+	static void JSL4USetLightColor(int32 DeviceId, FColor Color);
 
 	/**
-	 * Sets the controller's rumble motors. Values range from 0 (off) to 255 (maximum intensity).
+	 * Sets the controller's rumble motors, 0 (off) to 1 (maximum intensity).
 	 * BigRumble drives the heavy/low-frequency motor (strong shake, e.g. explosions, impacts);
 	 * SmallRumble drives the light/high-frequency motor (fine buzz, e.g. UI feedback, engines).
 	 * The rumble stays at the given intensities until you call this again -- call it with (0, 0) to stop.
 	 * Supported controllers: DualShock 4, DualSense, Joy-Cons and Pro Controller (HD rumble, both values
 	 * mapped to the low/high-frequency actuator components), and Switch 2 Pro Controller over USB (currently
 	 * plays a fixed vibration preset while either value is above 0; amplitude control is not mapped yet).
-	 * @param deviceId     The controller's device id (see JSL4UGetConnectedControllers).
-	 * @param smallRumble  High-frequency motor intensity, 0-255.
-	 * @param bigRumble    Low-frequency motor intensity, 0-255.
+	 * The packet goes out from the controller's own polling thread, so this never blocks the game thread;
+	 * it takes effect on that controller's next report (well under a frame for a connected controller).
+	 * @param DeviceId     The controller's device id (see JSL4UGetConnectedControllers).
+	 * @param SmallRumble  High-frequency motor intensity, 0-1.
+	 * @param BigRumble    Low-frequency motor intensity, 0-1.
 	 */
 	UFUNCTION(BlueprintCallable, Category = JoyShockLibrary)
+	static void JSL4USetRumble(int32 DeviceId, float SmallRumble, float BigRumble);
+
+	/**
+	 * Sets the controller's player number indicator (the DualSense's player LEDs, or a Switch controller's
+	 * row of LEDs). The DualShock 4 has no such indicator and ignores this.
+	 * @param DeviceId  The controller's device id (see JSL4UGetConnectedControllers).
+	 * @param Number    The player number to show, counting from 1.
+	 */
+	UFUNCTION(BlueprintCallable, Category = JoyShockLibrary)
+	static void JSL4USetPlayerNumber(int32 DeviceId, int32 Number);
+
+	// --- Legacy JSL setters. Prefer the JSL4U* equivalents above; these are thin wrappers kept for
+	// compatibility and will be removed. ---
+
+	// set controller light colour (not all controllers have a light whose colour can be set, but that just means nothing will be done when this is called -- no harm)
+	UFUNCTION(BlueprintCallable, Category = JoyShockLibrary, meta = (DeprecatedFunction, DeprecationMessage = "Use JSL4USetLightColor instead."))
+	static void JslSetLightColor(int32 InDeviceId, FColor InColor);
+
+	// set controller rumble, 0-255 per motor. See JSL4USetRumble for the full description.
+	UFUNCTION(BlueprintCallable, Category = JoyShockLibrary, meta = (DeprecatedFunction, DeprecationMessage = "Use JSL4USetRumble instead (0-1 per motor)."))
 	static void JslSetRumble(int32 deviceId, int32 smallRumble, int32 bigRumble);
 
 	// set controller player number indicator (not all controllers have a number indicator which can be set, but that just means nothing will be done when this is called -- no harm)
-	UFUNCTION(BlueprintCallable, Category = JoyShockLibrary)
+	UFUNCTION(BlueprintCallable, Category = JoyShockLibrary, meta = (DeprecatedFunction, DeprecationMessage = "Use JSL4USetPlayerNumber instead."))
 	static void JslSetPlayerNumber(int32 deviceId, int32 number);
-	
+
 };

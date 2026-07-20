@@ -97,7 +97,7 @@ void pollIndividualLoop(JoyShock *jc) {
 	// it started streaming after init.
 	bool bLoggedFirstRead = false;
 
-	// Rumble: this thread is the SOLE writer of rumble packets/commands (JslSetRumble only stores the
+	// Rumble: this thread is the SOLE writer of rumble packets/commands (JSL4USetRumble only stores the
 	// values). Switch 1 rumble decays shortly after a single 0x10 packet, and the Switch 2 only has a short
 	// one-shot preset, so while active the state is re-sent/retriggered continuously; a change to (0,0)
 	// sends one final stop.
@@ -105,6 +105,14 @@ void pollIndividualLoop(JoyShock *jc) {
 	unsigned char lastSentSmallRumble = 0;
 	unsigned char lastSentBigRumble = 0;
 	auto lastSw2RumbleTime = std::chrono::steady_clock::now();
+
+	// DualShock 4 / DualSense: rumble, light colour and the player LED all ride in the SAME output report,
+	// so they are tracked together and sent as one packet whenever any of them changes. Seeded from what
+	// JslConnectDevices already sent when it brought this device online, so we don't re-send it immediately.
+	unsigned char lastSentLedR = jc->led_r;
+	unsigned char lastSentLedG = jc->led_g;
+	unsigned char lastSentLedB = jc->led_b;
+	int32 lastSentPlayerNumber = jc->player_number;
 
 	int noIMULimit;
 	switch (jc->controller_type)
@@ -244,10 +252,63 @@ void pollIndividualLoop(JoyShock *jc) {
 				}
 			}
 
+			// DualShock 4 / DualSense output (sole writer, see above): unlike the Switch controllers these
+			// actuators hold whatever they were last told until told otherwise, so there is nothing to
+			// sustain -- one packet per change is enough. Rumble, colour and player LED share one report, so
+			// a change to any of them sends a single coalesced write.
+			//
+			// This has to happen here rather than in the JSL4USet* calls: those run on the game thread, and
+			// writing from there meant a blocking HID write while holding modifying_lock -- the very lock
+			// this thread takes to parse every input packet.
+			if (jc->controller_type == ControllerType::s_ds4 || jc->controller_type == ControllerType::s_ds)
+			{
+				jc->modifying_lock.Lock();
+				const unsigned char wantedSmallRumble = jc->small_rumble;
+				const unsigned char wantedBigRumble = jc->big_rumble;
+				const unsigned char wantedLedR = jc->led_r;
+				const unsigned char wantedLedG = jc->led_g;
+				const unsigned char wantedLedB = jc->led_b;
+				const int32 wantedPlayerNumber = jc->player_number;
+				jc->modifying_lock.Unlock();
+
+				if (wantedSmallRumble != lastSentSmallRumble || wantedBigRumble != lastSentBigRumble
+					|| wantedLedR != lastSentLedR || wantedLedG != lastSentLedG || wantedLedB != lastSentLedB
+					|| wantedPlayerNumber != lastSentPlayerNumber)
+				{
+					// Outside modifying_lock: a slow Bluetooth write must not stall the game thread's setters.
+					if (jc->controller_type == ControllerType::s_ds4)
+					{
+						jc->set_ds4_rumble_light(wantedSmallRumble, wantedBigRumble, wantedLedR, wantedLedG, wantedLedB);
+					}
+					else
+					{
+						jc->set_ds5_rumble_light(wantedSmallRumble, wantedBigRumble, wantedLedR, wantedLedG, wantedLedB,
+							static_cast<unsigned char>(wantedPlayerNumber));
+					}
+
+					lastSentSmallRumble = wantedSmallRumble;
+					lastSentBigRumble = wantedBigRumble;
+					lastSentLedR = wantedLedR;
+					lastSentLedG = wantedLedG;
+					lastSentLedB = wantedLedB;
+					lastSentPlayerNumber = wantedPlayerNumber;
+				}
+			}
+
 			// we want to be able to do these check-and-calls without fear of interruption by another thread. there could be many threads (as many as connected controllers),
 			// and the callback could be time-consuming (up to the user), so we use a readers-writer-lock.
 			if (handle_input(jc, buf, 64, hasIMU)) { // but the user won't necessarily have a callback at all, so we'll skip the lock altogether in that case
-				bReceivedInput = true;
+				if (!bReceivedInput)
+				{
+					// First real input report: only now is this a controller rather than a device that
+					// merely answered enumeration, so this is where it gets announced to the engine. See
+					// JoyShock::has_delivered_input for why the connect can't be sent at creation time.
+					bReceivedInput = true;
+					jc->has_delivered_input.store(true);
+
+					std::shared_lock<std::shared_timed_mutex> lock(JSL4UModule._callbackLock);
+					JSL4UModule.GetOnConnected().ExecuteIfBound(jc->intHandle);
+				}
 				// accumulate gyro
 				FIMUState imuState = jc->get_transformed_imu_state(jc->imu_state);
 				jc->push_cumulative_gyro(imuState.gyroX, imuState.gyroY, imuState.gyroZ);
@@ -327,7 +388,11 @@ void pollIndividualLoop(JoyShock *jc) {
 
 	const int32 intHandle = jc->intHandle;
 	// Capture the notify decision before deleting jc -- reading jc->* after delete is a use-after-free.
-	const bool bShouldNotifyDisconnect = jc->remove_on_finish || jc->delete_on_finish; // Don't notify if reused
+	// Only devices that were announced as connected (i.e. that delivered input) may report a disconnect;
+	// otherwise a phantom that was opened but never worked would produce a disconnect for a controller the
+	// engine was never told about.
+	const bool bShouldNotifyDisconnect = (jc->remove_on_finish || jc->delete_on_finish) // Don't notify if reused
+		&& bReceivedInput;
 
 	// disconnect this device
 	if (jc->delete_on_finish)
@@ -353,13 +418,10 @@ void pollIndividualLoop(JoyShock *jc) {
 
 		// A controller may have reconnected on the same device path just before we finished cleaning up
 		// (within the poll timeout window). Re-scan so it is picked up again -- cheap now that enumeration
-		// only creates genuinely new devices and never touches existing ones. Only do this for a device
-		// that actually delivered input, otherwise a powered-off controller lingering in enumeration would
-		// be recreated endlessly (create -> never receives input -> drop -> recreate...).
-		if (bReceivedInput)
-		{
-			JSL4UModule.RequestConnectDevices();
-		}
+		// only creates genuinely new devices and never touches existing ones. The device that has just gone
+		// away is often still enumerable for a moment, so this pass tends to recreate it; that recreated
+		// device is harmless because it never delivers input and so is never announced.
+		JSL4UModule.RequestConnectDevices();
 	}
 }
 
@@ -373,8 +435,6 @@ int32 UJoyShockLibrary::JslConnectDevices()
 	// most of the joycon and pro controller stuff here is thanks to mfosse's vjoy feeder
 	// Enumerate and print the HID devices on the system
 	struct hid_device_info *devs, *cur_dev;
-
-	std::vector<int> createdIds;
 
 	JSL4UModule._connectedLock.lock();
 
@@ -436,7 +496,6 @@ int32 UJoyShockLibrary::JslConnectDevices()
 			JoyShock* jc = new JoyShock(cur_dev, handle, GetUniqueHandle(path), path);
 			_joyshocks.Emplace(jc->intHandle, jc);
 			_byPath.Emplace(path, jc);
-			createdIds.push_back(jc->intHandle);
 		}
 
 		cur_dev = cur_dev->next;
@@ -526,6 +585,10 @@ int32 UJoyShockLibrary::JslConnectDevices()
 				const int thisDualSenseIndex = dualSenseIndex++;
 				if (bIsNewDevice)
 				{
+					// Record the number as well as sending it. The poll thread sends the output report
+					// whenever the state it tracks changes, so if player_number were left at 0 here the very
+					// next rumble would send 0 along with it and switch the player LEDs back off.
+					jc->player_number = thisDualSenseIndex;
 					jc->set_ds5_rumble_light(0, 0, jc->led_r, jc->led_g, jc->led_b, thisDualSenseIndex);
 				}
 			}
@@ -566,19 +629,12 @@ int32 UJoyShockLibrary::JslConnectDevices()
 
 	JSL4UModule._connectedLock.unlock();
 
-	// notify that we created the new object (now that we're not in a lock that might prevent reading data)
-	{
-		std::shared_lock<std::shared_timed_mutex> lock(JSL4UModule._callbackLock);
-		// FScopeLock Lock(&UJoyShockLibrary::CallbackLock);
-		if (JSL4UModule.GetOnConnected().IsBound())
-		{
-			for (int32 newConnectionHandle : createdIds)
-			{
-				// _connectCallback(newConnectionHandle);
-				JSL4UModule.GetOnConnected().Execute(newConnectionHandle);
-			}
-		}
-	}
+	// Deliberately no connect notification here. Being enumerable is not the same as being a working
+	// controller: a device that has just dropped off Bluetooth lingers in HID enumeration for a moment, and
+	// can still be opened and answer the init handshake, so announcing at creation time produced a bogus
+	// "input device connected" for a controller that had in fact just disconnected (and, because it was
+	// gone again by the time the game thread looked it up, one reported as "Unknown Controller"). Each
+	// device announces itself from its own poll thread once it delivers a real input report.
 
 	return totalDevices;
 }
@@ -592,6 +648,12 @@ int32 UJoyShockLibrary::JslGetConnectedDeviceHandles(TArray<int32>& OutDeviceHan
 
 	for (TTuple<signed int, JoyShock*> pair : _joyshocks)
 	{
+		// Skip devices that have not delivered input yet: they are enumerable, but not confirmed to be
+		// working controllers, and the connect event for them has not been (and may never be) sent.
+		if (pair.Value == nullptr || !pair.Value->has_delivered_input.load())
+		{
+			continue;
+		}
 		OutDeviceHandleArray.Add(pair.Key);
 		i++;
 	}
@@ -703,7 +765,9 @@ TArray<FJSL4UControllerInfo> UJoyShockLibrary::JSL4UGetConnectedControllers()
 		Result.Reserve(_joyshocks.Num());
 		for (const TTuple<int32, JoyShock*>& Pair : _joyshocks)
 		{
-			if (Pair.Value != nullptr)
+			// Same filter as JslGetConnectedDeviceHandles: only controllers that have actually delivered
+			// input, so a device still lingering in enumeration after a disconnect never shows up here.
+			if (Pair.Value != nullptr && Pair.Value->has_delivered_input.load())
 			{
 				Result.Add(JSL4UMakeControllerInfo(Pair.Key, JSL4UReadJslSettings(Pair.Value)));
 			}
@@ -1632,126 +1696,99 @@ FColor UJoyShockLibrary::JslGetControllerColor(int32 InDeviceId)
 	return FColor::White;
 }
 
+void UJoyShockLibrary::JSL4USetLightColor(int32 DeviceId, FColor Color)
+{
+	FJoyShockLibrary4UnrealModule& JSL4UModule = FJoyShockLibrary4UnrealModule::GetInstance();
+
+	std::shared_lock<std::shared_timed_mutex> lock(JSL4UModule._connectedLock);
+
+	JoyShock* jc = GetJoyShockFromHandle(DeviceId);
+	if (jc != nullptr && (jc->controller_type == ControllerType::s_ds4 || jc->controller_type == ControllerType::s_ds))
+	{
+		// Store only -- the polling thread is the sole writer of the output report (see pollIndividualLoop).
+		jc->modifying_lock.Lock();
+		jc->led_r = Color.R;
+		jc->led_g = Color.G;
+		jc->led_b = Color.B;
+		jc->modifying_lock.Unlock();
+	}
+}
+
 // set controller light colour (not all controllers have a light whose colour can be set, but that just means nothing will be done when this is called -- no harm)
 void UJoyShockLibrary::JslSetLightColor(int32 InDeviceId, FColor InColor)
 {
+	JSL4USetLightColor(InDeviceId, InColor);
+}
+
+// Shared by JSL4USetRumble and the legacy JslSetRumble. Every controller family now works the same way:
+// store the requested intensities and let that device's polling thread do the writing. What the poll thread
+// then does with them differs (Switch 1 re-sends to fight the actuator's decay, Switch 2 retriggers its
+// one-shot preset, DualShock 4 / DualSense send once per change), but no HID write happens on this thread.
+static void SetRumbleRaw(int32 DeviceId, int32 SmallRumble, int32 BigRumble)
+{
 	FJoyShockLibrary4UnrealModule& JSL4UModule = FJoyShockLibrary4UnrealModule::GetInstance();
-	
+
 	std::shared_lock<std::shared_timed_mutex> lock(JSL4UModule._connectedLock);
-	
-	JoyShock* jc = GetJoyShockFromHandle(InDeviceId);
-	if (jc != nullptr && jc->controller_type == ControllerType::s_ds4) {
-		jc->modifying_lock.Lock();
-		jc->led_r = InColor.R; // (colour >> 16) & 0xff;
-		jc->led_g = InColor.G; // (colour >> 8) & 0xff;
-		jc->led_b = InColor.B; // colour & 0xff;
-		jc->set_ds4_rumble_light(
-			jc->small_rumble,
-			jc->big_rumble,
-			jc->led_r,
-			jc->led_g,
-			jc->led_b);
-		jc->modifying_lock.Unlock();
+
+	JoyShock* jc = GetJoyShockFromHandle(DeviceId);
+	// Diagnostic (Verbose so per-frame rumble pulses don't spam the log; enable with
+	// `Log LogJoyShockLibrary Verbose` to see why a controller isn't vibrating -- wrong id, disconnected...).
+	UE_LOG(LogJoyShockLibrary, Verbose, TEXT("SetRumble(device %d, small %d, big %d) -> %s"),
+		DeviceId, SmallRumble, BigRumble, jc != nullptr ? *jc->name : TEXT("NO DEVICE WITH THIS ID"));
+
+	if (jc == nullptr)
+	{
+		return;
 	}
-	else if(jc != nullptr && jc->controller_type == ControllerType::s_ds) {
-		jc->modifying_lock.Lock();
-        jc->led_r = InColor.R; // (colour >> 16) & 0xff;
-        jc->led_g = InColor.G; // (colour >> 8) & 0xff;
-        jc->led_b = InColor.B; // colour & 0xff;
-        jc->set_ds5_rumble_light(
-                jc->small_rumble,
-                jc->big_rumble,
-                jc->led_r,
-                jc->led_g,
-                jc->led_b,
-                jc->player_number);
-		jc->modifying_lock.Unlock();
-	}
+
+	jc->modifying_lock.Lock();
+	jc->small_rumble = static_cast<unsigned char>(FMath::Clamp(SmallRumble, 0, 255));
+	jc->big_rumble = static_cast<unsigned char>(FMath::Clamp(BigRumble, 0, 255));
+	jc->modifying_lock.Unlock();
+}
+
+void UJoyShockLibrary::JSL4USetRumble(int32 DeviceId, float SmallRumble, float BigRumble)
+{
+	// Normalised 0..1 to match Unreal's force-feedback convention, rather than the raw 0-255 the HID reports
+	// carry.
+	SetRumbleRaw(DeviceId,
+		FMath::RoundToInt(FMath::Clamp(SmallRumble, 0.0f, 1.0f) * 255.0f),
+		FMath::RoundToInt(FMath::Clamp(BigRumble, 0.0f, 1.0f) * 255.0f));
 }
 
 // set controller rumble
 void UJoyShockLibrary::JslSetRumble(int32 deviceId, int32 smallRumble, int32 bigRumble)
 {
-	FJoyShockLibrary4UnrealModule& JSL4UModule = FJoyShockLibrary4UnrealModule::GetInstance();
-	
-	std::shared_lock<std::shared_timed_mutex> lock(JSL4UModule._connectedLock);
-	
-	JoyShock* jc = GetJoyShockFromHandle(deviceId);
-	// Diagnostic (Verbose so per-frame rumble pulses don't spam the log; enable with
-	// `Log LogJoyShockLibrary Verbose` to see why a controller isn't vibrating -- wrong id, disconnected...).
-	UE_LOG(LogJoyShockLibrary, Verbose, TEXT("JslSetRumble(device %d, small %d, big %d) -> %s"),
-		deviceId, smallRumble, bigRumble, jc != nullptr ? *jc->name : TEXT("NO DEVICE WITH THIS ID"));
-
-	if (jc != nullptr && jc->controller_type == ControllerType::s_ds4) {
-		jc->modifying_lock.Lock();
-		jc->small_rumble = smallRumble;
-		jc->big_rumble = bigRumble;
-		jc->set_ds4_rumble_light(
-			jc->small_rumble,
-			jc->big_rumble,
-			jc->led_r,
-			jc->led_g,
-			jc->led_b);
-		jc->modifying_lock.Unlock();
-	}
-    else if (jc != nullptr && jc->controller_type == ControllerType::s_ds) {
-		jc->modifying_lock.Lock();
-        jc->small_rumble = smallRumble;
-        jc->big_rumble = bigRumble;
-        jc->set_ds5_rumble_light(
-                jc->small_rumble,
-                jc->big_rumble,
-                jc->led_r,
-                jc->led_g,
-                jc->led_b,
-                jc->player_number);
-		jc->modifying_lock.Unlock();
-    }
-	else if (jc != nullptr && jc->is_switch2_pro) {
-		// Only store the values: the polling thread is the sole writer of Switch 2 rumble commands. Its
-		// vibration preset is a short one-shot, so the poll thread retriggers it continuously while these
-		// values are non-zero, making it behave like the other controllers (vibrate until (0,0)).
-		jc->modifying_lock.Lock();
-		jc->small_rumble = smallRumble;
-		jc->big_rumble = bigRumble;
-		jc->modifying_lock.Unlock();
-	}
-	else if (jc != nullptr && jc->controller_type == ControllerType::n_switch) {
-		// Only store the values here: the polling thread is the sole writer of Switch 1 rumble packets
-		// (it both sustains the vibration and keeps blocking HID writes off the game thread).
-		jc->modifying_lock.Lock();
-		jc->small_rumble = smallRumble;
-		jc->big_rumble = bigRumble;
-		jc->modifying_lock.Unlock();
-	}
+	SetRumbleRaw(deviceId, smallRumble, bigRumble);
 }
-// set controller player number indicator (not all controllers have a number indicator which can be set, but that just means nothing will be done when this is called -- no harm)
-void UJoyShockLibrary::JslSetPlayerNumber(int32 deviceId, int32 number)
+
+void UJoyShockLibrary::JSL4USetPlayerNumber(int32 DeviceId, int32 Number)
 {
 	FJoyShockLibrary4UnrealModule& JSL4UModule = FJoyShockLibrary4UnrealModule::GetInstance();
-	
+
 	std::shared_lock<std::shared_timed_mutex> lock(JSL4UModule._connectedLock);
-	
-	JoyShock* jc = GetJoyShockFromHandle(deviceId);
+
+	JoyShock* jc = GetJoyShockFromHandle(DeviceId);
 	if (jc != nullptr && jc->controller_type == ControllerType::n_switch) {
 		jc->modifying_lock.Lock();
-		jc->player_number = number;
+		jc->player_number = Number;
 		unsigned char buf[64];
 		memset(buf, 0x00, 0x40);
-		buf[0] = (unsigned char)number;
+		buf[0] = (unsigned char)Number;
 		jc->send_subcommand(0x01, 0x30, buf, 1);
 		jc->modifying_lock.Unlock();
 	}
-	else if(jc != nullptr && jc->controller_type == ControllerType::s_ds) {
+	else if (jc != nullptr && jc->controller_type == ControllerType::s_ds) {
+		// Store only -- the DualSense's player LEDs ride in the same output report as its rumble and light
+		// bar, so the polling thread sends all three together (see pollIndividualLoop).
 		jc->modifying_lock.Lock();
-	    jc->player_number = number;
-        jc->set_ds5_rumble_light(
-                jc->small_rumble,
-                jc->big_rumble,
-                jc->led_r,
-                jc->led_g,
-                jc->led_b,
-                jc->player_number);
+		jc->player_number = Number;
 		jc->modifying_lock.Unlock();
 	}
+}
+
+// set controller player number indicator (not all controllers have a number indicator which can be set, but that just means nothing will be done when this is called -- no harm)
+void UJoyShockLibrary::JslSetPlayerNumber(int32 deviceId, int32 number)
+{
+	JSL4USetPlayerNumber(deviceId, number);
 }

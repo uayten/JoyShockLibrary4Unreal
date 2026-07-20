@@ -90,6 +90,14 @@ private:
 
 		// Readable device name, cached at connect time so we don't re-query it (under a lock) every frame.
 		FString DeviceName;
+
+		// Diagnostic only: when this device last delivered an input report to the interface, and whether a
+		// stall has already been reported for it. This distinguishes the two ways input can appear to "stop
+		// working" -- the controller's reports no longer reaching us (a plugin/HID problem) versus reports
+		// arriving fine but the engine not routing them (focus, input mode, bindings). Without it the two
+		// look identical from the game.
+		double LastReportTime = 0.0;
+		bool bReportedInputStall = false;
 		
 		FJoyShockState SimpleState = {};
 		FJoyShockState PreviousSimpleState = {};

@@ -159,6 +159,14 @@ public:
 	bool remove_on_finish = true;
 	std::thread* thread = nullptr;
 
+	// Set by the poll thread the first time this device delivers a real input report, and never cleared.
+	// Until then the device is only "enumerable", not proven: a controller that has been powered off can
+	// still linger in HID enumeration long enough to be opened and to answer the init handshake, yet it
+	// never sends input. Connect/disconnect are only reported to the engine for devices that got this far,
+	// so such a phantom is never announced as a controller. Atomic because the poll thread writes it while
+	// the game thread reads it.
+	std::atomic<bool> has_delivered_input{ false };
+
 	// for calibration:
 	bool use_continuous_calibration = false;
 	bool cue_motion_reset = false;

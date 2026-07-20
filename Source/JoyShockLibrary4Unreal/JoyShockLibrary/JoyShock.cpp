@@ -48,8 +48,29 @@ void JoyShock::enable_gyro_ds4_bt(unsigned char *buf, int bufLength)
 	//hid_read_timeout(handle, buf, bufLength, 100);
 }
 
+// Is this device attached over Bluetooth rather than USB?
+//
+// The product id cannot answer this: a DS4 v2 and a DualSense report the same product id over both
+// transports (0x09CC / 0x0CE6), so the old "is_usb = product_id != DS4_BT" guess marked every Bluetooth
+// DS4 v2 as USB. That is not a cosmetic mistake -- the two transports have different report ids and
+// payload offsets, so a misidentified controller is parsed with the wrong layout and reports no input at
+// all (the DS4's BT reports are 0x11, and the USB parser only accepts 0x01, so every packet is discarded).
+//
+// Windows puts the Bluetooth HID service class GUID in the device path of every Bluetooth HID device, and
+// spells the ids as "_VID&0002xxxx_PID&xxxx" instead of USB's "VID_xxxx&PID_xxxx", so the path is a
+// reliable and cheap answer. Non-Windows platforms fall through to the report-id probe below, which is
+// where this used to be decided.
+static bool IsBluetoothHidPath(const FString& InPath)
+{
+	// Bluetooth HID (HIDP) service class UUID -- present in the path of every Windows Bluetooth HID device.
+	return InPath.Contains(TEXT("{00001124-0000-1000-8000-00805f9b34fb}"))
+		|| InPath.Contains(TEXT("_VID&"));
+}
+
 void JoyShock::init(struct hid_device_info *dev, hid_device* inHandle, int uniqueHandle, const FString &inPath) {
 	this->path = inPath;
+
+	const bool bIsBluetoothPath = IsBluetoothHidPath(inPath);
 
 	if (dev->product_id == JOYCON_CHARGING_GRIP) {
 
@@ -92,7 +113,7 @@ void JoyShock::init(struct hid_device_info *dev, hid_device* inHandle, int uniqu
 		this->name = TEXT("DualShock 4");
 		this->left_right = 3; // left and right?
 		this->controller_type = ControllerType::s_ds4;
-		this->is_usb = (dev->product_id != DS4_BT);
+		this->is_usb = (dev->product_id != DS4_BT) && !bIsBluetoothPath;
 	}
 	
 	if (dev->product_id == BROOK_DS4_USB) {
@@ -107,7 +128,7 @@ void JoyShock::init(struct hid_device_info *dev, hid_device* inHandle, int uniqu
 		this->name = TEXT("DualSense");
 		this->left_right = 3; // left and right?
 		this->controller_type = ControllerType::s_ds;
-		this->is_usb = true; // for now, only usb
+		this->is_usb = !bIsBluetoothPath;
 	}
 
 	this->serial = _wcsdup(dev->serial_number);
@@ -116,34 +137,33 @@ void JoyShock::init(struct hid_device_info *dev, hid_device* inHandle, int uniqu
 	//UE_LOG(LogJoyShockLibrary, Log, TEXT("Found device %c: %ls %s\n"), L_OR_R(this->left_right), this->serial, dev->path);
 	this->handle = inHandle;
 
-	if (this->controller_type == ControllerType::s_ds4) {
+	// Ask a PlayStation controller for its calibration, which is also what switches it into the full report
+	// mode that carries the IMU and touchpad, then confirm the transport from the report id it answers with.
+	//
+	// This probe can only ever move a device to Bluetooth, never back to USB: it is a fallback for platforms
+	// where the path tells us nothing, and it is inherently racy (the controller does not necessarily emit
+	// its first full report within the timeout). Letting it decide "USB" on a timeout is what left Bluetooth
+	// controllers parsed with the USB layout. Note also that enable_gyro_ds4_bt overwrites the buffer with
+	// the feature report, so the buffer has to be cleared and the read's return value checked -- otherwise a
+	// timed-out read leaves the feature report's own id sitting in buf[0].
+	if (this->controller_type == ControllerType::s_ds4 || this->controller_type == ControllerType::s_ds) {
 		unsigned char buf[64];
 		memset(buf, 0, 64);
 
+		// The DS's protocol is literally so similar to the DS4 that we can reuse the same reports to get the
+		// same results. Meet the new boss - the same as the old boss.
 		enable_gyro_ds4_bt(buf, 64);
 
-		hid_read_timeout(handle, buf, 64, 100);
-		// choose between BT and USB
-		if (buf[0] == 0x11) {
+		memset(buf, 0, 64);
+		const int res = hid_read_timeout(handle, buf, 64, 100);
+
+		const unsigned char bluetoothReportId = (this->controller_type == ControllerType::s_ds4) ? 0x11 : 0x31;
+		if (res > 0 && buf[0] == bluetoothReportId) {
 			this->is_usb = false;
 		}
 	}
-	else if (this->controller_type == ControllerType::s_ds) {
-        unsigned char buf[64];
-        memset(buf, 0, 64);
 
-        // We can reuse the same command on the DS5 to enable Full Mode.
-        enable_gyro_ds4_bt(buf, 64);
-
-        hid_read_timeout(handle, buf, 64, 100);
-
-        // The DS's protocol is literally so similar to the DS4 that we can reuse the same reports to get the same results.
-        // Meet the new boss - the same as the old boss.
-        if (buf[0] == 0x31) {
-            this->is_usb = false;
-        }
-
-    }
+	UE_LOG(LogJoyShockLibrary, Log, TEXT("\t%s detected on %s"), *this->name, this->is_usb ? TEXT("USB") : TEXT("Bluetooth"));
 }
 
 JoyShock::JoyShock(struct hid_device_info* dev, hid_device* inHandle, int uniqueHandle, const FString& inPath) {
@@ -597,14 +617,18 @@ void JoyShock::enable_IMU(unsigned char *buf, int bufLength) {
 	UE_LOG(LogJoyShockLibrary, Log, TEXT("Enabling IMU data on controller %d (%s)...\n"), this->intHandle, *this->name);
 	if (controller_type == ControllerType::s_ds4)
 	{
+		// These two branches used to be the wrong way round. It went unnoticed because is_usb was itself
+		// inverted for every Bluetooth DS4 (see IsBluetoothHidPath), so the two mistakes cancelled out; now
+		// that the transport is detected properly, re-running the init for the wrong transport here would
+		// leave a Bluetooth controller silent.
 		if (is_usb)
 		{
-			init_ds4_bt();
-			enable_gyro_ds4_bt(buf, bufLength);
+			init_ds4_usb();
 		}
 		else
 		{
-			init_ds4_usb();
+			init_ds4_bt();
+			enable_gyro_ds4_bt(buf, bufLength);
 		}
 	}
 	else
