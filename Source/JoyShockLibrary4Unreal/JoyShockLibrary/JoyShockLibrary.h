@@ -502,7 +502,7 @@ public:
 	// Returns the player slot (0, 1, 2, ...) the given controller's input is delivered to, or -1 if it
 	// isn't connected. Both halves of a joined Joy-Con pair return the same slot. Useful for UI.
 	UFUNCTION(BlueprintCallable, BlueprintPure, Category = "JoyShockLibrary|JoyConPairing")
-	static int32 JSL4UGetPlayerIndex(int32 DeviceId);
+	static int32 JSL4UGetPlayerIndexOfController(int32 DeviceId);
 
 	/**
 	 * Assigns a controller to a player slot, overriding the slot it was given when it connected.
@@ -525,21 +525,21 @@ public:
 	 * @return False if DeviceId is not a connected controller.
 	 */
 	UFUNCTION(BlueprintCallable, Category = "JoyShockLibrary|JoyConPairing")
-	static bool JSL4USetPlayerIndex(int32 DeviceId, int32 PlayerIndex);
+	static bool JSL4UAssignControllerToPlayerIndex(int32 DeviceId, int32 PlayerIndex);
 
 	// Assigns a controller to the player behind a PlayerController -- the setter counterpart of
-	// JSL4UGetControllersForPlayerController, and the one-node answer to "make this controller drive this
+	// JSL4UGetControllersOfPlayer, and the one-node answer to "make this controller drive this
 	// player". Same caveat as the getter: do NOT build this out of "Get Player Controller ID", which is the
 	// legacy controller id rather than the platform user index slots are assigned from.
 	UFUNCTION(BlueprintCallable, Category = "JoyShockLibrary|JoyConPairing", meta = (DefaultToSelf = "PlayerController"))
-	static bool JSL4USetControllerForPlayerController(int32 DeviceId, APlayerController* PlayerController);
+	static bool JSL4UAssignControllerToPlayer(int32 DeviceId, APlayerController* PlayerController);
 
-	// The inverse of JSL4UGetPlayerIndex: every controller currently feeding a player slot. Two entries for
+	// The inverse of JSL4UGetPlayerIndexOfController: every controller currently feeding a player slot. Two entries for
 	// a joined Joy-Con pair (rumble both to rumble "the player"), one for a standalone controller, none if
 	// nothing is assigned to that slot. PlayerIndex is a platform user index -- if you have a
-	// PlayerController, prefer JSL4UGetControllersForPlayerController, which converts it for you.
+	// PlayerController, prefer JSL4UGetControllersOfPlayer, which converts it for you.
 	UFUNCTION(BlueprintCallable, BlueprintPure, Category = "JoyShockLibrary|JoyConPairing")
-	static TArray<FJSL4UControllerInfo> JSL4UGetControllersForPlayer(int32 PlayerIndex);
+	static TArray<FJSL4UControllerInfo> JSL4UGetControllersOfPlayerIndex(int32 PlayerIndex);
 
 	// The controller(s) of the player behind a PlayerController -- i.e. of whoever issued the command you
 	// are reacting to. Defaults to self inside a PlayerController Blueprint, so this is the one-node answer
@@ -548,7 +548,7 @@ public:
 	// a different number from the platform user index that player slots are assigned from -- this converts
 	// through the same IPlatformInputDeviceMapper the assignment uses.
 	UFUNCTION(BlueprintCallable, BlueprintPure, Category = "JoyShockLibrary|JoyConPairing", meta = (DefaultToSelf = "PlayerController"))
-	static TArray<FJSL4UControllerInfo> JSL4UGetControllersForPlayerController(APlayerController* PlayerController);
+	static TArray<FJSL4UControllerInfo> JSL4UGetControllersOfPlayer(APlayerController* PlayerController);
 
 	/**
 	 * Asks the plugin to re-scan for controllers, on a background thread.

@@ -839,19 +839,19 @@ void UJoyShockLibrary::JSL4UUnjoinAllJoyCons()
 	}
 }
 
-int32 UJoyShockLibrary::JSL4UGetPlayerIndex(int32 DeviceId)
+int32 UJoyShockLibrary::JSL4UGetPlayerIndexOfController(int32 DeviceId)
 {
 	FJoyShockInterface* Interface = FJoyShockLibrary4UnrealModule::GetInstance().GetActiveInterface();
 	return Interface != nullptr ? Interface->GetPlayerIndexForDevice(DeviceId) : INDEX_NONE;
 }
 
-bool UJoyShockLibrary::JSL4USetPlayerIndex(int32 DeviceId, int32 PlayerIndex)
+bool UJoyShockLibrary::JSL4UAssignControllerToPlayerIndex(int32 DeviceId, int32 PlayerIndex)
 {
 	FJoyShockInterface* Interface = FJoyShockLibrary4UnrealModule::GetInstance().GetActiveInterface();
 	return Interface != nullptr && Interface->SetPlayerIndexForDevice(DeviceId, PlayerIndex);
 }
 
-bool UJoyShockLibrary::JSL4USetControllerForPlayerController(int32 DeviceId, APlayerController* PlayerController)
+bool UJoyShockLibrary::JSL4UAssignControllerToPlayer(int32 DeviceId, APlayerController* PlayerController)
 {
 	if (PlayerController == nullptr)
 	{
@@ -859,12 +859,12 @@ bool UJoyShockLibrary::JSL4USetControllerForPlayerController(int32 DeviceId, APl
 	}
 
 	// Convert through the same IPlatformInputDeviceMapper the slot assignment uses -- see the note on
-	// JSL4UGetControllersForPlayerController about why the legacy controller id is the wrong number here.
+	// JSL4UGetControllersOfPlayer about why the legacy controller id is the wrong number here.
 	const int32 UserIndex = IPlatformInputDeviceMapper::Get().GetUserIndexForPlatformUser(PlayerController->GetPlatformUserId());
-	return JSL4USetPlayerIndex(DeviceId, UserIndex);
+	return JSL4UAssignControllerToPlayerIndex(DeviceId, UserIndex);
 }
 
-TArray<FJSL4UControllerInfo> UJoyShockLibrary::JSL4UGetControllersForPlayer(int32 PlayerIndex)
+TArray<FJSL4UControllerInfo> UJoyShockLibrary::JSL4UGetControllersOfPlayerIndex(int32 PlayerIndex)
 {
 	// Filtering the full list keeps this on the single-pass path in JSL4UGetConnectedControllers rather
 	// than adding a second way to read the same state.
@@ -876,7 +876,7 @@ TArray<FJSL4UControllerInfo> UJoyShockLibrary::JSL4UGetControllersForPlayer(int3
 	return Result;
 }
 
-TArray<FJSL4UControllerInfo> UJoyShockLibrary::JSL4UGetControllersForPlayerController(APlayerController* PlayerController)
+TArray<FJSL4UControllerInfo> UJoyShockLibrary::JSL4UGetControllersOfPlayer(APlayerController* PlayerController)
 {
 	if (PlayerController == nullptr)
 	{
@@ -887,7 +887,7 @@ TArray<FJSL4UControllerInfo> UJoyShockLibrary::JSL4UGetControllersForPlayerContr
 	// the same mapper. The player's legacy controller id is a different number and would silently pick the
 	// wrong slot for anyone but player 0.
 	const int32 UserIndex = IPlatformInputDeviceMapper::Get().GetUserIndexForPlatformUser(PlayerController->GetPlatformUserId());
-	return JSL4UGetControllersForPlayer(UserIndex);
+	return JSL4UGetControllersOfPlayerIndex(UserIndex);
 }
 
 // JslDisconnectAndDisposeAll used to live here. It was exposed to Blueprint, called by nothing, and
