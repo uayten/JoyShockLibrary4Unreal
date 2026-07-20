@@ -16,16 +16,6 @@
 
 #define LOCTEXT_NAMESPACE "JoyShockLibrary"
 
-static int32 JoyShockEnableXInputDeadzones = 0;
-FAutoConsoleVariableRef CVarJoyShockLeftStickMessageDeadzone
-(
-	TEXT("JoyShock.JoyShockEnableXInputDeadzones"),
-	JoyShockEnableXInputDeadzones,
-	TEXT("Enable the same deadzone values for triggers and analog sticks used by Unreal's XInput interface. If disabled, no deadzones will be used.\n")
-	TEXT("0: Not Enabled, 1: Enabled"),
-	ECVF_Default
-);
-
 TSharedRef<FJoyShockInterface> FJoyShockInterface::Create(const TSharedRef<FGenericApplicationMessageHandler>& InMessageHandler)
 {
 	return MakeShareable(new FJoyShockInterface(InMessageHandler));
@@ -80,7 +70,6 @@ FJoyShockInterface::FJoyShockInterface(const TSharedRef<FGenericApplicationMessa
 	});
 	
 	bIsGamepadAttached = false;
-	bNeedsControllerStateUpdate = true;
 	InitialButtonRepeatDelay = 0.2f;
 	ButtonRepeatDelay = 0.1f;
 
@@ -256,14 +245,20 @@ void FJoyShockInterface::SendControllerEvents()
 				const FPlatformUserId& PlatformUser = ControllerState.PlatformUser;
 				const FInputDeviceId& InputDevice = ControllerState.InputDevice;
 
+				FIMUState CurrentIMUState;
 				{
 					FScopeLock Lock(&SimpleStateLock);
 					int32 CurrentButtons = ControllerState.SimpleState.buttons;
 					int32 PreviousButtons = ControllerState.PreviousSimpleState.buttons;
 					ProcessButtons(CurrentButtons, PreviousButtons, PlatformUser, InputDevice);
 					ProcessAnalogInputs(ControllerState.SimpleState, ControllerState.PreviousSimpleState, PlatformUser, InputDevice);
-					// ProcessIMUState(ControllerState.IMUState, ControllerState.PreviousIMUState, PlatformUser, InputDevice);
+					// Copied out rather than dispatched here: ProcessIMUState reads the motion state through
+					// the Jsl* getters, and doing that under SimpleStateLock would nest this lock inside the
+					// library's for no reason.
+					CurrentIMUState = ControllerState.IMUState;
 				}
+
+				ProcessIMUState(DeviceHandle, CurrentIMUState, PlatformUser, InputDevice);
 				
 				{
 					FScopeLock Lock(&TouchStateLock);
@@ -288,60 +283,104 @@ void FJoyShockInterface::SetMessageHandler(const TSharedRef< FGenericApplication
 	MessageHandler = InMessageHandler;
 }
 
+TArray<int32> FJoyShockInterface::GetDeviceHandlesForControllerId(int32 InControllerId) const
+{
+	// The id Unreal hands to force feedback is a player index, not one of our device handles, so it has to be
+	// resolved back through the same mapper that RefreshPlayerAssignments assigns slots from. (The engine has
+	// already undone the bOffsetPlayerGamepadIds offset before calling us, so this is the raw index.)
+	TArray<int32> Result;
+	if (InControllerId < 0)
+	{
+		return Result;
+	}
+
+	const FPlatformUserId User = IPlatformInputDeviceMapper::Get().GetPlatformUserForUserIndex(InControllerId);
+	if (!User.IsValid())
+	{
+		return Result;
+	}
+
+	for (int32 Handle : DeviceHandles)
+	{
+		const FControllerState* State = ControllerStateByDeviceHandle.Find(Handle);
+		if (State != nullptr && State->bIsConnected && State->PlatformUser == User)
+		{
+			Result.Add(Handle);
+		}
+	}
+	return Result;
+}
+
+void FJoyShockInterface::SendForceFeedback(int32 DeviceHandle, const FForceFeedbackValues& Values) const
+{
+	// Match how Unreal's XInput interface reads these channels -- the large/low-frequency motor from
+	// LeftLarge and the small/high-frequency one from RightSmall -- so that one Force Feedback Effect asset
+	// feels the same on a JoyShock controller as it does on an Xbox pad. Picking a different pairing here
+	// would make effects authored against a standard gamepad come out wrong on these controllers only.
+	//
+	// This only stores the values: the controller's own polling thread is the sole writer of rumble packets,
+	// which is what keeps a blocking HID write off the game thread even while an effect is running every
+	// frame. Native force feedback and JSL4USetRumble write the same two values, so whichever ran last wins.
+	UJoyShockLibrary::JSL4USetRumble(DeviceHandle, Values.RightSmall, Values.LeftLarge);
+}
+
 void FJoyShockInterface::SetChannelValue(int32 ControllerId, const FForceFeedbackChannelType ChannelType, const float Value)
 {
-	if (ControllerId >= 0 && ControllerId < MAX_NUM_JOYSHOCK_CONTROLLERS)
+	FScopeLock ContainerLock(&ControllerContainerLock);
+
+	for (int32 Handle : GetDeviceHandlesForControllerId(ControllerId))
 	{
-		// TODO: Implement rumble
-		/*FControllerState& ControllerState = ControllerStates[ ControllerId ];
+		FControllerState& ControllerState = ControllerStateByDeviceHandle[Handle];
 
-		if( ControllerState.bIsConnected )
+		// One channel at a time, so the stored values carry the other three.
+		switch (ChannelType)
 		{
-			switch( ChannelType )
-			{
-				case FForceFeedbackChannelType::LEFT_LARGE:
-					ControllerState.ForceFeedback.LeftLarge = Value;
-					break;
+		case FForceFeedbackChannelType::LEFT_LARGE:
+			ControllerState.ForceFeedback.LeftLarge = Value;
+			break;
+		case FForceFeedbackChannelType::LEFT_SMALL:
+			ControllerState.ForceFeedback.LeftSmall = Value;
+			break;
+		case FForceFeedbackChannelType::RIGHT_LARGE:
+			ControllerState.ForceFeedback.RightLarge = Value;
+			break;
+		case FForceFeedbackChannelType::RIGHT_SMALL:
+			ControllerState.ForceFeedback.RightSmall = Value;
+			break;
+		}
 
-				case FForceFeedbackChannelType::LEFT_SMALL:
-					ControllerState.ForceFeedback.LeftSmall = Value;
-					break;
-
-				case FForceFeedbackChannelType::RIGHT_LARGE:
-					ControllerState.ForceFeedback.RightLarge = Value;
-					break;
-
-				case FForceFeedbackChannelType::RIGHT_SMALL:
-					ControllerState.ForceFeedback.RightSmall = Value;
-					break;
-			}
-		}*/
+		SendForceFeedback(Handle, ControllerState.ForceFeedback);
 	}
 }
 
-void FJoyShockInterface::SetChannelValues( int32 ControllerId, const FForceFeedbackValues &Values )
+void FJoyShockInterface::SetChannelValues(int32 ControllerId, const FForceFeedbackValues& Values)
 {
-	if (ControllerId >= 0 && ControllerId < MAX_NUM_JOYSHOCK_CONTROLLERS)
-	{
-		// TODO: Implement rumble
-		/*FControllerState& ControllerState = ControllerStates[ ControllerId ];
+	FScopeLock ContainerLock(&ControllerContainerLock);
 
-		if( ControllerState.bIsConnected )
-		{
-			ControllerState.ForceFeedback = Values;
-		}*/
+	for (int32 Handle : GetDeviceHandlesForControllerId(ControllerId))
+	{
+		FControllerState& ControllerState = ControllerStateByDeviceHandle[Handle];
+		ControllerState.ForceFeedback = Values;
+		SendForceFeedback(Handle, Values);
 	}
 }
 
-void FJoyShockInterface::OnControllerAnalog(const FPlatformUserId& InPlatformUser, const FInputDeviceId& InInputDevice, const FName& GamePadKey, const float NewAxisValueNormalized, const float OldAxisValueNormalized, float DeadZone) const
+void FJoyShockInterface::OnControllerAnalog(const FPlatformUserId& InPlatformUser, const FInputDeviceId& InInputDevice, const FName& GamePadKey, const float NewAxisValueNormalized, const float OldAxisValueNormalized) const
 {
-	if (JoyShockEnableXInputDeadzones == 0)
-		DeadZone = 0.0f;
-
-	// Send new analog data if it's different or outside the platform deadzone.
-	if (OldAxisValueNormalized != NewAxisValueNormalized || FMath::Abs(NewAxisValueNormalized) > DeadZone)
+	// Axis values are reported raw. Deadzones belong to the game, not to the device: Enhanced Input has a
+	// Dead Zone modifier per Input Action, which is per-player and tunable, and a device that filtered first
+	// would destroy information no consumer could get back (gyro and motion work in particular want the raw
+	// value). This used to carry a deadzone parameter fed from XInput's constants, gated behind a console
+	// variable that never actually did anything -- the "or it changed" half of the test below matches on
+	// every jittering sample, so nothing was ever filtered out.
+	//
+	// Keep sending while the axis is off centre, not only when it changes, so a stick held at a constant
+	// deflection keeps feeding the engine; the change test is what delivers the final sample when it
+	// returns to centre.
+	if (NewAxisValueNormalized != 0.0f || OldAxisValueNormalized != NewAxisValueNormalized)
+	{
 		MessageHandler->OnControllerAnalog(GamePadKey, InPlatformUser, InInputDevice, NewAxisValueNormalized);
-	
+	}
 }
 
 void FJoyShockInterface::ProcessButtons(int32 CurrentButtons, int32 PreviousButtons, FPlatformUserId PlatformUser, FInputDeviceId InputDevice)
@@ -384,14 +423,42 @@ void FJoyShockInterface::ProcessButtons(int32 CurrentButtons, int32 PreviousButt
 
 void FJoyShockInterface::ProcessAnalogInputs(const FJoyShockState& SimpleState, const FJoyShockState& PreviousSimpleState, FPlatformUserId PlatformUser, FInputDeviceId InputDevice)
 {
-	OnControllerAnalog(PlatformUser, InputDevice, FGamepadKeyNames::LeftAnalogX, SimpleState.stickLX, PreviousSimpleState.stickLX, XInputLeftStickDeadzone);
-	OnControllerAnalog(PlatformUser, InputDevice, FGamepadKeyNames::LeftAnalogY, SimpleState.stickLY, PreviousSimpleState.stickLY, XInputLeftStickDeadzone);
+	OnControllerAnalog(PlatformUser, InputDevice, FGamepadKeyNames::LeftAnalogX, SimpleState.stickLX, PreviousSimpleState.stickLX);
+	OnControllerAnalog(PlatformUser, InputDevice, FGamepadKeyNames::LeftAnalogY, SimpleState.stickLY, PreviousSimpleState.stickLY);
 
-	OnControllerAnalog(PlatformUser, InputDevice, FGamepadKeyNames::RightAnalogX, SimpleState.stickRX, PreviousSimpleState.stickRX, XInputRightStickDeadzone);
-	OnControllerAnalog(PlatformUser, InputDevice, FGamepadKeyNames::RightAnalogY, SimpleState.stickRY, PreviousSimpleState.stickRY, XInputRightStickDeadzone);
+	OnControllerAnalog(PlatformUser, InputDevice, FGamepadKeyNames::RightAnalogX, SimpleState.stickRX, PreviousSimpleState.stickRX);
+	OnControllerAnalog(PlatformUser, InputDevice, FGamepadKeyNames::RightAnalogY, SimpleState.stickRY, PreviousSimpleState.stickRY);
 
-	OnControllerAnalog(PlatformUser, InputDevice, FGamepadKeyNames::LeftTriggerAnalog, SimpleState.lTrigger, PreviousSimpleState.lTrigger, XInputTriggerDeadzone);
-	OnControllerAnalog(PlatformUser, InputDevice, FGamepadKeyNames::RightTriggerAnalog, SimpleState.rTrigger, PreviousSimpleState.rTrigger, XInputTriggerDeadzone);
+	OnControllerAnalog(PlatformUser, InputDevice, FGamepadKeyNames::LeftTriggerAnalog, SimpleState.lTrigger, PreviousSimpleState.lTrigger);
+	OnControllerAnalog(PlatformUser, InputDevice, FGamepadKeyNames::RightTriggerAnalog, SimpleState.rTrigger, PreviousSimpleState.rTrigger);
+}
+
+void FJoyShockInterface::ProcessIMUState(int32 DeviceHandle, const FIMUState& InIMUState, FPlatformUserId PlatformUser, FInputDeviceId InputDevice) const
+{
+	// Reports the controller's motion through Unreal's own motion input -- the same path a phone's gyro and
+	// accelerometer use, feeding the Tilt / RotationRate / Gravity / Acceleration keys. That means gyro can
+	// be bound in Enhanced Input like any other axis, instead of every project that wants motion having to
+	// call this plugin's getters from Blueprint.
+	//
+	// The axes match JSL4UGetIMUState and JSL4UGetMotionState exactly, so a project can mix Enhanced Input
+	// bindings and the direct getters without the two disagreeing about which way is up.
+	const FVector RotationRate(-InIMUState.gyroZ, InIMUState.gyroX, -InIMUState.gyroY);
+	const FVector Acceleration(InIMUState.accelZ, InIMUState.accelX, -InIMUState.accelY);
+
+	// Gravity and orientation are derived state the library maintains, not part of the raw IMU sample, so
+	// they come from the motion state rather than from InIMUState. get_motion_state only reads already
+	// computed values, so this is cheap enough to do per controller per frame.
+	const FJSL4UMotionState MotionState = UJoyShockLibrary::JSL4UGetMotionState(DeviceHandle);
+
+	// Unreal's motion input expects Tilt as the device's attitude in radians. Euler() gives (Roll, Pitch,
+	// Yaw) in degrees, which is the component order Unreal uses elsewhere for a rotation carried in a vector.
+	const FVector EulerDegrees = MotionState.Orientation.Rotator().Euler();
+	const FVector Tilt(
+		FMath::DegreesToRadians(EulerDegrees.X),
+		FMath::DegreesToRadians(EulerDegrees.Y),
+		FMath::DegreesToRadians(EulerDegrees.Z));
+
+	MessageHandler->OnMotionDetected(Tilt, RotationRate, MotionState.Gravity, Acceleration, PlatformUser, InputDevice);
 }
 
 void FJoyShockInterface::OnPollCallback(int32 DeviceHandle, const FJoyShockState& SimpleState, const FJoyShockState& PreviousSimpleState, const FIMUState& IMUState, const FIMUState& PreviousIMUState, float DeltaTime)

@@ -9,9 +9,6 @@
 #include "GenericPlatform/GenericApplicationMessageHandler.h"
 #include "JoyShockLibrary4Unreal/JoyShockLibrary/JoyShockLibrary.h"
 
-// Max number of controllers.
-#define MAX_NUM_JOYSHOCK_CONTROLLERS 8
-
 // Max number of controller buttons.  Must be < 256
 #define MAX_NUM_CONTROLLER_BUTTONS 27
 
@@ -32,8 +29,6 @@ public:
 	virtual void SendControllerEvents() override;
 
 	virtual void SetMessageHandler(const TSharedRef<FGenericApplicationMessageHandler>& InMessageHandler) override;
-
-	void SetNeedsControllerStateUpdate() { bNeedsControllerStateUpdate = true; }
 
 	/**
 	* Sets the strength/speed of the given channel for the given controller id.
@@ -111,16 +106,11 @@ private:
 		FTouchState TouchState = {};
 		FTouchState PreviousTouchState = {};
 		
-		/* TODO: Rumble
-		// Current force feedback values
+		// Force-feedback values most recently set through Unreal's own system (Play Force Feedback Effect and
+		// friends). Kept per device because SetChannelValue updates one channel at a time and the other three
+		// have to survive that.
 		FForceFeedbackValues ForceFeedback;
-
-		float LastLargeValue;
-		float LastSmallValue;*/
 	};
-
-	// If we've been notified by the system that the controller state may have changed
-	bool bNeedsControllerStateUpdate;
 
 	bool bIsGamepadAttached;
 	const FName JoyShockControllerName = FName("JoyShock");
@@ -158,6 +148,15 @@ private:
 	// Returns the primary (lower) handle of the logical controller this handle belongs to.
 	int32 GetGroupPrimary(int32 Handle) const;
 
+	// Every connected device currently driving the player Unreal identifies by InControllerId. Usually one,
+	// but two for a joined Joy-Con pair -- both halves share a platform user, so force feedback aimed at
+	// "that player" has to reach both. The caller must hold ControllerContainerLock.
+	TArray<int32> GetDeviceHandlesForControllerId(int32 InControllerId) const;
+
+	// Turns a device's stored force-feedback channels into a rumble request. The caller must hold
+	// ControllerContainerLock.
+	void SendForceFeedback(int32 DeviceHandle, const FForceFeedbackValues& Values) const;
+
 	// Connect/disconnect notifications originate on background threads (enumeration and polling threads),
 	// but touching the platform input-device mapper and our containers is only safe on the game thread.
 	// We queue them here and drain them at the start of SendControllerEvents (which runs on the game thread).
@@ -170,13 +169,12 @@ private:
 	// Delay before sending a repeat message after a button has been pressed for a while
 	float ButtonRepeatDelay;
 
-	FGamepadKeyNames::Type Buttons[MAX_NUM_CONTROLLER_BUTTONS];
-
 	TSharedRef<FGenericApplicationMessageHandler> MessageHandler;
 
+	// Reports an axis to the engine as-is. Deadzones are deliberately not applied here -- see the note on
+	// the definition.
 	void OnControllerAnalog(const FPlatformUserId& InPlatformUser, const FInputDeviceId& InInputDevice,
-						const FName& GamePadKey, float NewAxisValueNormalized, float OldAxisValueNormalized,
-						float DeadZone) const;
+						const FName& GamePadKey, float NewAxisValueNormalized, float OldAxisValueNormalized) const;
 	
 	void ProcessButtons(int32 CurrentButtons, int32 PreviousButtons, FPlatformUserId PlatformUser, FInputDeviceId InputDevice);
 	void ProcessAnalogInputs(const FJoyShockState& SimpleState, const FJoyShockState& PreviousSimpleState, FPlatformUserId PlatformUser, FInputDeviceId InputDevice);
@@ -186,19 +184,13 @@ private:
 	void ProcessSingleTouchState(bool bTouchDown, int32 TouchID, const FVector2D& TouchLocation, bool bPreviousTouchDown, int32 PreviousTouchID, const FVector2D& PreviousTouchLocation, FPlatformUserId PlatformUser, FInputDeviceId InputDevice) const;
 	void ProcessTouchState(const FTouchState& InTouchState, const FTouchState& InPreviousTouchState, FPlatformUserId PlatformUser, FInputDeviceId InputDevice) const;
 	void OnTouchCallback(int32 DeviceHandle, const FTouchState& TouchState, const FTouchState& PreviousTouchState, float DeltaTime);
-	// void ProcessIMUState(const FIMUState& InIMUState, const FIMUState& InPreviousIMUState, FPlatformUserId PlatformUser, FInputDeviceId InputDevice) const;
+	// Reports this controller's motion to Unreal's motion input (Tilt / RotationRate / Gravity /
+	// Acceleration), so gyro is bindable in Enhanced Input without any plugin-specific code.
+	void ProcessIMUState(int32 DeviceHandle, const FIMUState& InIMUState, FPlatformUserId PlatformUser, FInputDeviceId InputDevice) const;
 
 	void OnConnectCallback(int32 InDeviceHandle);
 
 	void OnDisconnectCallback(int32 InDeviceHandle, bool bInHasTimedOut);
-
-	static constexpr int32 XInputGamepadLeftThumbDeadzone = 7849; // XINPUT_GAMEPAD_LEFT_THUMB_DEADZONE
-	static constexpr int32 XInputGamepadRightThumbDeadzone = 8689; // XINPUT_GAMEPAD_RIGHT_THUMB_DEADZONE
-	static constexpr int32 XInputGamepadTriggerThreshold = 30; // XINPUT_GAMEPAD_TRIGGER_THRESHOLD
-
-	static constexpr float XInputLeftStickDeadzone = XInputGamepadLeftThumbDeadzone / 32768.0f;
-	static constexpr float XInputRightStickDeadzone = XInputGamepadRightThumbDeadzone / 32768.0f;
-	static constexpr float XInputTriggerDeadzone = XInputGamepadTriggerThreshold / 255.0f;
 
 	// Additional input names.
 	// JSL aliases one bit per pair of equivalent buttons across controller families, so each of these is a
