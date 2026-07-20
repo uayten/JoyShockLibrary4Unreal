@@ -61,11 +61,17 @@ Bluetooth is currently **not** supported for the Switch 2 Pro Controller: it use
 
 ## Rumble
 
-`Jsl Set Rumble (DeviceId, SmallRumble, BigRumble)` sets the rumble motors (0-255 each; call it with `(0, 0)` to stop):
+These controllers work with **Unreal's own force feedback**. `Play Force Feedback Effect`, `Client Play Force Feedback` and Enhanced Input's force feedback effects drive a DualShock 4, DualSense, Joy-Con or Pro Controller exactly as they drive an Xbox pad — so authored effects with curves, falloff and looping work, and you get one code path for every gamepad. Nothing to enable. Effects are aimed at a *player*, so both halves of a joined Joy-Con pair rumble together.
+
+The channels map the way Unreal's XInput interface reads them: `LeftLarge` drives the heavy/low-frequency motor and `RightSmall` the light/high-frequency one, so an effect authored against a standard gamepad comes out the same here.
+
+For direct control there is `JSL4U Set Rumble (DeviceId, SmallRumble, BigRumble)`, 0-1 per motor (call it with `(0, 0)` to stop). Use it to hold a constant intensity yourself, or to rumble one specific controller rather than "the player's" — a joined Joy-Con pair takes one force feedback effect but has two device ids. Force feedback and this node write the same two values, so whichever ran most recently wins.
+
+Per controller family:
 
 - **DualShock 4 / DualSense**: small and big motor intensities.
 - **Joy-Cons / Pro Controller (Switch 1)**: full HD-rumble amplitude control — `BigRumble` drives the low-frequency component (heavy shake), `SmallRumble` the high-frequency one (fine buzz). The vibration is sustained automatically until you set `(0, 0)`.
-- **Switch 2 Pro Controller (USB)**: simplified support — while either value is above 0 the controller vibrates (sustained automatically, like the other controllers) until you call `(0, 0)`. Intensity values are treated as on/off for now: the Switch 2's amplitude-accurate rumble channel hasn't been mapped over USB yet (Steam itself never rumbles this controller, so there was no traffic to reverse-engineer it from). Under the hood this retriggers the controller's short built-in vibration preset, so the texture may feel slightly pulsed compared to the Switch 1's HD rumble.
+- **Switch 2 Pro Controller (USB)**: **no amplitude support.** While either value is above 0 the controller vibrates (sustained automatically, like the other controllers) until you call `(0, 0)`, so it is effectively on/off. The Switch 2's amplitude-accurate rumble channel hasn't been mapped over USB yet (Steam itself never rumbles this controller, so there was no traffic to reverse-engineer it from). Under the hood this retriggers the controller's short built-in vibration preset, so the texture may feel slightly pulsed compared to the Switch 1's HD rumble — and a force feedback effect that fades in or out will feel like a flat buzz on this controller.
 - Note: close Steam when using the Switch 2 Pro Controller with Unreal — Steam holds the controller's USB command interface exclusively, which blocks the plugin's init and rumble (the plugin logs a warning and re-acquires the interface automatically once Steam is closed).
 
 ## Combining Joy-Cons into one player
@@ -84,9 +90,28 @@ Player slots are **stable**: a controller keeps its slot for as long as it stays
 
 The flip side is that slots otherwise follow the order controllers were switched on, and a controller that connected second stays on slot 1 even once it is the only one left — which in a single-player game means its input goes to a player that does not exist. Use **JSL4U Set Player Index** to decide this yourself rather than inheriting connection order; it is the only thing that overrides it. Slots may be shared: two controllers on one slot both drive that player, which is exactly what a joined Joy-Con pair is.
 
+## Motion and gyro
+
+Motion is reported through **Unreal's own motion input**, the same path a phone's gyro and accelerometer use. That means `Tilt`, `RotationRate`, `Gravity` and `Acceleration` can be bound in Enhanced Input like any other axis, with no plugin-specific Blueprint code — `RotationRate` is the one you want for gyro aiming. The direct getters (`JSL4U Get IMU State`, `JSL4U Get Motion State`) are still there and use the same axes, so you can mix the two freely.
+
+## Gyro calibration
+
+A gyroscope reports a small non-zero rotation even when perfectly still, so a controller left alone slowly drifts. Calibrating measures that offset while the controller is still and subtracts it. Nodes live under **JoyShockLibrary | Gyro**:
+
+- **JSL4U Set Gyro Calibration Mode (Device Id, Mode)** — *Automatic* lets the controller work out for itself when it is being held still and keep itself calibrated; *Manual* leaves it entirely to the nodes below. **Most games only need this one, set to Automatic once per controller.**
+- **JSL4U Start / Stop Gyro Calibration** — gather samples for the drift offset while the controller sits still, then stop. For driving an explicit "hold still while we calibrate" step in an options screen. Only meaningful in Manual mode.
+- **JSL4U Reset Gyro Calibration** — throw the current offset away and start over, for when a calibration was taken while the controller was actually being moved (which leaves the gyro worse off than no calibration at all).
+- **JSL4U Get Gyro Calibration Status** — confidence, whether the controller currently reads as steady, the current mode, and whether a manual calibration is in progress. This is what drives a calibration screen's prompts and progress.
+- **JSL4U Get / Set Gyro Calibration Offset** — read the offset as a **Vector** to save it per controller and restore it next session, so a returning player doesn't have to calibrate again. These use the same axes as *JSL4U Get IMU State*; don't mix them with the legacy `JslGet/SetCalibrationOffset`, which report the same offset in the library's own axes.
+
+Separately, **JSL4U Set Gyro Space** chooses the frame of reference gyro input is reported in — *Local Space* (raw, relative to the controller), *World Space* (corrected by the calculated gravity direction, so yaw is always around the real vertical), or *Player Space* (a blend that is as adaptive as world space and as robust as local space). Player Space is the usual choice for gyro aiming.
+
 ## Blueprint nodes
 
-All original JoyShockLibrary functions are still here and exposed to Blueprints. You can quickly find them by searching for the JSL prefix. 
+All original JoyShockLibrary functions are still here and exposed to Blueprints. You can quickly find them by searching for the JSL prefix.
+
+Legacy `Jsl*` nodes that have a `JSL4U*` equivalent are marked **deprecated**: they still work, but the editor now warns and names the node to move to. The JSL4U versions speak Unreal's types — Vectors and Vector2Ds instead of loose floats, enums instead of magic integers, Colors, and 0-1 ranges — and the warnings exist so the legacy layer can eventually be deleted without hunting for call sites. Nodes with no JSL4U counterpart yet (`Jsl Connect Devices`, `Jsl Still Connected`, `Jsl Get Touchpad Dimension`, `Jsl Get Poll Rate`, and the analog resolution getters) are not marked.
+
 
 ![JSL Functions](https://github.com/user-attachments/assets/08010581-64ec-45c8-9e79-9fc8a2315349)
 
@@ -110,7 +135,7 @@ No official Sony or Nintendo libraries were used in the development or testing o
 
 ### Plugin
 - Improved multiplayer support, especially when mixed with XInput controllers
-- Force feedback through Unreal's own system. `Play Force Feedback Effect`, Enhanced Input's force feedback effects and anything else built on `SetChannelValues` currently do nothing on these controllers — rumble has to be driven by calling `JSL4U Set Rumble` directly, so an Xbox pad and a DualShock 4 in the same project don't behave alike
+- Amplitude-accurate rumble on the Switch 2 Pro Controller, so force feedback effects that fade in or out don't come out as a flat buzz on it. Needs its amplitude channel reverse-engineering over USB
 - Generalising Joy-Con joining, so that any set of controllers can drive a single player rather than only a left + right Joy-Con pair
 - Player-indicator LEDs on the Switch 2 Pro Controller. It doesn't speak the Switch 1 subcommand that sets them, so unlike every other supported controller its lights stay off; setting them needs the command to be reverse-engineered from its own protocol
 - Bluetooth (BLE) support for the Switch 2 Pro Controller
