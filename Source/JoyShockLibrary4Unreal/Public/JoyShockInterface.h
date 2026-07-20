@@ -139,6 +139,10 @@ private:
 	// player calls SetPlayerIndexForDevice -- connection order is otherwise the only thing deciding this,
 	// and the plugin will not second-guess it. Recomputed by RefreshPlayerAssignments() whenever devices
 	// connect/disconnect or joins change.
+	//
+	// Slots already occupied by a controller from another input interface (an XInput pad) are skipped, so a
+	// controller here lands on the same player a second Xbox pad would have. Getting that wrong is what
+	// forced a game to treat XInput and JoyShock controllers differently.
 	TMap<int32, int32> PlayerSlotByPrimary;
 
 	// Recomputes player slots and maps every connected device to its logical controller's platform user in
@@ -147,6 +151,17 @@ private:
 
 	// Returns the primary (lower) handle of the logical controller this handle belongs to.
 	int32 GetGroupPrimary(int32 Handle) const;
+
+	// Whether this player slot already has a controller on it that isn't one of ours -- an XInput pad, in
+	// practice. The keyboard and mouse don't count: they sit on the first player and would otherwise make
+	// slot 0 permanently unavailable to controllers.
+	bool IsPlayerSlotClaimedByAnotherDevice(int32 Slot) const;
+
+	// Whether this input device id belongs to a controller this interface created.
+	bool IsOwnInputDevice(FInputDeviceId InInputDevice) const;
+
+	// Upper bound on the slot search, so a mapper that reported every slot as occupied could not spin here.
+	static constexpr int32 MaxPlayerSlotSearch = 64;
 
 	// Every connected device currently driving the player Unreal identifies by InControllerId. Usually one,
 	// but two for a joined Joy-Con pair -- both halves share a platform user, so force feedback aimed at

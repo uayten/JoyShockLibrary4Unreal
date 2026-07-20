@@ -651,6 +651,53 @@ void FJoyShockInterface::OnDisconnectCallback(int32 InDeviceHandle, bool bInHasT
 	RefreshPlayerAssignments();
 }
 
+bool FJoyShockInterface::IsOwnInputDevice(FInputDeviceId InInputDevice) const
+{
+	for (const TTuple<int32, FControllerState>& Pair : ControllerStateByDeviceHandle)
+	{
+		if (Pair.Value.InputDevice == InInputDevice)
+		{
+			return true;
+		}
+	}
+	return false;
+}
+
+bool FJoyShockInterface::IsPlayerSlotClaimedByAnotherDevice(int32 Slot) const
+{
+	IPlatformInputDeviceMapper& DeviceMapper = IPlatformInputDeviceMapper::Get();
+
+	const FPlatformUserId SlotUser = DeviceMapper.GetPlatformUserForUserIndex(Slot);
+	if (!SlotUser.IsValid())
+	{
+		return false;
+	}
+
+	TArray<FInputDeviceId> DevicesOnSlot;
+	DeviceMapper.GetAllConnectedInputDevicesForUser(SlotUser, DevicesOnSlot);
+
+	const FInputDeviceId DefaultDevice = DeviceMapper.GetDefaultInputDevice();
+
+	for (const FInputDeviceId& Device : DevicesOnSlot)
+	{
+		// The keyboard and mouse live on the first player and never stop a controller from going there --
+		// otherwise no controller could ever be player 1.
+		if (Device == DefaultDevice)
+		{
+			continue;
+		}
+		// Our own controllers are already accounted for by PlayerSlotByPrimary, and counting them here too
+		// would push every controller after the first one slot further out than it should be.
+		if (IsOwnInputDevice(Device))
+		{
+			continue;
+		}
+		return true;
+	}
+
+	return false;
+}
+
 int32 FJoyShockInterface::GetGroupPrimary(int32 Handle) const
 {
 	// The primary of a logical controller is the lower of the two joined handles (when both are connected),
@@ -716,7 +763,7 @@ void FJoyShockInterface::RefreshPlayerAssignments()
 	for (int32 Primary : NewPrimaries)
 	{
 		int32 Slot = 0;
-		for (bool bSlotTaken = true; bSlotTaken; )
+		for (bool bSlotTaken = true; bSlotTaken && Slot < MaxPlayerSlotSearch; )
 		{
 			bSlotTaken = false;
 			for (const TTuple<int32, int32>& Pair : PlayerSlotByPrimary)
@@ -727,6 +774,17 @@ void FJoyShockInterface::RefreshPlayerAssignments()
 					++Slot;
 					break;
 				}
+			}
+
+			// A slot is equally taken when someone else's controller is already on it -- an XInput pad, most
+			// often. Without this the plugin only ever counted its own controllers, so the first JoyShock
+			// controller claimed player 0 even with an Xbox pad already sitting there, and both drove the
+			// same character. Skipping occupied slots is what makes a JoyShock controller land where a
+			// second Xbox pad would have, so a game does not need one scheme for XInput and another for us.
+			if (!bSlotTaken && IsPlayerSlotClaimedByAnotherDevice(Slot))
+			{
+				bSlotTaken = true;
+				++Slot;
 			}
 		}
 		PlayerSlotByPrimary.Add(Primary, Slot);
