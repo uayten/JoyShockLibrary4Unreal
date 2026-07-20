@@ -39,6 +39,20 @@ In order to add Gyro aiming like this to your game, get the Y and Z values from 
 
 ![Get and flush Accumulated Gyro](https://github.com/user-attachments/assets/b032ec0e-9ebb-4d9c-bd2b-773eec098fcd)
 
+## How much of this do I have to set up?
+
+Three levels, and most projects only ever need the first.
+
+**1. Nothing.** Buttons, sticks, triggers, the touchpad, rumble and motion all arrive through Unreal's own input system, as the same keys an Xbox pad produces. Install the plugin and a project already built for gamepads supports DualShock 4, DualSense, Joy-Cons and Pro Controllers — existing Input Mapping Contexts, `Play Force Feedback Effect` and everything else keep working untouched. The only thing you bind by hand is what has no Xbox equivalent (motion, and the extra buttons listed below), and even then you are binding *engine* keys, not plugin keys.
+
+**2. Reacting to controllers coming and going.** Only needed for a controller-assignment screen, per-controller UI, or local multiplayer. Bind **On Controller Connected** / **On Controller Disconnected** on the **JoyShock Subsystem** from something that exists once the game instance has started — an actor's `BeginPlay`, your PlayerController, a widget.
+
+> Do **not** bind these in a Game Instance's `Init` event. Subsystems are created at the very end of `Init`, so the JoyShock Subsystem does not exist yet and the events silently never fire.
+
+Whatever binds should also seed itself from **JSL4U Get Connected Controllers**: controllers that were already connected — or that connected during a level load — produced no event for you to hear. Calling your connect handler once per entry in that list means "was already here" and "arrived later" share one path. See `BP_JoyShockInitializer` in the demo for a worked example.
+
+**3. Local multiplayer.** `Create Player` for each extra player, then **JSL4U Assign Controller To Player** (or **JSL4U Assign Controller To Player Index**) to decide which controller drives which one. See *Combining Joy-Cons into one player* below for how slots behave.
+
 ## Input events
 
 For inputs that have an XInput equivalent (e.g. face buttons, triggers and sticks), simply adding JoyShockLibrary4Unreal to your project (following the installation steps below) and enabling it will make Unreal recognize those inputs automatically for any compatible controller, with no code changes required.
@@ -82,13 +96,15 @@ A left+right Joy-Con pair can act as a single controller for one player. New Blu
 - **JSL4U Is Joinable (Controller Type)** — whether a controller type can be joined into a pair (currently the left and right Joy-Cons). `JSL4U Join Joy Cons` validates with this same function.
 - **JSL4U Join Joy Cons (A, B)** — joins a left and a right Joy-Con so they feed a single player (left half = left stick and its buttons, right half = right stick and its buttons). The engine sees one player per joined pair.
 - **JSL4U Unjoin Joy Con / JSL4U Unjoin All Joy Cons** — dissolve joins (each Joy-Con becomes its own player again).
-- **JSL4U Get Player Index** — the player slot a controller's input is delivered to.
-- **JSL4U Set Player Index (Device Id, Player Index)** — puts a controller on a chosen player slot. Pass -1 to hand it back to automatic assignment.
-- **JSL4U Set Controller For Player Controller (Device Id, Player Controller)** — the same thing addressed by **PlayerController** instead of slot number, and the setter counterpart of *JSL4U Get Controllers For Player Controller*.
+- **JSL4U Get Player Index Of Controller** — the player slot a controller's input is delivered to.
+- **JSL4U Assign Controller To Player Index (Device Id, Player Index)** — puts a controller on a chosen player slot. Pass -1 to hand it back to automatic assignment.
+- **JSL4U Assign Controller To Player (Device Id, Player Controller)** — the same thing addressed by **PlayerController** instead of slot number, and the setter counterpart of *JSL4U Get Controllers Of Player*.
 
 Player slots are **stable**: a controller keeps its slot for as long as it stays connected, and a disconnect leaves that slot as a hole rather than shifting the others down — so if the player 1 controller drops mid-match, players 2 and 3 stay on their own characters instead of shuffling. The hole is reused by the next controller to connect. 4 solo Joy-Cons = 4 players; two joined pairs = 2 players. Joins dissolve automatically if one of the Joy-Cons disconnects.
 
-The flip side is that slots otherwise follow the order controllers were switched on, and a controller that connected second stays on slot 1 even once it is the only one left — which in a single-player game means its input goes to a player that does not exist. Use **JSL4U Set Player Index** to decide this yourself rather than inheriting connection order; it is the only thing that overrides it. Slots may be shared: two controllers on one slot both drive that player, which is exactly what a joined Joy-Con pair is.
+Slots already taken by an **XInput pad** are skipped, so these controllers land where a second Xbox pad would have. Plug in an Xbox controller and a DualShock 4 and you get player 1 and player 2, the same as plugging in two Xbox controllers — a game does not need one assignment scheme for XInput and another for this plugin. (The flip side of matching XInput is that you inherit its behaviour: in a single-player game the second controller drives a player that does not exist, exactly as a second Xbox pad would.)
+
+The flip side is that slots otherwise follow the order controllers were switched on, and a controller that connected second stays on slot 1 even once it is the only one left — which in a single-player game means its input goes to a player that does not exist. Use **JSL4U Assign Controller To Player Index** to decide this yourself rather than inheriting connection order; it is the only thing that overrides it. Slots may be shared: two controllers on one slot both drive that player, which is exactly what a joined Joy-Con pair is.
 
 ## Motion and gyro
 
