@@ -347,6 +347,48 @@ enum class EJSL4UGyroSpace : uint8
 	PlayerSpace = 2 UMETA(DisplayName = "Player Space"), // a simple combination of local and world space that is as adaptive as world space but is as robust as local space
 };
 
+/**
+ * How a controller's gyro drift offset is arrived at.
+ *
+ * A gyroscope reports a small non-zero rotation even when perfectly still, and that offset drifts with
+ * temperature and age. Calibrating means measuring it while the controller is still and subtracting it.
+ */
+UENUM(BlueprintType)
+enum class EJSL4UGyroCalibrationMode : uint8
+{
+	// The controller works out for itself when it is being held still and calibrates continuously, with no
+	// action from the player. This is what most games want -- set it once and never think about it again.
+	Automatic UMETA(DisplayName = "Automatic"),
+	// Calibration only happens between JSL4UStartGyroCalibration and JSL4UStopGyroCalibration. Use this to
+	// drive an explicit "put the controller down and hold still" step in an options screen.
+	Manual UMETA(DisplayName = "Manual"),
+};
+
+/** A controller's current gyro calibration state, for showing progress in a calibration screen. */
+USTRUCT(BlueprintType)
+struct JOYSHOCKLIBRARY4UNREAL_API FJSL4UGyroCalibrationStatus
+{
+	GENERATED_BODY()
+
+	// How sure the automatic calibration is of its current offset, 0 to 1. Meaningless in Manual mode.
+	UPROPERTY(BlueprintReadOnly)
+	float Confidence = 0.f;
+
+	// Whether the controller currently reads as being held still. In a manual calibration screen this is
+	// the cue for "hold still" versus "keep holding".
+	UPROPERTY(BlueprintReadOnly)
+	bool bIsSteady = false;
+
+	// The mode this controller is in (see JSL4USetGyroCalibrationMode).
+	UPROPERTY(BlueprintReadOnly)
+	EJSL4UGyroCalibrationMode Mode = EJSL4UGyroCalibrationMode::Manual;
+
+	// Whether a manual calibration is currently gathering samples, i.e. JSL4UStartGyroCalibration was
+	// called and JSL4UStopGyroCalibration has not been.
+	UPROPERTY(BlueprintReadOnly)
+	bool bIsCalibrating = false;
+};
+
 // Everything the plugin knows about a controller: its identity, its type, the player slot it feeds and
 // its live JSL settings. Returned for a single device by JSL4UGetControllerInfoAndSettings and for every
 // connected device by JSL4UGetConnectedControllers.
@@ -508,7 +550,18 @@ public:
 	UFUNCTION(BlueprintCallable, BlueprintPure, Category = "JoyShockLibrary|JoyConPairing", meta = (DefaultToSelf = "PlayerController"))
 	static TArray<FJSL4UControllerInfo> JSL4UGetControllersForPlayerController(APlayerController* PlayerController);
 
+	/**
+	 * Asks the plugin to re-scan for controllers, on a background thread.
+	 *
+	 * You rarely need this: controllers are picked up automatically at startup and whenever Windows reports a
+	 * device change. It exists for the cases that produce no device-change message -- and it returns
+	 * immediately, with the scan happening off the game thread, so it is safe to call from gameplay.
+	 * Repeated calls while a scan is running are coalesced into one follow-up pass.
+	 */
 	UFUNCTION(BlueprintCallable, Category = JoyShockLibrary)
+	static void JSL4URefreshControllers();
+
+	UFUNCTION(BlueprintCallable, Category = JoyShockLibrary, meta = (DeprecatedFunction, DeprecationMessage = "Use JSL4URefreshControllers instead. This node enumerates HID devices synchronously on the calling thread, which freezes the game while it runs."))
 	static int32 JslConnectDevices();
 
 	/**
@@ -520,13 +573,25 @@ public:
 	 * For new Blueprints, prefer JSL4UGetConnectedControllers: it returns the same handles (as DeviceId)
 	 * plus each controller's type, player slot and settings, so you rarely need this raw handle list.
 	 */
-	UFUNCTION(BlueprintCallable, Category = JoyShockLibrary)
+	UFUNCTION(BlueprintCallable, Category = JoyShockLibrary, meta = (DeprecatedFunction, DeprecationMessage = "Use JSL4UGetConnectedControllers instead, which returns the same handles as DeviceId plus each controller's type, player slot and settings."))
 	static int32 JslGetConnectedDeviceHandles(/* int* */ TArray<int32>& OutDeviceHandleArray); //, int32 InSize);
 
-	UFUNCTION(BlueprintCallable, Category = JoyShockLibrary)
-	static void JslDisconnectAndDisposeAll();
+	/**
+	 * Whether this device id currently refers to a connected, working controller.
+	 *
+	 * Agrees with JSL4UGetConnectedControllers: a device that turned up in enumeration but has not delivered
+	 * input (a controller that has just been switched off can linger there for a moment) reports false here
+	 * too, where the legacy JslStillConnected reports true.
+	 *
+	 * Note that a device id is not a lasting identity for a physical controller -- ids are reused once
+	 * freed, so a true here can mean a *different* controller has taken that id. Prefer reacting to the
+	 * JoyShock subsystem's connect/disconnect events over polling this; it is meant for cheaply validating
+	 * an id you are already holding on to, without building the whole controller list to look it up.
+	 */
+	UFUNCTION(BlueprintCallable, BlueprintPure, Category = JoyShockLibrary)
+	static bool JSL4UIsControllerConnected(int32 DeviceId);
 
-	UFUNCTION(BlueprintCallable, Category = JoyShockLibrary)
+	UFUNCTION(BlueprintCallable, Category = JoyShockLibrary, meta = (DeprecatedFunction, DeprecationMessage = "Use JSL4UIsControllerConnected instead."))
 	static bool JslStillConnected(int32 deviceId);
 
 	// TODO: Remove temporary debug function
@@ -559,13 +624,13 @@ public:
 	// 0x40000: SL
 	// 0x80000: SR
 	// These are the best way to get all the buttons/triggers/sticks, gyro/accelerometer (IMU), orientation/acceleration/gravity (Motion), or touchpad
-	UFUNCTION(BlueprintCallable, BlueprintPure, Category = JoyShockLibrary)
+	UFUNCTION(BlueprintCallable, BlueprintPure, Category = JoyShockLibrary, meta = (DeprecatedFunction, DeprecationMessage = "Use JSL4UGetSimpleState instead."))
 	static FJoyShockState JslGetSimpleState(int32 deviceId);
 
 	UFUNCTION(BlueprintCallable, BlueprintPure, Category = JoyShockLibrary)
 	static FJSL4UJoyShockState JSL4UGetSimpleState(int32 DeviceId);
 	
-	UFUNCTION(BlueprintCallable, BlueprintPure, Category = JoyShockLibrary)
+	UFUNCTION(BlueprintCallable, BlueprintPure, Category = JoyShockLibrary, meta = (DeprecatedFunction, DeprecationMessage = "Use JSL4UGetIMUState instead (or JSL4UGetRawIMUState for the untransformed values)."))
 	static FIMUState JslGetIMUState(int32 deviceId);
 
 	// NEW FUNCTION
@@ -576,7 +641,7 @@ public:
 	UFUNCTION(BlueprintCallable, BlueprintPure, Category = JoyShockLibrary)
 	static FJSL4UIMUState JSL4UGetRawIMUState(int32 DeviceID);
 	
-	UFUNCTION(BlueprintCallable, BlueprintPure, Category = JoyShockLibrary)
+	UFUNCTION(BlueprintCallable, BlueprintPure, Category = JoyShockLibrary, meta = (DeprecatedFunction, DeprecationMessage = "Use JSL4UGetMotionState instead (or JSL4UGetRawMotionState for the untransformed values)."))
 	static FMotionState JslGetMotionState(int32 deviceId);
 
 	// NEW FUNCTION
@@ -587,16 +652,22 @@ public:
 	UFUNCTION(BlueprintCallable, BlueprintPure, Category = JoyShockLibrary)
 	static FJSL4UMotionState JSL4UGetRawMotionState(int32 DeviceID);
 
-	UFUNCTION(BlueprintCallable, BlueprintPure, Category = JoyShockLibrary)
+	UFUNCTION(BlueprintCallable, BlueprintPure, Category = JoyShockLibrary, meta = (DeprecatedFunction, DeprecationMessage = "Use JSL4UGetTouchState instead."))
 	static FTouchState JslGetTouchState(int32 deviceId, bool previous = false);
 
 	UFUNCTION(BlueprintCallable, BlueprintPure, Category = JoyShockLibrary)
 	static FJSL4UTouchState JSL4UGetTouchState(int32 DeviceId, bool bPrevious = false);
 
+	// The touchpad's size in its own units (1920 x 943 on the DualShock 4 and DualSense), or zero for a
+	// controller without one. JSL4UGetTouchState reports touches normalised to 0-1, so multiply by this if
+	// you need touchpad-native coordinates -- e.g. to keep a drag's aspect ratio right.
 	UFUNCTION(BlueprintCallable, BlueprintPure, Category = JoyShockLibrary)
+	static FVector2D JSL4UGetTouchpadSize(int32 DeviceId);
+
+	UFUNCTION(BlueprintCallable, BlueprintPure, Category = JoyShockLibrary, meta = (DeprecatedFunction, DeprecationMessage = "Use JSL4UGetTouchpadSize instead, which returns a Vector2D."))
 	static bool JslGetTouchpadDimension(int32 deviceId, int32 &sizeX, int32 &sizeY);
 
-	UFUNCTION(BlueprintCallable, BlueprintPure, Category = JoyShockLibrary)
+	UFUNCTION(BlueprintCallable, BlueprintPure, Category = JoyShockLibrary, meta = (DeprecatedFunction, DeprecationMessage = "Use JSL4UGetSimpleState instead and read its Buttons field."))
 	static int32 JslGetButtons(int32 deviceId);
 
 	// get thumbsticks
@@ -605,40 +676,40 @@ public:
 	UFUNCTION(BlueprintCallable, BlueprintPure, Category = JoyShockLibrary)
 	static FVector2D JSL4UGetLeftStick(int32 DeviceId);
 	
-	UFUNCTION(BlueprintCallable, BlueprintPure, Category = JoyShockLibrary)
+	UFUNCTION(BlueprintCallable, BlueprintPure, Category = JoyShockLibrary, meta = (DeprecatedFunction, DeprecationMessage = "Use JSL4UGetLeftStick instead, which returns both axes as a Vector2D."))
 	static float JslGetLeftX(int32 deviceId);
 
-	UFUNCTION(BlueprintCallable, BlueprintPure, Category = JoyShockLibrary)
+	UFUNCTION(BlueprintCallable, BlueprintPure, Category = JoyShockLibrary, meta = (DeprecatedFunction, DeprecationMessage = "Use JSL4UGetLeftStick instead, which returns both axes as a Vector2D."))
 	static float JslGetLeftY(int32 deviceId);
 
 	UFUNCTION(BlueprintCallable, BlueprintPure, Category = JoyShockLibrary)
 	static FVector2D JSL4UGetRightStick(int32 DeviceId);
 
-	UFUNCTION(BlueprintCallable, BlueprintPure, Category = JoyShockLibrary)
+	UFUNCTION(BlueprintCallable, BlueprintPure, Category = JoyShockLibrary, meta = (DeprecatedFunction, DeprecationMessage = "Use JSL4UGetRightStick instead, which returns both axes as a Vector2D."))
 	static float JslGetRightX(int32 deviceId);
 
-	UFUNCTION(BlueprintCallable, BlueprintPure, Category = JoyShockLibrary)
+	UFUNCTION(BlueprintCallable, BlueprintPure, Category = JoyShockLibrary, meta = (DeprecatedFunction, DeprecationMessage = "Use JSL4UGetRightStick instead, which returns both axes as a Vector2D."))
 	static float JslGetRightY(int32 deviceId);
 
 	// get triggers. Switch controllers don't have analogue triggers, but will report 0.0 or 1.0 so they can be used in the same way as others
-	UFUNCTION(BlueprintCallable, BlueprintPure, Category = JoyShockLibrary)
+	UFUNCTION(BlueprintCallable, BlueprintPure, Category = JoyShockLibrary, meta = (DeprecatedFunction, DeprecationMessage = "Use JSL4UGetSimpleState instead and read its LeftTrigger field."))
 	static float JslGetLeftTrigger(int32 deviceId);
 
-	UFUNCTION(BlueprintCallable, BlueprintPure, Category = JoyShockLibrary)
+	UFUNCTION(BlueprintCallable, BlueprintPure, Category = JoyShockLibrary, meta = (DeprecatedFunction, DeprecationMessage = "Use JSL4UGetSimpleState instead and read its RightTrigger field."))
 	static float JslGetRightTrigger(int32 deviceId);
 
 	// get gyro
-	UFUNCTION(BlueprintCallable, BlueprintPure, Category = JoyShockLibrary)
+	UFUNCTION(BlueprintCallable, BlueprintPure, Category = JoyShockLibrary, meta = (DeprecatedFunction, DeprecationMessage = "Use JSL4UGetIMUState instead and read its Gyro field."))
 	static float JslGetGyroX(int32 deviceId);
 
-	UFUNCTION(BlueprintCallable, BlueprintPure, Category = JoyShockLibrary)
+	UFUNCTION(BlueprintCallable, BlueprintPure, Category = JoyShockLibrary, meta = (DeprecatedFunction, DeprecationMessage = "Use JSL4UGetIMUState instead and read its Gyro field."))
 	static float JslGetGyroY(int32 deviceId);
 
-	UFUNCTION(BlueprintCallable, BlueprintPure, Category = JoyShockLibrary)
+	UFUNCTION(BlueprintCallable, BlueprintPure, Category = JoyShockLibrary, meta = (DeprecatedFunction, DeprecationMessage = "Use JSL4UGetIMUState instead and read its Gyro field."))
 	static float JslGetGyroZ(int32 deviceId);
 
 	// get accumulated average gyro since this function was last called or last flushed values
-	UFUNCTION(BlueprintCallable, Category = JoyShockLibrary)
+	UFUNCTION(BlueprintCallable, Category = JoyShockLibrary, meta = (DeprecatedFunction, DeprecationMessage = "Use JSL4UGetAndFlushAccumulatedGyro instead, which returns a Vector in Unreal's axes."))
 	static void JslGetAndFlushAccumulatedGyro(int32 deviceId, float& gyroX, float& gyroY, float& gyroZ);
 
 	// NEW FUNCTION
@@ -649,72 +720,143 @@ public:
 	// 0 = local space -> no transformation is done on gyro input
 	// 1 = world space -> gyro input is transformed based on the calculated gravity direction to account for the player's preferred controller orientation
 	// 2 = player space -> a simple combination of local and world space that is as adaptive as world space but is as robust as local space
-	UFUNCTION(BlueprintCallable, Category = JoyShockLibrary)
+	UFUNCTION(BlueprintCallable, Category = JoyShockLibrary, meta = (DeprecatedFunction, DeprecationMessage = "Use JSL4USetGyroSpace instead, which takes an EJSL4UGyroSpace rather than a raw integer."))
 	static void JslSetGyroSpace(int32 deviceId, int32 gyroSpace);
 
 	UFUNCTION(BlueprintCallable, Category = JoyShockLibrary)
 	static void JSL4USetGyroSpace(int32 InDeviceID, EJSL4UGyroSpace InGyroSpace);
 
 	// get accelerometer
-	UFUNCTION(BlueprintCallable, BlueprintPure, Category = JoyShockLibrary)
+	UFUNCTION(BlueprintCallable, BlueprintPure, Category = JoyShockLibrary, meta = (DeprecatedFunction, DeprecationMessage = "Use JSL4UGetIMUState instead and read its Acceleration field."))
 	static float JslGetAccelX(int32 deviceId);
 
-	UFUNCTION(BlueprintCallable, BlueprintPure, Category = JoyShockLibrary)
+	UFUNCTION(BlueprintCallable, BlueprintPure, Category = JoyShockLibrary, meta = (DeprecatedFunction, DeprecationMessage = "Use JSL4UGetIMUState instead and read its Acceleration field."))
 	static float JslGetAccelY(int32 deviceId);
 
-	UFUNCTION(BlueprintCallable, BlueprintPure, Category = JoyShockLibrary)
+	UFUNCTION(BlueprintCallable, BlueprintPure, Category = JoyShockLibrary, meta = (DeprecatedFunction, DeprecationMessage = "Use JSL4UGetIMUState instead and read its Acceleration field."))
 	static float JslGetAccelZ(int32 deviceId);
 
 	// get touchpad
-	UFUNCTION(BlueprintCallable, BlueprintPure, Category = JoyShockLibrary)
+	UFUNCTION(BlueprintCallable, BlueprintPure, Category = JoyShockLibrary, meta = (DeprecatedFunction, DeprecationMessage = "Use JSL4UGetTouchState instead and read the TouchID of the touch you want."))
 	static int32 JslGetTouchId(int32 deviceId, bool secondTouch = false);
 
-	UFUNCTION(BlueprintCallable, BlueprintPure, Category = JoyShockLibrary)
+	UFUNCTION(BlueprintCallable, BlueprintPure, Category = JoyShockLibrary, meta = (DeprecatedFunction, DeprecationMessage = "Use JSL4UGetTouchState instead and read the bIsDown of the touch you want."))
 	static bool JslGetTouchDown(int32 deviceId, bool secondTouch = false);
 
 	// NEW FUNCTION
 	UFUNCTION(BlueprintCallable, BlueprintPure, Category = JoyShockLibrary)
 	static FVector2D JSL4UGetTouch(int32 DeviceId, bool bSecondTouch = false);
 
-	UFUNCTION(BlueprintCallable, BlueprintPure, Category = JoyShockLibrary)
+	UFUNCTION(BlueprintCallable, BlueprintPure, Category = JoyShockLibrary, meta = (DeprecatedFunction, DeprecationMessage = "Use JSL4UGetTouch instead, which returns both axes as a Vector2D."))
 	static float JslGetTouchX(int32 deviceId, bool secondTouch = false);
 
-	UFUNCTION(BlueprintCallable, BlueprintPure, Category = JoyShockLibrary)
+	UFUNCTION(BlueprintCallable, BlueprintPure, Category = JoyShockLibrary, meta = (DeprecatedFunction, DeprecationMessage = "Use JSL4UGetTouch instead, which returns both axes as a Vector2D."))
 	static float JslGetTouchY(int32 deviceId, bool secondTouch = false);
 
 	// analog parameters have different resolutions depending on device
+	// The smallest change this controller can report on a stick axis. Sticks are 8-bit on a DualShock 4 and
+	// 12-bit on Switch controllers, so this differs per device -- useful for sizing a deadzone or an
+	// on-screen readout to what the hardware can actually resolve.
 	UFUNCTION(BlueprintCallable, BlueprintPure, Category = JoyShockLibrary)
+	static float JSL4UGetStickStep(int32 DeviceId);
+
+	// The smallest change this controller can report on a trigger. Switch controllers have no analog
+	// triggers and report 1 (fully on or fully off).
+	UFUNCTION(BlueprintCallable, BlueprintPure, Category = JoyShockLibrary)
+	static float JSL4UGetTriggerStep(int32 DeviceId);
+
+	// How often this controller sends input reports, in milliseconds per report.
+	UFUNCTION(BlueprintCallable, BlueprintPure, Category = JoyShockLibrary)
+	static float JSL4UGetPollRate(int32 DeviceId);
+
+	// Seconds since this controller last sent an input report. A value climbing well past the poll rate means
+	// the controller has gone quiet, which is the difference between the engine not routing its input and the
+	// controller not sending any.
+	UFUNCTION(BlueprintCallable, BlueprintPure, Category = JoyShockLibrary)
+	static float JSL4UGetTimeSinceLastUpdate(int32 DeviceId);
+
+	UFUNCTION(BlueprintCallable, BlueprintPure, Category = JoyShockLibrary, meta = (DeprecatedFunction, DeprecationMessage = "Use JSL4UGetStickStep instead."))
 	static float JslGetStickStep(int32 deviceId);
 
-	UFUNCTION(BlueprintCallable, BlueprintPure, Category = JoyShockLibrary)
+	UFUNCTION(BlueprintCallable, BlueprintPure, Category = JoyShockLibrary, meta = (DeprecatedFunction, DeprecationMessage = "Use JSL4UGetTriggerStep instead."))
 	static float JslGetTriggerStep(int32 deviceId);
 
-	UFUNCTION(BlueprintCallable, BlueprintPure, Category = JoyShockLibrary)
+	UFUNCTION(BlueprintCallable, BlueprintPure, Category = JoyShockLibrary, meta = (DeprecatedFunction, DeprecationMessage = "Use JSL4UGetPollRate instead."))
 	static float JslGetPollRate(int32 deviceId);
 
-	UFUNCTION(BlueprintCallable, BlueprintPure, Category = JoyShockLibrary)
+	UFUNCTION(BlueprintCallable, BlueprintPure, Category = JoyShockLibrary, meta = (DeprecatedFunction, DeprecationMessage = "Use JSL4UGetTimeSinceLastUpdate instead."))
 	static float JslGetTimeSinceLastUpdate(int32 deviceId);
 
+	// --- Gyro calibration -------------------------------------------------------------------------------
+	//
+	// A gyroscope reports a small non-zero rotation even when perfectly still, so a controller left alone
+	// will slowly drift. Calibrating measures that offset while the controller is still and subtracts it.
+	//
+	// Most games only need JSL4USetGyroCalibrationMode(Automatic) once per controller, and nothing else here:
+	// the controller then works out on its own when it is being held still and keeps itself calibrated. The
+	// Start/Stop/Reset nodes exist for driving an explicit "hold still while we calibrate" step in an options
+	// screen, and only do anything in Manual mode.
+
+	/**
+	 * Chooses whether this controller calibrates its gyro on its own or only when told to.
+	 * @param DeviceId  The controller (see JSL4UGetConnectedControllers).
+	 * @param Mode      Automatic for the set-and-forget behaviour most games want; Manual to drive it yourself.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "JoyShockLibrary|Gyro")
+	static void JSL4USetGyroCalibrationMode(int32 DeviceId, EJSL4UGyroCalibrationMode Mode);
+
+	// Begins gathering samples for the gyro's drift offset. Call with the controller sitting still, and call
+	// JSL4UStopGyroCalibration when you're done -- the longer it gathers, the better the offset. Only
+	// meaningful in Manual mode.
+	UFUNCTION(BlueprintCallable, Category = "JoyShockLibrary|Gyro")
+	static void JSL4UStartGyroCalibration(int32 DeviceId);
+
+	// Stops gathering samples. The offset measured so far stays in effect.
+	UFUNCTION(BlueprintCallable, Category = "JoyShockLibrary|Gyro")
+	static void JSL4UStopGyroCalibration(int32 DeviceId);
+
+	// Throws away the offset gathered so far and starts over. Use this when a calibration was taken while the
+	// controller was in fact being moved, which leaves the gyro worse off than no calibration at all.
+	UFUNCTION(BlueprintCallable, Category = "JoyShockLibrary|Gyro")
+	static void JSL4UResetGyroCalibration(int32 DeviceId);
+
+	// This controller's calibration state, for driving a calibration screen (progress, "hold still" prompts).
+	UFUNCTION(BlueprintCallable, BlueprintPure, Category = "JoyShockLibrary|Gyro")
+	static FJSL4UGyroCalibrationStatus JSL4UGetGyroCalibrationStatus(int32 DeviceId);
+
+	/**
+	 * The gyro drift offset currently being subtracted, in the same axes as JSL4UGetIMUState's Gyro.
+	 * Save this per controller to restore a calibration between sessions, so a returning player doesn't have
+	 * to calibrate again. Pairs exactly with JSL4USetGyroCalibrationOffset -- do not mix it with the legacy
+	 * JslGetCalibrationOffset, which reports the same offset in the library's own axes rather than Unreal's.
+	 */
+	UFUNCTION(BlueprintCallable, BlueprintPure, Category = "JoyShockLibrary|Gyro")
+	static FVector JSL4UGetGyroCalibrationOffset(int32 DeviceId);
+
+	// Restores an offset previously read with JSL4UGetGyroCalibrationOffset.
+	UFUNCTION(BlueprintCallable, Category = "JoyShockLibrary|Gyro")
+	static void JSL4USetGyroCalibrationOffset(int32 DeviceId, FVector Offset);
+
 	// calibration
-	UFUNCTION(BlueprintCallable, Category = JoyShockLibrary)
+	UFUNCTION(BlueprintCallable, Category = JoyShockLibrary, meta = (DeprecatedFunction, DeprecationMessage = "Use JSL4UResetGyroCalibration instead."))
 	static void JslResetContinuousCalibration(int32 deviceId);
 
-	UFUNCTION(BlueprintCallable, Category = JoyShockLibrary)
+	UFUNCTION(BlueprintCallable, Category = JoyShockLibrary, meta = (DeprecatedFunction, DeprecationMessage = "Use JSL4UStartGyroCalibration instead."))
 	static void JslStartContinuousCalibration(int32 deviceId);
 
-	UFUNCTION(BlueprintCallable, Category = JoyShockLibrary)
+	UFUNCTION(BlueprintCallable, Category = JoyShockLibrary, meta = (DeprecatedFunction, DeprecationMessage = "Use JSL4UStopGyroCalibration instead."))
 	static void JslPauseContinuousCalibration(int32 deviceId);
 
-	UFUNCTION(BlueprintCallable, Category = JoyShockLibrary)
+	UFUNCTION(BlueprintCallable, Category = JoyShockLibrary, meta = (DeprecatedFunction, DeprecationMessage = "Use JSL4USetGyroCalibrationMode instead, which takes an EJSL4UGyroCalibrationMode."))
 	static void JslSetAutomaticCalibration(int32 deviceId, bool enabled);
 
-	UFUNCTION(BlueprintCallable, BlueprintPure, Category = JoyShockLibrary)
+	UFUNCTION(BlueprintCallable, BlueprintPure, Category = JoyShockLibrary, meta = (DeprecatedFunction, DeprecationMessage = "Use JSL4UGetGyroCalibrationOffset instead, which returns a Vector in Unreal's axes."))
 	static void JslGetCalibrationOffset(int32 deviceId, float& xOffset, float& yOffset, float& zOffset);
 
-	UFUNCTION(BlueprintCallable, Category = JoyShockLibrary)
+	UFUNCTION(BlueprintCallable, Category = JoyShockLibrary, meta = (DeprecatedFunction, DeprecationMessage = "Use JSL4USetGyroCalibrationOffset instead, which takes a Vector in Unreal's axes."))
 	static void JslSetCalibrationOffset(int32 deviceId, float xOffset, float yOffset, float zOffset);
 
-	UFUNCTION(BlueprintCallable, BlueprintPure, Category = JoyShockLibrary)
+	UFUNCTION(BlueprintCallable, BlueprintPure, Category = JoyShockLibrary, meta = (DeprecatedFunction, DeprecationMessage = "Use JSL4UGetGyroCalibrationStatus instead."))
 	static FJSLAutoCalibration JslGetAutoCalibrationStatus(int32 deviceId);
 
 	// Everything the plugin knows about one controller. Returns a struct with bIsConnected == false if
@@ -723,19 +865,19 @@ public:
 	static FJSL4UControllerInfo JSL4UGetControllerInfoAndSettings(int32 DeviceId);
 
 	// super-getter for reading a whole lot of state at once
-	UFUNCTION(BlueprintCallable, BlueprintPure, Category = JoyShockLibrary)
+	UFUNCTION(BlueprintCallable, BlueprintPure, Category = JoyShockLibrary, meta = (DeprecatedFunction, DeprecationMessage = "Use JSL4UGetControllerInfoAndSettings instead."))
 	static FJSLSettings JslGetControllerInfoAndSettings(int32 deviceId);
 
 	// what kind of controller is this?
-	UFUNCTION(BlueprintCallable, BlueprintPure, Category = JoyShockLibrary)
+	UFUNCTION(BlueprintCallable, BlueprintPure, Category = JoyShockLibrary, meta = (DeprecatedFunction, DeprecationMessage = "Use JSL4UGetControllerInfoAndSettings instead and read its ControllerType field."))
 	static int32 JslGetControllerType(int32 deviceId);
 
 	// is this a left, right, or full controller?
-	UFUNCTION(BlueprintCallable, BlueprintPure, Category = JoyShockLibrary)
+	UFUNCTION(BlueprintCallable, BlueprintPure, Category = JoyShockLibrary, meta = (DeprecatedFunction, DeprecationMessage = "Use JSL4UGetControllerInfoAndSettings instead and read its SplitType field."))
 	static int32 JslGetControllerSplitType(int32 deviceId);
 
 	// what colour is the controller (not all controllers support this; those that don't will report white)
-	UFUNCTION(BlueprintCallable, BlueprintPure, Category = JoyShockLibrary)
+	UFUNCTION(BlueprintCallable, BlueprintPure, Category = JoyShockLibrary, meta = (DeprecatedFunction, DeprecationMessage = "Use JSL4UGetControllerInfoAndSettings instead and read its Color field."))
 	static FColor JslGetControllerColor(int32 InDeviceId);
 
 	/**
@@ -749,13 +891,27 @@ public:
 	static void JSL4USetLightColor(int32 DeviceId, FColor Color);
 
 	/**
-	 * Sets the controller's rumble motors, 0 (off) to 1 (maximum intensity).
+	 * Sets the controller's rumble motors directly, 0 (off) to 1 (maximum intensity).
+	 *
+	 * You often don't need this node. These controllers work with Unreal's own force feedback, so
+	 * "Play Force Feedback Effect" and "Client Play Force Feedback" drive them exactly as they drive an
+	 * Xbox pad -- which gets you authored effects with curves, falloff and looping for free, and one code
+	 * path for every gamepad. Reach for this node when you want to hold a constant intensity yourself, or
+	 * to rumble one specific controller rather than "the player's" (both halves of a joined Joy-Con pair,
+	 * for instance, take the same force feedback but have separate device ids here).
+	 *
 	 * BigRumble drives the heavy/low-frequency motor (strong shake, e.g. explosions, impacts);
 	 * SmallRumble drives the light/high-frequency motor (fine buzz, e.g. UI feedback, engines).
 	 * The rumble stays at the given intensities until you call this again -- call it with (0, 0) to stop.
+	 * This and Unreal's force feedback write the same two values, so whichever ran most recently wins.
+	 *
 	 * Supported controllers: DualShock 4, DualSense, Joy-Cons and Pro Controller (HD rumble, both values
-	 * mapped to the low/high-frequency actuator components), and Switch 2 Pro Controller over USB (currently
-	 * plays a fixed vibration preset while either value is above 0; amplitude control is not mapped yet).
+	 * mapped to the low/high-frequency actuator components).
+	 * The Switch 2 Pro Controller does NOT support amplitude: it plays a fixed vibration preset while either
+	 * value is above 0 and stops at (0, 0), so it is effectively on/off. Its amplitude-accurate rumble
+	 * channel hasn't been mapped over USB yet, which means an effect that fades in or out feels like a flat
+	 * buzz on that controller.
+	 *
 	 * The packet goes out from the controller's own polling thread, so this never blocks the game thread;
 	 * it takes effect on that controller's next report (well under a frame for a connected controller).
 	 * @param DeviceId     The controller's device id (see JSL4UGetConnectedControllers).
