@@ -1,6 +1,8 @@
 # JoyShockLibrary4Unreal
 This is a fork of JibbSmart's [JoyShockLibrary](https://github.com/JibbSmart/JoyShockLibrary), modified to integrate with Unreal Engine's input system as a plug-in. This allows your Unreal Engine games to support DualShock 4, DualSense (including Edge), Switch Pro, Joy-Con and Switch 2 Pro controllers natively, and use some of their exclusive features such as gyro and touchpad.
 
+**It fills the gaps rather than replacing Unreal's input.** Anything a standard gamepad can do — buttons, sticks, triggers, rumble, motion — reaches your game through Unreal's own input system, as the same keys and the same nodes an Xbox pad already uses. The `JSL4U*` nodes exist only for what Unreal and Windows have no concept of: gyro calibration, the light bar, joining two Joy-Cons into one player, assigning a controller to a player. So write your game against the engine's APIs and it supports every gamepad, and reach for a `JSL4U*` node when you want something only these controllers can do.
+
 ## Installation
 - Download or clone the JoyShockLibrary4Unreal repo from this GitHub page and add it to your game's Plugins folder. The path to the Content folder should look like this: `<project>/Plugins/JoyShockLibrary4Unreal/Content`.
 - Make sure that JoyShockLibrary4Unreal is enabled in your project's .uproject file or Plug-in settings.
@@ -52,6 +54,10 @@ Three levels, and most projects only ever need the first.
 Whatever binds should also seed itself from **JSL4U Get Connected Controllers**: controllers that were already connected — or that connected during a level load — produced no event for you to hear. Calling your connect handler once per entry in that list means "was already here" and "arrived later" share one path. See `BP_JoyShockInitializer` in the demo for a worked example.
 
 **3. Local multiplayer.** `Create Player` for each extra player, then **JSL4U Assign Controller To Player** (or **JSL4U Assign Controller To Player Index**) to decide which controller drives which one. See *Combining Joy-Cons into one player* below for how slots behave.
+
+> **Turn off "Skip Assigning Gamepad to Player 1" before you do.** It lives in *Project Settings → Maps & Modes → Local Multiplayer* and is **on by default**. While it is on, and only once a second local player exists, the engine shifts every gamepad's input to the *next* player — so the first controller starts driving player 2's pawn and the last controller drives a player that does not exist, silently. It is there for games where the keyboard is player 1 and gamepads start at player 2; it works against you otherwise.
+>
+> This one is worth knowing about because it is almost impossible to diagnose from the symptom. Everything you can inspect looks right — the plugin reports the correct player index, the platform input device mapper agrees with it, and each player controller possesses the pawn you expect. The redirect happens inside `UGameViewportClient::RemapControllerInput`, after all of that, so nothing upstream shows a discrepancy. The giveaway is that a single player works perfectly and the assignment only scrambles the moment the second player is created.
 
 ## Input events
 
