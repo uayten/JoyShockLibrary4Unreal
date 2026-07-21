@@ -848,19 +848,59 @@ int32 UJoyShockLibrary::JSL4UGetPlayerIndexOfController(int32 DeviceId)
 bool UJoyShockLibrary::JSL4UAssignControllerToPlayerIndex(int32 DeviceId, int32 PlayerIndex)
 {
 	FJoyShockInterface* Interface = FJoyShockLibrary4UnrealModule::GetInstance().GetActiveInterface();
-	return Interface != nullptr && Interface->SetPlayerIndexForDevice(DeviceId, PlayerIndex);
+	if (Interface == nullptr)
+	{
+		UE_LOG(LogJoyShockLibrary, Warning,
+			TEXT("JSL4UAssignControllerToPlayerIndex: no input interface yet, so device %d was not assigned."), DeviceId);
+		return false;
+	}
+
+	if (!Interface->SetPlayerIndexForDevice(DeviceId, PlayerIndex))
+	{
+		// The only way that fails is the handle not being a connected controller, which is worth naming --
+		// a stale or wrong device id looks identical to "the assignment didn't work" from Blueprint.
+		UE_LOG(LogJoyShockLibrary, Warning,
+			TEXT("JSL4UAssignControllerToPlayerIndex: %d is not a connected controller, so it was not assigned to player %d. ")
+			TEXT("Device ids come from JSL4UGetConnectedControllers and are not array indices."),
+			DeviceId, PlayerIndex);
+		return false;
+	}
+
+	return true;
 }
 
 bool UJoyShockLibrary::JSL4UAssignControllerToPlayer(int32 DeviceId, APlayerController* PlayerController)
 {
 	if (PlayerController == nullptr)
 	{
+		UE_LOG(LogJoyShockLibrary, Warning,
+			TEXT("JSL4UAssignControllerToPlayer: no player controller given, so device %d was not assigned. ")
+			TEXT("Create Local Player returns null when it cannot make another player -- check the viewport's "
+			TEXT("MaxSplitscreenPlayers if that is where this came from.")),
+			DeviceId);
 		return false;
 	}
 
 	// Convert through the same IPlatformInputDeviceMapper the slot assignment uses -- see the note on
 	// JSL4UGetControllersOfPlayer about why the legacy controller id is the wrong number here.
-	const int32 UserIndex = IPlatformInputDeviceMapper::Get().GetUserIndexForPlatformUser(PlayerController->GetPlatformUserId());
+	const FPlatformUserId User = PlayerController->GetPlatformUserId();
+	const int32 UserIndex = IPlatformInputDeviceMapper::Get().GetUserIndexForPlatformUser(User);
+
+	// A PlayerController only has a platform user once its ULocalPlayer has been attached, which does not
+	// happen until after the controller has been spawned -- so this is reachable, and it used to be far
+	// worse than a plain failure: passing the resulting -1 through to the index call means "hand the
+	// controller back to automatic assignment", so the call quietly did the opposite of what was asked and
+	// still reported success.
+	if (!User.IsValid() || UserIndex < 0)
+	{
+		UE_LOG(LogJoyShockLibrary, Warning,
+			TEXT("JSL4UAssignControllerToPlayer: %s has no platform user yet, so device %d was not assigned. ")
+			TEXT("Assign after the player controller has been created and possesses its pawn -- from the pawn's "
+			TEXT("Possessed By, for instance, rather than from a Begin Play.")),
+			*PlayerController->GetName(), DeviceId);
+		return false;
+	}
+
 	return JSL4UAssignControllerToPlayerIndex(DeviceId, UserIndex);
 }
 
