@@ -812,11 +812,25 @@ void FJoyShockInterface::RefreshPlayerAssignments()
 
 		const FPlatformUserId SlotUser = DeviceMapper.GetPlatformUserForUserIndex(Slot);
 
-		if (State->PlatformUser != SlotUser)
+		// Ask the mapper what it currently believes rather than trusting our own cache. The engine reassigns
+		// devices behind our back: creating a local player runs the id through
+		// RemapControllerIdToPlatformUserAndDevice, which synthesises an FInputDeviceId straight from the
+		// controller id and claims it for the new player -- so "Create Player 1" quietly takes whichever of
+		// our controllers happens to hold input device id 1. Routing follows the mapper, not the platform
+		// user we pass with each event, so the stolen controller starts driving the wrong player while this
+		// cache still says otherwise. Comparing against the cache meant we never noticed and never put it
+		// back; comparing against the mapper repairs it on the next refresh.
+		const FPlatformUserId MappedUser = DeviceMapper.GetUserForInputDevice(State->InputDevice);
+		if (MappedUser != SlotUser)
 		{
+			UE_LOG(LogJoyShockLibrary, Verbose,
+				TEXT("Device %d (input device %d) was mapped to platform user %d, restoring it to %d."),
+				Handle, State->InputDevice.GetId(), MappedUser.GetInternalId(), SlotUser.GetInternalId());
+
 			DeviceMapper.Internal_MapInputDeviceToUser(State->InputDevice, SlotUser, EInputDeviceConnectionState::Connected);
-			State->PlatformUser = SlotUser;
 		}
+
+		State->PlatformUser = SlotUser;
 	}
 }
 
