@@ -127,18 +127,25 @@ public:
 	// (init, SPI reads, rumble) go over its WinUSB bulk interface rather than HID.
 	bool is_switch2_pro = false;
 
-	// WinUSB handles for the Switch 2 command interface, opened by init_switch2 and kept for the device's
-	// lifetime so rumble can be sent at any time (void* to keep Windows types out of this header).
+	// WinUSB handles for the Switch 2 command interface (void* keeps Windows types out of this header).
+	// The interface is released after a short idle period so a multi-process Standalone session can take
+	// ownership from its parent editor without either process permanently blocking the other.
 	void* sw2_winusb_file = nullptr;   // HANDLE
 	void* sw2_winusb_handle = nullptr; // WINUSB_INTERFACE_HANDLE
 	unsigned char sw2_out_pipe = 0x02;
 	unsigned char sw2_in_pipe = 0x82;
 	bool sw2_rumble_on = false;
+	bool sw2_init_succeeded = false;
 	std::chrono::steady_clock::time_point sw2_last_open_attempt = {};
+	std::chrono::steady_clock::time_point sw2_last_command_time = {};
+	bool sw2_access_warning_logged = false;
+	int sw2_access_denied_count = 0;
+	bool sw2_init_failure_logged = false;
 
 	// Opens (or re-opens) this controller's WinUSB command interface and stores the handles/pipes above.
-	// Fails with a clear warning when another application (e.g. Steam) holds the interface exclusively.
+	// Fails with a bounded warning when another process holds the interface exclusively.
 	bool sw2_open_winusb();
+	void release_sw2_command_interface_if_idle();
 
 	// Rumble has two independent sources and they must not overwrite each other. These two are what a game
 	// asks for directly through JSL4USetRumble, and hold until it asks for something else.
@@ -317,9 +324,19 @@ public:
 	// smallRumble drives the high-frequency motor component, bigRumble the low-frequency one (0-255 each).
 	void set_sw2_rumble(int smallRumble, int bigRumble);
 
+	// Sets the Switch 2 player-indicator bit pattern over its WinUSB command interface.
+	bool set_sw2_player_lights(unsigned char playerLightMask);
+
 	// Sends an HD-rumble packet (output report 0x10) to a Switch 1 controller (Joy-Con / Pro Controller).
 	// smallRumble drives the high-frequency component, bigRumble the low-frequency one (0-255 each).
 	void set_switch_rumble(int smallRumble, int bigRumble);
+
+	// Sets the four player-indicator LEDs on a Switch 1 Joy-Con / Pro Controller.
+	bool set_switch_player_lights(unsigned char playerLightMask);
+
+	// The blue HOME-button light is a notification light, not a player indicator. Keep it off when
+	// JSL4U owns the controller so it cannot be confused with the four green player LEDs.
+	bool clear_switch_home_light();
 
 	void init_ds4_bt();
 

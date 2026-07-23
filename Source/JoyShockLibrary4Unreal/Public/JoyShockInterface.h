@@ -5,7 +5,6 @@
 #include "Containers/Queue.h"
 #include "GenericPlatform/IInputInterface.h"
 #include "IInputDevice.h"
-#include "JoyShockLibrary4UnrealSettings.h"
 #include "GenericPlatform/GenericApplicationMessageHandler.h"
 #include "JoyShockLibrary4Unreal/JoyShockLibrary/JoyShockLibrary.h"
 
@@ -66,6 +65,10 @@ public:
 	void UnjoinAllControllers();
 	// Returns the handle joined with this one, or INDEX_NONE if it isn't joined.
 	int32 GetJoinPartner(int32 Handle) const;
+	// Overrides one Joy-Con's presentation. Horizontal mode is the standalone default; setting it on a
+	// joined half dissolves the pair. Vertical mode is available for exceptional games such as Just Dance.
+	bool SetJoyConHorizontal(int32 Handle, bool bHorizontal);
+	bool IsJoyConHorizontal(int32 Handle) const;
 	// Returns the player slot (0, 1, 2, ...) this device's input is delivered to, or INDEX_NONE if
 	// the device isn't connected.
 	int32 GetPlayerIndexForDevice(int32 Handle) const;
@@ -74,6 +77,9 @@ public:
 	// not a connected controller. Slots may be shared: assigning two controllers to one slot makes both
 	// drive that player, which is what a joined Joy-Con pair already does.
 	bool SetPlayerIndexForDevice(int32 Handle, int32 PlayerIndex);
+	// Adds all identity and player-assignment fields owned by the input-device interface to a controller
+	// info struct in one locked read. Returns false when the handle is not connected.
+	bool FillControllerInfo(FJSL4UControllerInfo& Info) const;
 
 private:
 	FJoyShockInterface(const TSharedRef<FGenericApplicationMessageHandler>& MessageHandler);
@@ -87,6 +93,8 @@ private:
 
 		FPlatformUserId PlatformUser = PLATFORMUSERID_NONE;
 		FInputDeviceId InputDevice = INPUTDEVICEID_NONE;
+		int64 ConnectionId = 0;
+		FName HardwareDeviceIdentifier = NAME_None;
 
 		// Readable device name, cached at connect time so we don't re-query it (under a lock) every frame.
 		FString DeviceName;
@@ -98,13 +106,23 @@ private:
 		// look identical from the game.
 		double LastReportTime = 0.0;
 		bool bReportedInputStall = false;
-		
+
 		FJoyShockState SimpleState = {};
 		FJoyShockState PreviousSimpleState = {};
 		FIMUState IMUState = {};
 		FIMUState PreviousIMUState = {};
 		FTouchState TouchState = {};
 		FTouchState PreviousTouchState = {};
+
+		// Standalone Joy-Cons use Nintendo's horizontal grip by default. A joined pair is vertical. The
+		// previous value lets the analog dispatcher explicitly clear axes when a grip transition rotates
+		// or moves the physical stick between Unreal's left/right stick keys.
+		bool bJoyConHorizontal = false;
+		bool bAnalogWasJoyConHorizontal = false;
+		bool bButtonsWereJoyConHorizontal = false;
+		// Registration chords are control-management input, not gameplay input. After a transition, suppress
+		// those physical buttons until all of them are released so joining cannot also fire four actions.
+		int32 SuppressedGripButtons = 0;
 		
 		// Force-feedback values most recently set through Unreal's own system (Play Force Feedback Effect and
 		// friends). Kept per device because SetChannelValue updates one channel at a time and the other three
@@ -116,6 +134,7 @@ private:
 	const FName JoyShockControllerName = FName("JoyShock");
 
 	static FString GetDeviceName(int32 InControllerId);
+	static FName GetHardwareDeviceIdentifier(int32 InControllerId);
 
 	// Controller states
 	TMap<int32, FControllerState> ControllerStateByDeviceHandle = {};
@@ -149,6 +168,8 @@ private:
 	// the platform input-device mapper, so the engine sees one player per logical controller.
 	void RefreshPlayerAssignments();
 
+	int64 NextConnectionId = 1;
+
 	// Returns the primary (lower) handle of the logical controller this handle belongs to.
 	int32 GetGroupPrimary(int32 Handle) const;
 
@@ -178,6 +199,13 @@ private:
 	TQueue<int32, EQueueMode::Mpsc> PendingConnects;
 	TQueue<TPair<int32, bool>, EQueueMode::Mpsc> PendingDisconnects;
 
+	struct FJoyConPairingChange
+	{
+		int32 LeftDeviceId = INDEX_NONE;
+		int32 RightDeviceId = INDEX_NONE;
+		bool bJoined = false;
+	};
+
 	// Delay before sending a repeat message after a button was first pressed
 	float InitialButtonRepeatDelay;
 
@@ -192,7 +220,13 @@ private:
 						const FName& GamePadKey, float NewAxisValueNormalized, float OldAxisValueNormalized) const;
 	
 	void ProcessButtons(int32 CurrentButtons, int32 PreviousButtons, FPlatformUserId PlatformUser, FInputDeviceId InputDevice);
-	void ProcessAnalogInputs(const FJoyShockState& SimpleState, const FJoyShockState& PreviousSimpleState, FPlatformUserId PlatformUser, FInputDeviceId InputDevice);
+	void ProcessAnalogInputs(const FJoyShockState& SimpleState, const FJoyShockState& PreviousSimpleState,
+		bool bJoyConLeft, bool bJoyConRight, bool bDualShock4, bool bHorizontal, bool bWasHorizontal,
+		FPlatformUserId PlatformUser, FInputDeviceId InputDevice);
+	void UpdateJoyConGripTransitions(TArray<FJoyConPairingChange>& OutPairingChanges);
+	FJoyConPairingChange MakeJoyConPairingChange(int32 HandleA, int32 HandleB, bool bJoined) const;
+	static void BroadcastJoyConPairingChanges(const TArray<FJoyConPairingChange>& PairingChanges);
+	static int32 TransformJoyConButtons(int32 Buttons, bool bJoyConLeft, bool bJoyConRight, bool bHorizontal);
 	// Callbacks
 	void OnPollCallback(int32 DeviceHandle, const FJoyShockState& SimpleState, const FJoyShockState& PreviousSimpleState, const FIMUState& IMUState, const FIMUState& PreviousIMUState, float DeltaTime);
 
@@ -203,9 +237,9 @@ private:
 	// Acceleration), so gyro is bindable in Enhanced Input without any plugin-specific code.
 	void ProcessIMUState(int32 DeviceHandle, const FIMUState& InIMUState, FPlatformUserId PlatformUser, FInputDeviceId InputDevice) const;
 
-	void OnConnectCallback(int32 InDeviceHandle);
+	bool OnConnectCallback(int32 InDeviceHandle);
 
-	void OnDisconnectCallback(int32 InDeviceHandle, bool bInHasTimedOut);
+	bool OnDisconnectCallback(int32 InDeviceHandle, bool bInHasTimedOut);
 
 	// Additional input names.
 	// JSL aliases one bit per pair of equivalent buttons across controller families, so each of these is a
@@ -280,8 +314,6 @@ private:
 	};
 
 	TStaticArray<double, MAX_NUM_CONTROLLER_BUTTONS> NextRepeatTimes{InPlace, 0.0};
-
-	UJoyShockLibrary4UnrealSettings* CachedSettings;
 
 	FCriticalSection SimpleStateLock;
 	FCriticalSection TouchStateLock;

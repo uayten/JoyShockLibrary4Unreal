@@ -75,6 +75,41 @@ static JoyShock* GetJoyShockFromHandle(int handle) {
 	return nullptr;
 }
 
+// Nintendo's four LEDs use distinct patterns for players 1-8. They are deliberately not the
+// one-hot value 1 << (player-1): after player 4 the console identifies players with combinations.
+static unsigned char PlayerNumberToSwitchLedMask(int32 PlayerNumber)
+{
+	static constexpr unsigned char PlayerMasks[] =
+	{
+		0x01, // P1: *...
+		0x03, // P2: **..
+		0x07, // P3: ***.
+		0x0F, // P4: ****
+		0x09, // P5: *..*
+		0x05, // P6: *.*.
+		0x0D, // P7: *.**
+		0x06, // P8: .**.
+	};
+	return PlayerNumber >= 1 && PlayerNumber <= UE_ARRAY_COUNT(PlayerMasks)
+		? PlayerMasks[PlayerNumber - 1]
+		: 0;
+}
+
+static unsigned char PlayerNumberToDualSenseLedMask(int32 PlayerNumber)
+{
+	static constexpr unsigned char PlayerMasks[] =
+	{
+		DS5_PLAYER_1,
+		DS5_PLAYER_2,
+		DS5_PLAYER_3,
+		DS5_PLAYER_4,
+		DS5_PLAYER_5,
+	};
+	return PlayerNumber >= 1 && PlayerNumber <= UE_ARRAY_COUNT(PlayerMasks)
+		? PlayerMasks[PlayerNumber - 1]
+		: 0;
+}
+
 void pollIndividualLoop(JoyShock *jc) {
 	FJoyShockLibrary4UnrealModule& JSL4UModule = FJoyShockLibrary4UnrealModule::GetInstance();
 
@@ -84,7 +119,8 @@ void pollIndividualLoop(JoyShock *jc) {
 	//hid_set_nonblocking(jc->handle, 1); // temporary, to see if it helps. this means we'll have a crazy spin
 
 	int numTimeOuts = 0;
-	int numNoIMU = 0;
+	int consecutiveReportsWithoutIMU = 0;
+	bool bLoggedMissingIMU = false;
 	bool hasIMU = false;
 	bool lockedThread = false;
 	// Whether this device ever delivered a real input packet. Used to avoid re-scanning for a "phantom"
@@ -105,6 +141,7 @@ void pollIndividualLoop(JoyShock *jc) {
 	unsigned char lastSentSmallRumble = 0;
 	unsigned char lastSentBigRumble = 0;
 	auto lastSw2RumbleTime = std::chrono::steady_clock::now();
+	auto lastSw2InitRetryTime = std::chrono::steady_clock::now();
 
 	// DualShock 4 / DualSense: rumble, light colour and the player LED all ride in the SAME output report,
 	// so they are tracked together and sent as one packet whenever any of them changes. Seeded from what
@@ -113,20 +150,8 @@ void pollIndividualLoop(JoyShock *jc) {
 	unsigned char lastSentLedG = jc->led_g;
 	unsigned char lastSentLedB = jc->led_b;
 	int32 lastSentPlayerNumber = jc->player_number;
+	bool bHomeLightCleared = false;
 
-	int noIMULimit;
-	switch (jc->controller_type)
-	{
-	case ControllerType::s_ds4:
-		noIMULimit = 250;
-		break;
-	case ControllerType::s_ds:
-		noIMULimit = 250;
-		break;
-	case ControllerType::n_switch:
-	default:
-		noIMULimit = 67;
-	}
 	float wakeupTimer = 0.0f;
 
 	while (!jc->cancel_thread) {
@@ -205,6 +230,65 @@ void pollIndividualLoop(JoyShock *jc) {
 				bLoggedFirstRead = true;
 			}
 
+			if (jc->is_switch2_pro && !jc->sw2_init_succeeded)
+			{
+				const auto now = std::chrono::steady_clock::now();
+				if (std::chrono::duration_cast<std::chrono::milliseconds>(now - lastSw2InitRetryTime).count() >= 2000)
+				{
+					lastSw2InitRetryTime = now;
+					if (jc->init_switch2())
+					{
+						UE_LOG(LogJoyShockLibrary, Log,
+							TEXT("SW2: acquired the released command interface and completed calibrated init."));
+					}
+				}
+			}
+
+			// Player indicators are assigned from Unreal's actual player slot, not from HID enumeration order.
+			// The game thread stores the semantic one-based player number; this polling thread remains the sole
+			// writer to both Nintendo command pipes, keeping LED changes serialised with rumble.
+			if (jc->controller_type == ControllerType::n_switch)
+			{
+				jc->modifying_lock.Lock();
+				const int32 wantedPlayerNumber = jc->player_number;
+				jc->modifying_lock.Unlock();
+
+				if (wantedPlayerNumber != lastSentPlayerNumber)
+				{
+					const unsigned char playerLightMask = PlayerNumberToSwitchLedMask(wantedPlayerNumber);
+					bool bSent = false;
+					if (jc->is_switch2_pro)
+					{
+						bSent = jc->set_sw2_player_lights(playerLightMask);
+					}
+					else
+					{
+						bSent = jc->set_switch_player_lights(playerLightMask);
+					}
+					if (bSent)
+					{
+						UE_LOG(LogJoyShockLibrary, Verbose,
+							TEXT("Player indicator device %d -> player %d, mask 0x%02X"),
+							jc->intHandle, wantedPlayerNumber, playerLightMask);
+						lastSentPlayerNumber = wantedPlayerNumber;
+					}
+				}
+			}
+
+			// The blue HOME light on a right Joy-Con / Pro Controller is a notification channel, not one
+			// of Nintendo's four player indicators. Controllers can retain a pulse from firmware or a
+			// previous host, so explicitly clear it once after the live input stream is established.
+			if (!bHomeLightCleared && jc->controller_type == ControllerType::n_switch
+				&& !jc->is_switch2_pro && (jc->left_right == 2 || jc->left_right == 3))
+			{
+				bHomeLightCleared = jc->clear_switch_home_light();
+				if (bHomeLightCleared)
+				{
+					UE_LOG(LogJoyShockLibrary, Verbose,
+						TEXT("Cleared HOME notification light on device %d"), jc->intHandle);
+				}
+			}
+
 			// Switch 1 rumble (sole writer, see above): send immediately when the requested values change
 			// (including a final stop packet on a change to 0,0), and while active re-send roughly every
 			// 4 input reports (~60ms at 66Hz) -- the actuator fades out on its own otherwise, which made a
@@ -250,6 +334,11 @@ void pollIndividualLoop(JoyShock *jc) {
 					lastSentBigRumble = wantedBigRumble;
 					lastSw2RumbleTime = now;
 				}
+
+				// HID input is visible to both the editor and its multi-process Standalone child, but
+				// WinUSB permits only one command-interface owner. Release an inactive lease so the process
+				// that is actually playing can acquire it for calibrated init, LEDs and rumble.
+				jc->release_sw2_command_interface_if_idle();
 			}
 
 			// DualShock 4 / DualSense output (sole writer, see above): unlike the Switch controllers these
@@ -282,8 +371,15 @@ void pollIndividualLoop(JoyShock *jc) {
 					}
 					else
 					{
+						const unsigned char playerLightMask = PlayerNumberToDualSenseLedMask(wantedPlayerNumber);
 						jc->set_ds5_rumble_light(wantedSmallRumble, wantedBigRumble, wantedLedR, wantedLedG, wantedLedB,
-							static_cast<unsigned char>(wantedPlayerNumber));
+							playerLightMask);
+						if (wantedPlayerNumber != lastSentPlayerNumber)
+						{
+							UE_LOG(LogJoyShockLibrary, Verbose,
+								TEXT("Player indicator device %d -> player %d, DualSense mask 0x%02X"),
+								jc->intHandle, wantedPlayerNumber, playerLightMask);
+						}
 					}
 
 					lastSentSmallRumble = wantedSmallRumble;
@@ -297,7 +393,7 @@ void pollIndividualLoop(JoyShock *jc) {
 
 			// we want to be able to do these check-and-calls without fear of interruption by another thread. there could be many threads (as many as connected controllers),
 			// and the callback could be time-consuming (up to the user), so we use a readers-writer-lock.
-			if (handle_input(jc, buf, 64, hasIMU)) { // but the user won't necessarily have a callback at all, so we'll skip the lock altogether in that case
+			if (handle_input(jc, buf, res, hasIMU)) { // but the user won't necessarily have a callback at all, so we'll skip the lock altogether in that case
 				if (!bReceivedInput)
 				{
 					// First real input report: only now is this a controller rather than a device that
@@ -324,20 +420,32 @@ void pollIndividualLoop(JoyShock *jc) {
 						JSL4UModule.GetOnPollTouch().ExecuteIfBound(jc->intHandle, jc->touch_state, jc->last_touch_state, jc->delta_time);
 					}
 				}
-				// count how many have no IMU result. We want to periodically attempt to enable IMU if it's not present
+				// IMU is configured once as part of the controller handshake. Never send configuration
+				// subcommands from the live polling loop: on Bluetooth Joy-Cons that interrupts the
+				// established input stream and can leave the controller unresponsive. Missing IMU samples
+				// are reported once, while buttons/sticks continue to use the existing stream unchanged.
 				if (!hasIMU)
 				{
-					numNoIMU++;
-					if (numNoIMU == noIMULimit)
+					consecutiveReportsWithoutIMU++;
+					if (!bLoggedMissingIMU && consecutiveReportsWithoutIMU >= 250)
 					{
-						memset(buf, 0, 64);
-						jc->enable_IMU(buf, 64);
-						numNoIMU = 0;
+						UE_LOG(LogJoyShockLibrary, Warning,
+							TEXT("Controller %d (%s) is delivering input without IMU samples "
+								"(report 0x%02X, %d bytes); preserving the active input stream."),
+							jc->intHandle, *jc->name, buf[0], res);
+						bLoggedMissingIMU = true;
 					}
 				}
 				else
 				{
-					numNoIMU = 0;
+					if (bLoggedMissingIMU)
+					{
+						UE_LOG(LogJoyShockLibrary, Log,
+							TEXT("Controller %d (%s) resumed IMU samples (report 0x%02X, %d bytes)."),
+							jc->intHandle, *jc->name, buf[0], res);
+						bLoggedMissingIMU = false;
+					}
+					consecutiveReportsWithoutIMU = 0;
 				}
 				
 				// dualshock 4 bluetooth might need waking up
@@ -561,12 +669,6 @@ int32 UJoyShockLibrary::JslConnectDevices()
 		jc->deviceNumber = 0; // left
 	}
 
-	unsigned char buf[64];
-
-	// set lights:
-	//UE_LOG(LibraryLogJoyShock, Log, TEXT("setting LEDs...\n"));
-	int switchIndex = 1;
-	int dualSenseIndex = 1;
 	for (TTuple<int32, JoyShock*> pair : _joyshocks)
 	{
 		JoyShock *jc = pair.Value;
@@ -575,54 +677,15 @@ int32 UJoyShockLibrary::JslConnectDevices()
 		// This runs on every WM_DEVICECHANGE (including disconnects), and writing to a controller that
 		// already has a running poll thread can block on a device that has just been disconnected (e.g.
 		// bluetooth turned off) while we hold _connectedLock -- which would stall the poll threads and,
-		// during play, the game thread's Jsl* getters, freezing the editor. Player-number indices are
-		// still advanced for every device so newly connected controllers get a sensible LED.
+		// during play, the game thread's Jsl* getters, freezing the editor.
 		const bool bIsNewDevice = jc->thread == nullptr;
 
-		// restore colours if we have them set for this controller
-		switch (jc->controller_type)
+		// DS4 has no separate player indicator, but its RGB light bar and rumble start in the same report.
+		// This is safe before its polling thread exists. All later output, including every numeric player
+		// indicator, is written by that controller's polling thread.
+		if (bIsNewDevice && jc->controller_type == ControllerType::s_ds4)
 		{
-		case ControllerType::s_ds4:
-			if (bIsNewDevice)
-			{
-				jc->set_ds4_rumble_light(0, 0, jc->led_r, jc->led_g, jc->led_b);
-			}
-			break;
-		case ControllerType::s_ds:
-			{
-				const int thisDualSenseIndex = dualSenseIndex++;
-				if (bIsNewDevice)
-				{
-					// Record the number as well as sending it. The poll thread sends the output report
-					// whenever the state it tracks changes, so if player_number were left at 0 here the very
-					// next rumble would send 0 along with it and switch the player LEDs back off.
-					jc->player_number = thisDualSenseIndex;
-					jc->set_ds5_rumble_light(0, 0, jc->led_r, jc->led_g, jc->led_b, thisDualSenseIndex);
-				}
-			}
-			break;
-		case ControllerType::n_switch:
-			// Skip the Switch 2 entirely: it doesn't speak this Switch 1 subcommand (the write/read could
-			// block or interfere with its raw reports), AND it must not consume a player-LED number -- if it
-			// did, a Pro 2 sitting between two Joy-Cons would push the second Joy-Con's number past it
-			// (1, [2 spent on the Pro 2], 3). The index is still advanced for already-connected Switch 1
-			// controllers so a newly connected one doesn't collide with their numbers.
-			if (!jc->is_switch2_pro)
-			{
-				const int thisSwitchIndex = switchIndex++;
-				if (bIsNewDevice)
-				{
-					jc->player_number = thisSwitchIndex;
-					memset(buf, 0x00, 0x40);
-					// 0x30 takes a bitmask of which LEDs to light (one bit per position), so player N is
-					// 1 << (N-1): a single LED at that player's spot. Sending the number raw lights the wrong
-					// LEDs from player 3 on -- 3 would light LEDs 1+2 instead of LED 3, which reads as two
-					// controllers sharing player 1.
-					buf[0] = static_cast<unsigned char>(1 << (jc->player_number - 1));
-					jc->send_subcommand(0x01, 0x30, buf, 1);
-				}
-			}
-			break;
+			jc->set_ds4_rumble_light(0, 0, jc->led_r, jc->led_g, jc->led_b);
 		}
 
 		// threads for polling
@@ -740,6 +803,17 @@ static FJSL4UControllerInfo JSL4UMakeControllerInfo(int32 DeviceId, const FJSLSe
 	Info.ControllerType = JSL4UControllerTypeFromLegacy(JslSettings.controllerType);
 	Info.PlayerLedNumber = JslSettings.playerNumber;
 	Info.Color = FColor(Red, Green, Blue);
+	Info.bHasMotionSensors = Info.ControllerType != EJSL4UControllerType::Undefined;
+	Info.bHasRumble = Info.ControllerType != EJSL4UControllerType::Undefined;
+	Info.bHasRgbLight = Info.ControllerType == EJSL4UControllerType::DualShock4
+		|| Info.ControllerType == EJSL4UControllerType::DualSense;
+	Info.bHasTouchpad = Info.ControllerType == EJSL4UControllerType::DualShock4
+		|| Info.ControllerType == EJSL4UControllerType::DualSense;
+	Info.bHasPlayerIndicator = Info.ControllerType == EJSL4UControllerType::JoyConLeft
+		|| Info.ControllerType == EJSL4UControllerType::JoyConRight
+		|| Info.ControllerType == EJSL4UControllerType::ProController
+		|| Info.ControllerType == EJSL4UControllerType::ProController2
+		|| Info.ControllerType == EJSL4UControllerType::DualSense;
 	Info.GyroSpace = JslSettings.gyroSpace;
 	Info.SplitType = JslSettings.splitType;
 	Info.bIsCalibrating = JslSettings.isCalibrating;
@@ -755,8 +829,7 @@ static void JSL4UFillPlayerFields(FJSL4UControllerInfo& Info, FJoyShockInterface
 {
 	if (Interface != nullptr)
 	{
-		Info.PlayerIndex = Interface->GetPlayerIndexForDevice(Info.DeviceId);
-		Info.JoinedToDeviceId = Interface->GetJoinPartner(Info.DeviceId);
+		Interface->FillControllerInfo(Info);
 	}
 }
 
@@ -837,6 +910,17 @@ void UJoyShockLibrary::JSL4UUnjoinAllJoyCons()
 	{
 		Interface->UnjoinAllControllers();
 	}
+}
+
+bool UJoyShockLibrary::JSL4USetJoyConGripMode(int32 DeviceId, EJSL4UJoyConGripMode GripMode)
+{
+	if (GripMode == EJSL4UJoyConGripMode::NotApplicable)
+	{
+		return false;
+	}
+	FJoyShockInterface* Interface = FJoyShockLibrary4UnrealModule::GetInstance().GetActiveInterface();
+	return Interface != nullptr
+		&& Interface->SetJoyConHorizontal(DeviceId, GripMode == EJSL4UJoyConGripMode::Horizontal);
 }
 
 int32 UJoyShockLibrary::JSL4UGetPlayerIndexOfController(int32 DeviceId)
@@ -1932,22 +2016,27 @@ void UJoyShockLibrary::JSL4USetPlayerNumber(int32 DeviceId, int32 Number)
 	std::shared_lock<std::shared_timed_mutex> lock(JSL4UModule._connectedLock);
 
 	JoyShock* jc = GetJoyShockFromHandle(DeviceId);
-	if (jc != nullptr && jc->controller_type == ControllerType::n_switch) {
-		jc->modifying_lock.Lock();
-		jc->player_number = Number;
-		unsigned char buf[64];
-		memset(buf, 0x00, 0x40);
-		buf[0] = (unsigned char)Number;
-		jc->send_subcommand(0x01, 0x30, buf, 1);
-		jc->modifying_lock.Unlock();
-	}
-	else if (jc != nullptr && jc->controller_type == ControllerType::s_ds) {
-		// Store only -- the DualSense's player LEDs ride in the same output report as its rumble and light
-		// bar, so the polling thread sends all three together (see pollIndividualLoop).
+	if (jc != nullptr && (jc->controller_type == ControllerType::n_switch
+		|| jc->controller_type == ControllerType::s_ds))
+	{
+		// Store the semantic one-based number, never a hardware-specific mask. The polling thread converts
+		// it for Switch 1, Switch 2 or DualSense and remains the sole writer to the controller. Apart from
+		// avoiding a blocking HID call on the game thread, this prevents the old Switch-1 subcommand from
+		// accidentally being sent to a Switch 2 Pro Controller.
 		jc->modifying_lock.Lock();
 		jc->player_number = Number;
 		jc->modifying_lock.Unlock();
 	}
+}
+
+void UJoyShockLibrary::JSL4UGetSwitchPlayerLedPattern(int32 PlayerNumber,
+	bool& bLed1, bool& bLed2, bool& bLed3, bool& bLed4)
+{
+	const unsigned char Mask = PlayerNumberToSwitchLedMask(PlayerNumber);
+	bLed1 = (Mask & 0x01) != 0;
+	bLed2 = (Mask & 0x02) != 0;
+	bLed3 = (Mask & 0x04) != 0;
+	bLed4 = (Mask & 0x08) != 0;
 }
 
 // set controller player number indicator (not all controllers have a number indicator which can be set, but that just means nothing will be done when this is called -- no harm)

@@ -179,15 +179,9 @@ JoyShock::~JoyShock() {
 	}
 
 #if PLATFORM_WINDOWS
-	// Close the Switch 2 WinUSB command interface, if this controller had one open.
-	if (sw2_winusb_handle != nullptr) {
-		WinUsb_Free(static_cast<WINUSB_INTERFACE_HANDLE>(sw2_winusb_handle));
-		sw2_winusb_handle = nullptr;
-	}
-	if (sw2_winusb_file != nullptr) {
-		CloseHandle(static_cast<HANDLE>(sw2_winusb_file));
-		sw2_winusb_file = nullptr;
-	}
+	// Force the same close path used by the polling thread.
+	sw2_last_command_time = {};
+	release_sw2_command_interface_if_idle();
 #endif
 }
 
@@ -839,7 +833,14 @@ bool JoyShock::sw2_open_winusb() {
 			const DWORD openError = GetLastError();
 			if (openError == ERROR_ACCESS_DENIED)
 			{
-				UE_LOG(LogJoyShockLibrary, Warning, TEXT("SW2: another application (e.g. Steam) has exclusive access to the controller's command interface. Close it to enable rumble/init from this plugin.\n"));
+				++sw2_access_denied_count;
+				if (sw2_access_denied_count >= 3 && !sw2_access_warning_logged)
+				{
+					UE_LOG(LogJoyShockLibrary, Warning,
+						TEXT("SW2: the controller command interface remains owned by another process after multiple retries. ")
+						TEXT("This can be another Unreal instance, Steam, or another controller tool."));
+					sw2_access_warning_logged = true;
+				}
 			}
 			else
 			{
@@ -883,6 +884,9 @@ bool JoyShock::sw2_open_winusb() {
 		sw2_winusb_handle = usbHandle;
 		sw2_out_pipe = outPipe;
 		sw2_in_pipe = inPipe;
+		sw2_last_command_time = std::chrono::steady_clock::now();
+		sw2_access_warning_logged = false;
+		sw2_access_denied_count = 0;
 		bOpened = true;
 		break; // this JoyShock's own controller found (matched via composite parent above)
 	}
@@ -891,6 +895,30 @@ bool JoyShock::sw2_open_winusb() {
 	return bOpened;
 #else
 	return false;
+#endif
+}
+
+void JoyShock::release_sw2_command_interface_if_idle() {
+#if PLATFORM_WINDOWS
+	if (sw2_winusb_handle == nullptr)
+	{
+		return;
+	}
+
+	const auto now = std::chrono::steady_clock::now();
+	if (sw2_last_command_time.time_since_epoch().count() != 0
+		&& std::chrono::duration_cast<std::chrono::milliseconds>(now - sw2_last_command_time).count() < 1000)
+	{
+		return;
+	}
+
+	WinUsb_Free(static_cast<WINUSB_INTERFACE_HANDLE>(sw2_winusb_handle));
+	sw2_winusb_handle = nullptr;
+	if (sw2_winusb_file != nullptr)
+	{
+		CloseHandle(static_cast<HANDLE>(sw2_winusb_file));
+		sw2_winusb_file = nullptr;
+	}
 #endif
 }
 
@@ -908,7 +936,13 @@ bool JoyShock::init_switch2() {
 	{
 		// The controller may still stream input if it was already initialised (e.g. by Steam or a previous
 		// session), so don't treat this as fatal; rumble retries the open lazily (see set_sw2_rumble).
-		UE_LOG(LogJoyShockLibrary, Warning, TEXT("SW2: command interface unavailable; skipping init (input may still stream if already initialised).\n"));
+		if (!sw2_init_failure_logged)
+		{
+			UE_LOG(LogJoyShockLibrary, Log,
+				TEXT("SW2: command interface unavailable; deferring calibrated init until the current owner releases it."));
+			sw2_init_failure_logged = true;
+		}
+		sw2_init_succeeded = false;
 		this->initialised = true;
 		return false;
 	}
@@ -1013,7 +1047,6 @@ bool JoyShock::init_switch2() {
 			{ 0x08, 0x02, 4,  { 0x01, 0x00, 0x00, 0x00 } },
 			{ 0x03, 0x0a, 4,  { 0x05, 0x00, 0x00, 0x00 } },              // input report mode 0x05
 			{ 0x03, 0x0d, 8,  { 0x01, 0x00, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff } },
-			{ 0x09, 0x07, 8,  { 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 } },
 		};
 
 		bSuccess = true;
@@ -1054,16 +1087,23 @@ bool JoyShock::init_switch2() {
 				UE_LOG(LogJoyShockLibrary, Log, TEXT("  SW2 cmd %02x:%02x -> sent (%u bytes), no ack\n"), c.cmd, c.subcmd, written);
 			}
 		}
+		sw2_last_command_time = std::chrono::steady_clock::now();
 
 	if (!bSuccess)
 	{
 		UE_LOG(LogJoyShockLibrary, Warning, TEXT("SW2: some init commands failed; the controller may not stream input.\n"));
+	}
+	sw2_init_succeeded = bSuccess;
+	if (bSuccess)
+	{
+		sw2_init_failure_logged = false;
 	}
 	this->initialised = true;
 	return bSuccess;
 #else
 	// Non-Windows: the WinUSB path doesn't apply; hidapi may be able to talk to the command interface
 	// directly on other platforms (untested).
+	sw2_init_succeeded = false;
 	this->initialised = true;
 	return false;
 #endif
@@ -1116,7 +1156,68 @@ void JoyShock::set_sw2_rumble(int smallRumble, int bigRumble) {
 	unsigned char resp[64];
 	ULONG got = 0;
 	WinUsb_ReadPipe(static_cast<WINUSB_INTERFACE_HANDLE>(sw2_winusb_handle), sw2_in_pipe, resp, sizeof(resp), &got, nullptr);
+	sw2_last_command_time = std::chrono::steady_clock::now();
 #endif
+}
+
+bool JoyShock::set_sw2_player_lights(unsigned char playerLightMask) {
+#if PLATFORM_WINDOWS
+	if (sw2_winusb_handle == nullptr)
+	{
+		const auto now = std::chrono::steady_clock::now();
+		if (std::chrono::duration_cast<std::chrono::seconds>(now - sw2_last_open_attempt).count() < 2)
+		{
+			return false;
+		}
+		sw2_last_open_attempt = now;
+		if (!sw2_open_winusb())
+		{
+			return false;
+		}
+	}
+
+	// Player LEDs use command 09:07. The mask is the same four-bit pattern used by Switch 1;
+	// byte 8 is the first byte of this command's eight-byte payload.
+	unsigned char cmdBuf[16];
+	memset(cmdBuf, 0, sizeof(cmdBuf));
+	cmdBuf[0] = 0x09;
+	cmdBuf[1] = 0x91;
+	cmdBuf[2] = 0x00;
+	cmdBuf[3] = 0x07;
+	cmdBuf[5] = 0x08;
+	cmdBuf[8] = playerLightMask;
+
+	ULONG written = 0;
+	const bool bWritten = WinUsb_WritePipe(static_cast<WINUSB_INTERFACE_HANDLE>(sw2_winusb_handle), sw2_out_pipe,
+		cmdBuf, sizeof(cmdBuf), &written, nullptr) && written == sizeof(cmdBuf);
+	if (!bWritten)
+	{
+		return false;
+	}
+
+	// Drain the acknowledgement so the shared command pipe remains ready for rumble and later LED changes.
+	unsigned char resp[64];
+	ULONG got = 0;
+	WinUsb_ReadPipe(static_cast<WINUSB_INTERFACE_HANDLE>(sw2_winusb_handle), sw2_in_pipe,
+		resp, sizeof(resp), &got, nullptr);
+	sw2_last_command_time = std::chrono::steady_clock::now();
+	return true;
+#else
+	return false;
+#endif
+}
+
+bool JoyShock::set_switch_player_lights(unsigned char playerLightMask) {
+	unsigned char buf[1] = { playerLightMask };
+	return send_subcommand(0x01, 0x30, buf, 1);
+}
+
+bool JoyShock::clear_switch_home_light() {
+	// Subcommand 0x38 controls the blue HOME notification light independently of subcommand 0x30's
+	// four green player LEDs. This is Nintendo's five-byte "steady brightness 0" pattern; an all-zero
+	// payload is not an off command and can make the ring light instead.
+	unsigned char buf[5] = { 0x01, 0x00, 0x00, 0x11, 0x11 };
+	return send_subcommand(0x01, 0x38, buf, sizeof(buf));
 }
 
 void JoyShock::set_switch_rumble(int smallRumble, int bigRumble) {

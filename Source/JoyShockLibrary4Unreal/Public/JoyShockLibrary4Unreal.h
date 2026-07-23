@@ -23,6 +23,8 @@ DECLARE_DELEGATE_FourParams(FJoyShockPollTouchDelegate, int32, FTouchState, FTou
 // from the background threads and the interface itself consumes them, so nothing else can bind to them.
 DECLARE_MULTICAST_DELEGATE_OneParam(FJSL4UDeviceConnectedEvent, int32 /*DeviceId*/);
 DECLARE_MULTICAST_DELEGATE_TwoParams(FJSL4UDeviceDisconnectedEvent, int32 /*DeviceId*/, bool /*bTimedOut*/);
+DECLARE_MULTICAST_DELEGATE_ThreeParams(FJSL4UJoyConPairingChangedEvent,
+	int32 /*LeftDeviceId*/, int32 /*RightDeviceId*/, bool /*bJoined*/);
 
 
 #define JoyShockLockedBindLambda(Module, Delegate, Lambda) { \
@@ -77,6 +79,7 @@ public:
 	// from C++ if you need them before/without a GameInstance.
 	FORCEINLINE FJSL4UDeviceConnectedEvent& GetOnDeviceConnected() { return OnDeviceConnected; }
 	FORCEINLINE FJSL4UDeviceDisconnectedEvent& GetOnDeviceDisconnected() { return OnDeviceDisconnected; }
+	FORCEINLINE FJSL4UJoyConPairingChangedEvent& GetOnJoyConPairingChanged() { return OnJoyConPairingChanged; }
 
 	// The live input-device interface owns the controller state, player-slot assignment and Joy-Con joining.
 	// It registers itself here on creation so the Blueprint pairing API can reach it. May be null before the
@@ -95,6 +98,7 @@ protected:
 
 	FJSL4UDeviceConnectedEvent OnDeviceConnected;
 	FJSL4UDeviceDisconnectedEvent OnDeviceDisconnected;
+	FJSL4UJoyConPairingChangedEvent OnJoyConPairingChanged;
 
 #if PLATFORM_WINDOWS
 	FWindowsDeviceChangeMessageHandler WindowsDeviceChangeMessageHandler;

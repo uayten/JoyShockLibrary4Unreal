@@ -9,12 +9,17 @@
 #include "GenericPlatform/InputDeviceRegistry.h"
 #include "JoyShockLibrary4Unreal/JoyShockLibrary/JoyShockLibrary.h"
 #include "Misc/ConfigCacheIni.h"
+#include "HAL/IConsoleManager.h"
 #include <functional>
+#include <mutex>
+#include <shared_mutex>
 
 #include "JoyShockLibrary4Unreal.h"
-#include "JoyShockLibrary4UnrealSettings.h"
-
 #define LOCTEXT_NAMESPACE "JoyShockLibrary"
+
+static TAutoConsoleVariable<int32> CVarJoyShockDebugInputStalls(
+	TEXT("JoyShock.Debug.InputStalls"), 0,
+	TEXT("Warns when a connected controller stops delivering HID reports for over one second. 0=off, 1=on."));
 
 TSharedRef<FJoyShockInterface> FJoyShockInterface::Create(const TSharedRef<FGenericApplicationMessageHandler>& InMessageHandler)
 {
@@ -25,15 +30,6 @@ TSharedRef<FJoyShockInterface> FJoyShockInterface::Create(const TSharedRef<FGene
 FJoyShockInterface::FJoyShockInterface(const TSharedRef<FGenericApplicationMessageHandler>& InMessageHandler)
 	: MessageHandler(InMessageHandler)
 {
-	CachedSettings = GetMutableDefault<UJoyShockLibrary4UnrealSettings>();
-
-#if WITH_EDITOR
-	CachedSettings->GetOnSettingsChanged().AddLambda([this]
-	{
-		CachedSettings = GetMutableDefault<UJoyShockLibrary4UnrealSettings>();
-	});
-#endif
-
 	InitializeAdditionalKeys();
 
 	FJoyShockLibrary4UnrealModule& JSL4UModule = FJoyShockLibrary4UnrealModule::GetInstance();
@@ -57,16 +53,17 @@ FJoyShockInterface::FJoyShockInterface(const TSharedRef<FGenericApplicationMessa
 		PendingDisconnects.Enqueue(TPair<int32, bool>(DeviceHandle, bHasTimedOut));
 	});
 
+	// These two run on the polling threads. What keeps `this` alive under them is the destructor unbinding
+	// them under _callbackLock -- not a null check here, which could never fire: `this` is captured by value,
+	// so it is non-null even after the object it points at is gone.
 	JoyShockLockedBindLambda(JSL4UModule, GetOnPoll(), [this](int32 DeviceHandle, const FJoyShockState& SimpleState, const FJoyShockState& PreviousSimpleState, const FIMUState& IMUState, const FIMUState& PreviousIMUState, float DeltaTime)
 	{
-		if (this)
-			this->OnPollCallback(DeviceHandle, SimpleState, PreviousSimpleState, IMUState, PreviousIMUState, DeltaTime);
+		OnPollCallback(DeviceHandle, SimpleState, PreviousSimpleState, IMUState, PreviousIMUState, DeltaTime);
 	});
 
 	JoyShockLockedBindLambda(JSL4UModule, GetOnPollTouch(), [this](int32 DeviceHandle, const FTouchState& TouchState, const FTouchState& PreviousTouchState, float DeltaTime)
 	{
-		if (this)
-			this->OnTouchCallback(DeviceHandle, TouchState, PreviousTouchState, DeltaTime);
+		OnTouchCallback(DeviceHandle, TouchState, PreviousTouchState, DeltaTime);
 	});
 	
 	bIsGamepadAttached = false;
@@ -97,6 +94,24 @@ FJoyShockInterface::~FJoyShockInterface()
 	if (FJoyShockLibrary4UnrealModule::IsAvailable())
 	{
 		FJoyShockLibrary4UnrealModule& JSL4UModule = FJoyShockLibrary4UnrealModule::GetInstance();
+
+		// The four callbacks below capture `this` and are executed by the polling threads, which outlive this
+		// object: the threads are stopped when the library shuts down, not when the input device goes away. So
+		// leaving them bound leaves a polling thread calling into freed memory the moment the interface is
+		// destroyed -- an access violation on shutdown, from a stack that points here rather than at whoever
+		// destroyed us.
+		//
+		// The exclusive lock is what makes this safe rather than merely likely: the polling threads take
+		// _callbackLock shared around ExecuteIfBound, so acquiring it exclusively waits for any callback
+		// already running to return, and any that arrives afterwards finds the delegates unbound.
+		{
+			std::unique_lock<std::shared_timed_mutex> CallbackLock(JSL4UModule._callbackLock);
+			JSL4UModule.GetOnConnected().Unbind();
+			JSL4UModule.GetOnDisconnected().Unbind();
+			JSL4UModule.GetOnPoll().Unbind();
+			JSL4UModule.GetOnPollTouch().Unbind();
+		}
+
 		if (JSL4UModule.GetActiveInterface() == this)
 		{
 			JSL4UModule.SetActiveInterface(nullptr);
@@ -156,6 +171,169 @@ FString FJoyShockInterface::GetDeviceName(int32 InControllerId)
 	}
 }
 
+FName FJoyShockInterface::GetHardwareDeviceIdentifier(int32 InControllerId)
+{
+	switch (UJoyShockLibrary::JslGetControllerType(InControllerId))
+	{
+	case JS_TYPE_JOYCON_LEFT:
+		return TEXT("JoyConLeft");
+	case JS_TYPE_JOYCON_RIGHT:
+		return TEXT("JoyConRight");
+	case JS_TYPE_PRO_CONTROLLER:
+		return TEXT("SwitchProController");
+	case JS_TYPE_PRO_CONTROLLER_2:
+		return TEXT("Switch2ProController");
+	case JS_TYPE_DS4:
+		return TEXT("DualShock4");
+	case JS_TYPE_DS:
+		return TEXT("DualSense");
+	default:
+		return TEXT("JoyShockGamepad");
+	}
+}
+
+FJoyShockInterface::FJoyConPairingChange FJoyShockInterface::MakeJoyConPairingChange(
+	int32 HandleA, int32 HandleB, bool bJoined) const
+{
+	const FControllerState* StateA = ControllerStateByDeviceHandle.Find(HandleA);
+	const bool bAIsLeft = StateA != nullptr && StateA->HardwareDeviceIdentifier == TEXT("JoyConLeft");
+	return { bAIsLeft ? HandleA : HandleB, bAIsLeft ? HandleB : HandleA, bJoined };
+}
+
+void FJoyShockInterface::BroadcastJoyConPairingChanges(const TArray<FJoyConPairingChange>& PairingChanges)
+{
+	if (PairingChanges.IsEmpty() || !FJoyShockLibrary4UnrealModule::IsAvailable())
+	{
+		return;
+	}
+
+	FJSL4UJoyConPairingChangedEvent& Event =
+		FJoyShockLibrary4UnrealModule::GetInstance().GetOnJoyConPairingChanged();
+	for (const FJoyConPairingChange& Change : PairingChanges)
+	{
+		UE_LOG(LogJoyShockLibrary, Verbose,
+			TEXT("Broadcasting Joy-Con %s: left device %d, right device %d."),
+			Change.bJoined ? TEXT("join") : TEXT("separation"),
+			Change.LeftDeviceId, Change.RightDeviceId);
+		Event.Broadcast(Change.LeftDeviceId, Change.RightDeviceId, Change.bJoined);
+	}
+}
+
+void FJoyShockInterface::UpdateJoyConGripTransitions(TArray<FJoyConPairingChange>& OutPairingChanges)
+{
+	// Caller holds ControllerContainerLock. Poll callbacks take that lock before SimpleStateLock too, so
+	// this preserves the existing lock order while taking one coherent snapshot of every Joy-Con chord.
+	FScopeLock StateLock(&SimpleStateLock);
+	bool bAssignmentChanged = false;
+
+	for (TTuple<int32, FControllerState>& Pair : ControllerStateByDeviceHandle)
+	{
+		FControllerState& State = Pair.Value;
+		if (State.SuppressedGripButtons != 0
+			&& ((State.SimpleState.buttons | State.PreviousSimpleState.buttons) & State.SuppressedGripButtons) == 0)
+		{
+			State.SuppressedGripButtons = 0;
+		}
+	}
+
+	// SL+SR on either half means "this is a solo horizontal controller". If it belonged to a joined pair,
+	// both halves become standalone/horizontal again; only the initiating half's chord is suppressed.
+	TArray<int32> SplitRequests;
+	for (int32 Handle : DeviceHandles)
+	{
+		FControllerState* State = ControllerStateByDeviceHandle.Find(Handle);
+		if (State == nullptr || !State->bIsConnected || !JoinPartner.Contains(Handle))
+		{
+			continue;
+		}
+		const bool bIsJoyCon = State->HardwareDeviceIdentifier == TEXT("JoyConLeft")
+			|| State->HardwareDeviceIdentifier == TEXT("JoyConRight");
+		if (bIsJoyCon && (State->SimpleState.buttons & (JSMASK_SL | JSMASK_SR)) == (JSMASK_SL | JSMASK_SR))
+		{
+			SplitRequests.AddUnique(Handle);
+		}
+	}
+
+	for (int32 Handle : SplitRequests)
+	{
+		if (FControllerState* RequestState = ControllerStateByDeviceHandle.Find(Handle))
+		{
+			RequestState->bJoyConHorizontal = true;
+			RequestState->SuppressedGripButtons |= JSMASK_SL | JSMASK_SR;
+		}
+		const int32* PartnerPtr = JoinPartner.Find(Handle);
+		if (PartnerPtr == nullptr)
+		{
+			continue;
+		}
+		const int32 Partner = *PartnerPtr;
+		JoinPartner.Remove(Handle);
+		JoinPartner.Remove(Partner);
+		if (FControllerState* PartnerState = ControllerStateByDeviceHandle.Find(Partner))
+		{
+			PartnerState->bJoyConHorizontal = true;
+		}
+		OutPairingChanges.Add(MakeJoyConPairingChange(Handle, Partner, false));
+		UE_LOG(LogJoyShockLibrary, Log,
+			TEXT("Joy-Con grip: SL+SR separated devices %d and %d into horizontal controllers."), Handle, Partner);
+		bAssignmentChanged = true;
+	}
+
+	// An outer shoulder/trigger on a separated left half plus an outer shoulder/trigger on a separated
+	// right half form one vertical pair. In other words, L or ZL may be combined with R or ZR. Sorting
+	// makes simultaneous multi-pair registration deterministic without depending on map order.
+	constexpr int32 LeftJoinButtons = JSMASK_L | JSMASK_ZL;
+	constexpr int32 RightJoinButtons = JSMASK_R | JSMASK_ZR;
+	TArray<int32> LeftCandidates;
+	TArray<int32> RightCandidates;
+	for (int32 Handle : DeviceHandles)
+	{
+		FControllerState* State = ControllerStateByDeviceHandle.Find(Handle);
+		if (State == nullptr || !State->bIsConnected || JoinPartner.Contains(Handle))
+		{
+			continue;
+		}
+		if (State->HardwareDeviceIdentifier == TEXT("JoyConLeft")
+			&& (State->SimpleState.buttons & LeftJoinButtons) != 0)
+		{
+			LeftCandidates.Add(Handle);
+		}
+		else if (State->HardwareDeviceIdentifier == TEXT("JoyConRight")
+			&& (State->SimpleState.buttons & RightJoinButtons) != 0)
+		{
+			RightCandidates.Add(Handle);
+		}
+	}
+	LeftCandidates.Sort();
+	RightCandidates.Sort();
+
+	const int32 PairCount = FMath::Min(LeftCandidates.Num(), RightCandidates.Num());
+	for (int32 PairIndex = 0; PairIndex < PairCount; ++PairIndex)
+	{
+		const int32 LeftHandle = LeftCandidates[PairIndex];
+		const int32 RightHandle = RightCandidates[PairIndex];
+		JoinPartner.Add(LeftHandle, RightHandle);
+		JoinPartner.Add(RightHandle, LeftHandle);
+
+		FControllerState& LeftState = ControllerStateByDeviceHandle.FindChecked(LeftHandle);
+		FControllerState& RightState = ControllerStateByDeviceHandle.FindChecked(RightHandle);
+		LeftState.bJoyConHorizontal = false;
+		RightState.bJoyConHorizontal = false;
+		LeftState.SuppressedGripButtons |= LeftJoinButtons;
+		RightState.SuppressedGripButtons |= RightJoinButtons;
+		OutPairingChanges.Add({ LeftHandle, RightHandle, true });
+		UE_LOG(LogJoyShockLibrary, Log,
+			TEXT("Joy-Con grip: L/ZL + R/ZR joined devices %d and %d as one vertical controller."),
+			LeftHandle, RightHandle);
+		bAssignmentChanged = true;
+	}
+
+	if (bAssignmentChanged)
+	{
+		RefreshPlayerAssignments();
+	}
+}
+
 void FJoyShockInterface::SendControllerEvents()
 {
 	// Drain connects/disconnects queued from the background enumeration and polling threads. Handling
@@ -172,15 +350,19 @@ void FJoyShockInterface::SendControllerEvents()
 		TPair<int32, bool> PendingDisconnect;
 		while (PendingDisconnects.Dequeue(PendingDisconnect))
 		{
-			OnDisconnectCallback(PendingDisconnect.Key, PendingDisconnect.Value);
-			DisconnectedThisTick.Add(PendingDisconnect);
+			if (OnDisconnectCallback(PendingDisconnect.Key, PendingDisconnect.Value))
+			{
+				DisconnectedThisTick.Add(PendingDisconnect);
+			}
 		}
 
 		int32 PendingConnect;
 		while (PendingConnects.Dequeue(PendingConnect))
 		{
-			OnConnectCallback(PendingConnect);
-			ConnectedThisTick.Add(PendingConnect);
+			if (OnConnectCallback(PendingConnect))
+			{
+				ConnectedThisTick.Add(PendingConnect);
+			}
 		}
 
 		if (DisconnectedThisTick.Num() > 0 || ConnectedThisTick.Num() > 0)
@@ -202,9 +384,12 @@ void FJoyShockInterface::SendControllerEvents()
 		}
 	}
 
+	TArray<FJoyConPairingChange> PairingChanges;
+	{
 	FScopeLock ContainerLock(&ControllerContainerLock);
 
 	bIsGamepadAttached = !DeviceHandles.IsEmpty();
+	UpdateJoyConGripTransitions(PairingChanges);
 
 	for (int32 Index = DeviceHandles.Num() - 1; Index >= 0; Index--)
 	{
@@ -217,8 +402,9 @@ void FJoyShockInterface::SendControllerEvents()
 			// invisible from the game -- input just goes quiet, exactly as if the engine had stopped routing
 			// it. Say which of the two it is. (A healthy controller reports at 60Hz or faster, so a whole
 			// second of silence is already far outside normal.)
+			const bool bStallDiagnosticsEnabled = CVarJoyShockDebugInputStalls.GetValueOnGameThread() != 0;
 			const double SecondsSinceLastReport = FPlatformTime::Seconds() - ControllerState.LastReportTime;
-			if (SecondsSinceLastReport > 1.0)
+			if (bStallDiagnosticsEnabled && SecondsSinceLastReport > 1.0)
 			{
 				if (!ControllerState.bReportedInputStall)
 				{
@@ -228,14 +414,13 @@ void FJoyShockInterface::SendControllerEvents()
 						DeviceHandle, *ControllerState.DeviceName, SecondsSinceLastReport);
 				}
 			}
-			else if (ControllerState.bReportedInputStall)
+			else if (bStallDiagnosticsEnabled && ControllerState.bReportedInputStall)
 			{
 				ControllerState.bReportedInputStall = false;
 				UE_LOG(LogJoyShockLibrary, Warning, TEXT("Device %d (%s) is delivering input reports again."),
 					DeviceHandle, *ControllerState.DeviceName);
 			}
 
-			// if (CachedSettings->bControllerEventsWaitForEngineTick) // TODO: Implement this setting
 			{
 				// PlatformUser is the player slot this device is assigned to (see RefreshPlayerAssignments).
 				// Both halves of a joined Joy-Con pair share the same PlatformUser, so their (disjoint)
@@ -248,10 +433,24 @@ void FJoyShockInterface::SendControllerEvents()
 				FIMUState CurrentIMUState;
 				{
 					FScopeLock Lock(&SimpleStateLock);
-					int32 CurrentButtons = ControllerState.SimpleState.buttons;
-					int32 PreviousButtons = ControllerState.PreviousSimpleState.buttons;
+					const bool bJoyConLeft = ControllerState.HardwareDeviceIdentifier == TEXT("JoyConLeft");
+					const bool bJoyConRight = ControllerState.HardwareDeviceIdentifier == TEXT("JoyConRight");
+					const bool bDualShock4 = ControllerState.HardwareDeviceIdentifier == TEXT("DualShock4");
+					const int32 SuppressedButtons = ControllerState.SuppressedGripButtons;
+					int32 CurrentButtons = ControllerState.SimpleState.buttons & ~SuppressedButtons;
+					int32 PreviousButtons = ControllerState.PreviousSimpleState.buttons & ~SuppressedButtons;
+					CurrentButtons = TransformJoyConButtons(
+						CurrentButtons, bJoyConLeft, bJoyConRight, ControllerState.bJoyConHorizontal);
+					PreviousButtons = TransformJoyConButtons(
+						PreviousButtons, bJoyConLeft, bJoyConRight, ControllerState.bButtonsWereJoyConHorizontal);
 					ProcessButtons(CurrentButtons, PreviousButtons, PlatformUser, InputDevice);
-					ProcessAnalogInputs(ControllerState.SimpleState, ControllerState.PreviousSimpleState, PlatformUser, InputDevice);
+
+					ProcessAnalogInputs(ControllerState.SimpleState, ControllerState.PreviousSimpleState,
+						bJoyConLeft, bJoyConRight, bDualShock4, ControllerState.bJoyConHorizontal,
+						ControllerState.bAnalogWasJoyConHorizontal,
+						PlatformUser, InputDevice);
+					ControllerState.bAnalogWasJoyConHorizontal = ControllerState.bJoyConHorizontal;
+					ControllerState.bButtonsWereJoyConHorizontal = ControllerState.bJoyConHorizontal;
 					// Copied out rather than dispatched here: ProcessIMUState reads the motion state through
 					// the Jsl* getters, and doing that under SimpleStateLock would nest this lock inside the
 					// library's for no reason.
@@ -275,6 +474,11 @@ void FJoyShockInterface::SendControllerEvents()
 			DeviceHandles.RemoveAt(Index);
 		}
 	}
+	}
+
+	// Pairing listeners commonly query controller info or open UI. Broadcast only after both state locks
+	// have been released so those callbacks can safely call the complete JSL4U API.
+	BroadcastJoyConPairingChanges(PairingChanges);
 }
 
 
@@ -391,6 +595,46 @@ void FJoyShockInterface::OnControllerAnalog(const FPlatformUserId& InPlatformUse
 	}
 }
 
+int32 FJoyShockInterface::TransformJoyConButtons(int32 Buttons, bool bJoyConLeft, bool bJoyConRight, bool bHorizontal)
+{
+	if (!bHorizontal || (!bJoyConLeft && !bJoyConRight))
+	{
+		return Buttons;
+	}
+
+	const int32 Original = Buttons;
+	Buttons &= ~(JSMASK_UP | JSMASK_DOWN | JSMASK_LEFT | JSMASK_RIGHT
+		| JSMASK_N | JSMASK_S | JSMASK_E | JSMASK_W
+		| JSMASK_L | JSMASK_ZL | JSMASK_R | JSMASK_ZR
+		| JSMASK_SL | JSMASK_SR | JSMASK_LCLICK | JSMASK_RCLICK);
+
+	// The rail buttons become the two standard shoulders. The outer L/ZL or R/ZR pair has no gameplay
+	// function in Nintendo's solo-horizontal presentation and remains available only to the join chord.
+	if (Original & JSMASK_SL) Buttons |= JSMASK_L;
+	if (Original & JSMASK_SR) Buttons |= JSMASK_R;
+
+	if (bJoyConLeft)
+	{
+		// Rotate the four directional buttons counter-clockwise into positional face-button keys.
+		if (Original & JSMASK_UP) Buttons |= JSMASK_W;
+		if (Original & JSMASK_DOWN) Buttons |= JSMASK_E;
+		if (Original & JSMASK_LEFT) Buttons |= JSMASK_S;
+		if (Original & JSMASK_RIGHT) Buttons |= JSMASK_N;
+		if (Original & JSMASK_LCLICK) Buttons |= JSMASK_LCLICK;
+	}
+	else
+	{
+		// Rotate the Joy-Con R's physical ABXY positions clockwise.
+		if (Original & JSMASK_E) Buttons |= JSMASK_S;
+		if (Original & JSMASK_S) Buttons |= JSMASK_W;
+		if (Original & JSMASK_W) Buttons |= JSMASK_N;
+		if (Original & JSMASK_N) Buttons |= JSMASK_E;
+		if (Original & JSMASK_RCLICK) Buttons |= JSMASK_LCLICK;
+	}
+
+	return Buttons;
+}
+
 void FJoyShockInterface::ProcessButtons(int32 CurrentButtons, int32 PreviousButtons, FPlatformUserId PlatformUser, FInputDeviceId InputDevice)
 {
 	const double CurrentTime = FPlatformTime::Seconds();
@@ -407,7 +651,6 @@ void FJoyShockInterface::ProcessButtons(int32 CurrentButtons, int32 PreviousButt
 
 		if (PressedButtons & Mask)
 		{
-			// UE_LOG(LogJoyShockLibrary, Log, TEXT(">>>>>>>BUTTON PRESSED: %s"), *Mapping.ToString());
 			MessageHandler->OnControllerButtonPressed(Mapping, PlatformUser, InputDevice, false);
 					
 			// this button was pressed - set the button's NextRepeatTime to the InitialButtonRepeatDelay
@@ -429,16 +672,95 @@ void FJoyShockInterface::ProcessButtons(int32 CurrentButtons, int32 PreviousButt
 	}
 }
 
-void FJoyShockInterface::ProcessAnalogInputs(const FJoyShockState& SimpleState, const FJoyShockState& PreviousSimpleState, FPlatformUserId PlatformUser, FInputDeviceId InputDevice)
+void FJoyShockInterface::ProcessAnalogInputs(const FJoyShockState& SimpleState,
+	const FJoyShockState& PreviousSimpleState,
+	bool bJoyConLeft,
+	bool bJoyConRight,
+	bool bDualShock4,
+	bool bHorizontal,
+	bool bWasHorizontal,
+	FPlatformUserId PlatformUser,
+	FInputDeviceId InputDevice)
 {
-	OnControllerAnalog(PlatformUser, InputDevice, FGamepadKeyNames::LeftAnalogX, SimpleState.stickLX, PreviousSimpleState.stickLX);
-	OnControllerAnalog(PlatformUser, InputDevice, FGamepadKeyNames::LeftAnalogY, SimpleState.stickLY, PreviousSimpleState.stickLY);
+	auto PresentSticks = [bJoyConLeft, bJoyConRight, bDualShock4](const FJoyShockState& State, bool bStateHorizontal,
+		float& OutLeftX, float& OutLeftY, float& OutRightX, float& OutRightY)
+	{
+		if (bJoyConLeft)
+		{
+			if (bStateHorizontal)
+			{
+				// Joy-Con L is rotated counter-clockwise into the solo horizontal grip.
+				OutLeftX = -State.stickLY;
+				OutLeftY = State.stickLX;
+			}
+			else
+			{
+				OutLeftX = State.stickLX;
+				OutLeftY = State.stickLY;
+			}
+			OutRightX = 0.0f;
+			OutRightY = 0.0f;
+			return;
+		}
 
-	OnControllerAnalog(PlatformUser, InputDevice, FGamepadKeyNames::RightAnalogX, SimpleState.stickRX, PreviousSimpleState.stickRX);
-	OnControllerAnalog(PlatformUser, InputDevice, FGamepadKeyNames::RightAnalogY, SimpleState.stickRY, PreviousSimpleState.stickRY);
+		if (bJoyConRight)
+		{
+			// The Switch 1 right-half hardware reports its vertical stick axis with the opposite sign from
+			// Unreal's standard gamepad convention. Normalise the device-local vector first, then rotate that
+			// canonical vector only when the half is held horizontally. Keeping this device-specific here
+			// means a shared Enhanced Input mapping (including To World Space) behaves identically for a
+			// joined Joy-Con pair, DualShock/DualSense and Pro Controllers.
+			const float NormalizedStickX = State.stickRX;
+			const float NormalizedStickY = -State.stickRY;
+			if (bStateHorizontal)
+			{
+				// In the solo-horizontal grip, physical left/right comes from the opposite of the
+				// normalised vertical axis while physical up/down comes from the opposite of X. Keep this
+				// presentation transform separate from the joined-mode Y normalisation above: applying the
+				// same sign to both modes makes horizontal left/right run backwards.
+				OutLeftX = -NormalizedStickY;
+				OutLeftY = -NormalizedStickX;
+				OutRightX = 0.0f;
+				OutRightY = 0.0f;
+			}
+			else
+			{
+				OutLeftX = 0.0f;
+				OutLeftY = 0.0f;
+				OutRightX = NormalizedStickX;
+				OutRightY = NormalizedStickY;
+			}
+			return;
+		}
 
-	OnControllerAnalog(PlatformUser, InputDevice, FGamepadKeyNames::LeftTriggerAnalog, SimpleState.lTrigger, PreviousSimpleState.lTrigger);
-	OnControllerAnalog(PlatformUser, InputDevice, FGamepadKeyNames::RightTriggerAnalog, SimpleState.rTrigger, PreviousSimpleState.rTrigger);
+		OutLeftX = State.stickLX;
+		OutLeftY = State.stickLY;
+		OutRightX = State.stickRX;
+		// The low-level JSL state keeps Sony's normalized convention for direct getters. End-to-end
+		// measurement at the Enhanced Input action, however, shows the DualShock 4 right Y arriving with
+		// the opposite sign from the same physical motion on Unreal's standard Pro Controller path.
+		// Correct only the engine-facing presentation here so Gamepad_Right2D and To World Space have one
+		// convention across devices without changing JSL getters, motion data, or either left stick.
+		OutRightY = bDualShock4 ? -State.stickRY : State.stickRY;
+	};
+
+	float LeftX, LeftY, RightX, RightY;
+	float PreviousLeftX, PreviousLeftY, PreviousRightX, PreviousRightY;
+	PresentSticks(SimpleState, bHorizontal, LeftX, LeftY, RightX, RightY);
+	PresentSticks(PreviousSimpleState, bWasHorizontal,
+		PreviousLeftX, PreviousLeftY, PreviousRightX, PreviousRightY);
+
+	OnControllerAnalog(PlatformUser, InputDevice, FGamepadKeyNames::LeftAnalogX, LeftX, PreviousLeftX);
+	OnControllerAnalog(PlatformUser, InputDevice, FGamepadKeyNames::LeftAnalogY, LeftY, PreviousLeftY);
+	OnControllerAnalog(PlatformUser, InputDevice, FGamepadKeyNames::RightAnalogX, RightX, PreviousRightX);
+	OnControllerAnalog(PlatformUser, InputDevice, FGamepadKeyNames::RightAnalogY, RightY, PreviousRightY);
+
+	const float LeftTrigger = (bHorizontal && (bJoyConLeft || bJoyConRight)) ? 0.0f : SimpleState.lTrigger;
+	const float RightTrigger = (bHorizontal && (bJoyConLeft || bJoyConRight)) ? 0.0f : SimpleState.rTrigger;
+	const float PreviousLeftTrigger = (bWasHorizontal && (bJoyConLeft || bJoyConRight)) ? 0.0f : PreviousSimpleState.lTrigger;
+	const float PreviousRightTrigger = (bWasHorizontal && (bJoyConLeft || bJoyConRight)) ? 0.0f : PreviousSimpleState.rTrigger;
+	OnControllerAnalog(PlatformUser, InputDevice, FGamepadKeyNames::LeftTriggerAnalog, LeftTrigger, PreviousLeftTrigger);
+	OnControllerAnalog(PlatformUser, InputDevice, FGamepadKeyNames::RightTriggerAnalog, RightTrigger, PreviousRightTrigger);
 }
 
 void FJoyShockInterface::ProcessIMUState(int32 DeviceHandle, const FIMUState& InIMUState, FPlatformUserId PlatformUser, FInputDeviceId InputDevice) const
@@ -484,7 +806,6 @@ void FJoyShockInterface::OnPollCallback(int32 DeviceHandle, const FJoyShockState
 
 	State->LastReportTime = FPlatformTime::Seconds();
 
-	// if (CachedSettings->bControllerEventsWaitForEngineTick) // TODO: Implement this setting
 	{
 		FScopeLock Lock(&SimpleStateLock);
 		State->SimpleState.Update(SimpleState, State->PreviousSimpleState);
@@ -550,7 +871,6 @@ void FJoyShockInterface::OnTouchCallback(int32 DeviceHandle, const FTouchState& 
 	if (ControllerState == nullptr)
 		return;
 
-	// if (CachedSettings->bControllerEventsWaitForEngineTick) // TODO: Implement this setting
 	{
 		FScopeLock Lock(&TouchStateLock);
 		ControllerState->TouchState = TouchState;
@@ -564,7 +884,7 @@ void FJoyShockInterface::OnTouchCallback(int32 DeviceHandle, const FTouchState& 
 	}*/
 }
 
-void FJoyShockInterface::OnConnectCallback(int32 InDeviceHandle)
+bool FJoyShockInterface::OnConnectCallback(int32 InDeviceHandle)
 {
 	// UE_LOG(LogJoyShockLibrary, Log, TEXT(">>>>>OnConnectCallback %d"), InDeviceHandle);
 	FScopeLock ContainerLock(&ControllerContainerLock);
@@ -577,7 +897,7 @@ void FJoyShockInterface::OnConnectCallback(int32 InDeviceHandle)
 	{
 		if (Existing->bIsConnected)
 		{
-			return;
+			return false;
 		}
 	}
 
@@ -614,30 +934,42 @@ void FJoyShockInterface::OnConnectCallback(int32 InDeviceHandle)
 	// user-settings init when entering play with several controllers.)
 	State.InputDevice = DeviceMapper.AllocateNewInputDeviceId();
 	State.PlatformUser = PLATFORMUSERID_NONE; // assigned (and mapped connected) by RefreshPlayerAssignments
+	State.ConnectionId = NextConnectionId++;
 	State.DeviceName = GetDeviceName(InDeviceHandle);
+	State.HardwareDeviceIdentifier = GetHardwareDeviceIdentifier(InDeviceHandle);
+	State.bJoyConHorizontal = State.HardwareDeviceIdentifier == TEXT("JoyConLeft")
+		|| State.HardwareDeviceIdentifier == TEXT("JoyConRight");
+	State.bAnalogWasJoyConHorizontal = false;
+	State.bButtonsWereJoyConHorizontal = false;
+	State.SuppressedGripButtons = 0;
 
 	// Register the device's hardware descriptor once, for the lifetime of its device id (replaces the
 	// deprecated per-dispatch FInputDeviceScope).
 	FInputDeviceDescriptor Descriptor;
 	Descriptor.HardwareDeviceHandle = State.InputDevice;
 	Descriptor.InputDeviceName = TEXT("JoyShock4Unreal");
-	Descriptor.HardwareDeviceIdentifier = FName(*State.DeviceName);
+	Descriptor.HardwareDeviceIdentifier = State.HardwareDeviceIdentifier;
 	FInputDeviceRegistry::RegisterDevice(Descriptor);
 
 	RefreshPlayerAssignments();
+	return true;
 }
 
-void FJoyShockInterface::OnDisconnectCallback(int32 InDeviceHandle, bool bInHasTimedOut)
+bool FJoyShockInterface::OnDisconnectCallback(int32 InDeviceHandle, bool bInHasTimedOut)
 {
 	// UE_LOG(LogJoyShockLibrary, Log, TEXT(">>>>>OnDisconnectCallback %d"), InDeviceHandle);
 	FScopeLock ContainerLock(&ControllerContainerLock);
 
 	if (!DeviceHandles.Contains(InDeviceHandle))
 	{
-		return; // Should never happen!
+		return false;
 	}
 
 	FControllerState& ControllerState = ControllerStateByDeviceHandle.FindChecked(InDeviceHandle);
+	if (!ControllerState.bIsConnected)
+	{
+		return false;
+	}
 	ControllerState.bIsConnected = false;
 
 	// Tell the mapper this physical device is gone.
@@ -657,6 +989,7 @@ void FJoyShockInterface::OnDisconnectCallback(int32 InDeviceHandle, bool bInHasT
 		}
 	}
 	RefreshPlayerAssignments();
+	return true;
 }
 
 bool FJoyShockInterface::IsOwnInputDevice(FInputDeviceId InInputDevice) const
@@ -831,69 +1164,134 @@ void FJoyShockInterface::RefreshPlayerAssignments()
 		}
 
 		State->PlatformUser = SlotUser;
+
+		// Keep the physical indicator tied to the same stable slot the engine routes this device to.
+		// This covers hot-plugging, explicit reassignment and joined Joy-Con halves (which share Slot).
+		// The setter only stores the semantic one-based number; each controller's polling thread performs
+		// the family-specific output write, so no HID/WinUSB I/O blocks this game-thread refresh.
+		UJoyShockLibrary::JSL4USetPlayerNumber(Handle, Slot + 1);
 	}
 }
 
 bool FJoyShockInterface::JoinControllers(int32 HandleA, int32 HandleB)
 {
-	FScopeLock ContainerLock(&ControllerContainerLock);
-
 	if (HandleA == HandleB)
 	{
 		return false;
 	}
 
-	const FControllerState* StateA = ControllerStateByDeviceHandle.Find(HandleA);
-	const FControllerState* StateB = ControllerStateByDeviceHandle.Find(HandleB);
-	if (StateA == nullptr || !StateA->bIsConnected || StateB == nullptr || !StateB->bIsConnected)
+	TArray<FJoyConPairingChange> PairingChanges;
 	{
-		return false;
-	}
+		FScopeLock ContainerLock(&ControllerContainerLock);
 
-	// Dissolve any existing joins the two handles are part of, then pair them. Joins are stored
-	// bidirectionally, so removing a handle (as both key and value) fully dissolves its old pair.
-	auto RemoveJoinsFor = [this](int32 Handle)
-	{
-		JoinPartner.Remove(Handle);
-		for (auto It = JoinPartner.CreateIterator(); It; ++It)
+		const FControllerState* StateA = ControllerStateByDeviceHandle.Find(HandleA);
+		const FControllerState* StateB = ControllerStateByDeviceHandle.Find(HandleB);
+		if (StateA == nullptr || !StateA->bIsConnected || StateB == nullptr || !StateB->bIsConnected)
 		{
-			if (It.Value() == Handle)
-			{
-				It.RemoveCurrent();
-			}
+			return false;
 		}
-	};
-	RemoveJoinsFor(HandleA);
-	RemoveJoinsFor(HandleB);
 
-	JoinPartner.Add(HandleA, HandleB);
-	JoinPartner.Add(HandleB, HandleA);
+		if (JoinPartner.FindRef(HandleA) == HandleB && JoinPartner.FindRef(HandleB) == HandleA)
+		{
+			ControllerStateByDeviceHandle.FindChecked(HandleA).bJoyConHorizontal = false;
+			ControllerStateByDeviceHandle.FindChecked(HandleB).bJoyConHorizontal = false;
+			return true;
+		}
 
-	RefreshPlayerAssignments();
+		// Dissolve any old pair either requested half belonged to. These are real separation transitions
+		// too, so expose them before the new join.
+		auto DissolveJoinFor = [this, &PairingChanges](int32 Handle)
+		{
+			const int32* PartnerPtr = JoinPartner.Find(Handle);
+			if (PartnerPtr == nullptr)
+			{
+				return;
+			}
+
+			const int32 Partner = *PartnerPtr;
+			PairingChanges.Add(MakeJoyConPairingChange(Handle, Partner, false));
+			JoinPartner.Remove(Handle);
+			JoinPartner.Remove(Partner);
+			if (FControllerState* State = ControllerStateByDeviceHandle.Find(Handle))
+			{
+				State->bJoyConHorizontal = true;
+			}
+			if (FControllerState* PartnerState = ControllerStateByDeviceHandle.Find(Partner))
+			{
+				PartnerState->bJoyConHorizontal = true;
+			}
+		};
+		DissolveJoinFor(HandleA);
+		DissolveJoinFor(HandleB);
+
+		JoinPartner.Add(HandleA, HandleB);
+		JoinPartner.Add(HandleB, HandleA);
+		ControllerStateByDeviceHandle.FindChecked(HandleA).bJoyConHorizontal = false;
+		ControllerStateByDeviceHandle.FindChecked(HandleB).bJoyConHorizontal = false;
+		PairingChanges.Add(MakeJoyConPairingChange(HandleA, HandleB, true));
+
+		RefreshPlayerAssignments();
+	}
+	BroadcastJoyConPairingChanges(PairingChanges);
 	return true;
 }
 
 void FJoyShockInterface::UnjoinController(int32 Handle)
 {
-	FScopeLock ContainerLock(&ControllerContainerLock);
-
-	const int32* Partner = JoinPartner.Find(Handle);
-	if (Partner == nullptr)
+	TArray<FJoyConPairingChange> PairingChanges;
 	{
-		return;
+		FScopeLock ContainerLock(&ControllerContainerLock);
+
+		const int32* PartnerPtr = JoinPartner.Find(Handle);
+		if (PartnerPtr == nullptr)
+		{
+			if (FControllerState* State = ControllerStateByDeviceHandle.Find(Handle))
+			{
+				if (State->HardwareDeviceIdentifier == TEXT("JoyConLeft")
+					|| State->HardwareDeviceIdentifier == TEXT("JoyConRight"))
+				{
+					State->bJoyConHorizontal = true;
+				}
+			}
+			return;
+		}
+
+		const int32 Partner = *PartnerPtr;
+		PairingChanges.Add(MakeJoyConPairingChange(Handle, Partner, false));
+		JoinPartner.Remove(Partner);
+		JoinPartner.Remove(Handle);
+		ControllerStateByDeviceHandle.FindChecked(Handle).bJoyConHorizontal = true;
+		ControllerStateByDeviceHandle.FindChecked(Partner).bJoyConHorizontal = true;
+
+		RefreshPlayerAssignments();
 	}
-
-	JoinPartner.Remove(*Partner);
-	JoinPartner.Remove(Handle);
-
-	RefreshPlayerAssignments();
+	BroadcastJoyConPairingChanges(PairingChanges);
 }
 
 void FJoyShockInterface::UnjoinAllControllers()
 {
-	FScopeLock ContainerLock(&ControllerContainerLock);
-	JoinPartner.Empty();
-	RefreshPlayerAssignments();
+	TArray<FJoyConPairingChange> PairingChanges;
+	{
+		FScopeLock ContainerLock(&ControllerContainerLock);
+		for (const TTuple<int32, int32>& Pair : JoinPartner)
+		{
+			if (Pair.Key < Pair.Value)
+			{
+				PairingChanges.Add(MakeJoyConPairingChange(Pair.Key, Pair.Value, false));
+			}
+		}
+		JoinPartner.Empty();
+		for (TTuple<int32, FControllerState>& Pair : ControllerStateByDeviceHandle)
+		{
+			if (Pair.Value.HardwareDeviceIdentifier == TEXT("JoyConLeft")
+				|| Pair.Value.HardwareDeviceIdentifier == TEXT("JoyConRight"))
+			{
+				Pair.Value.bJoyConHorizontal = true;
+			}
+		}
+		RefreshPlayerAssignments();
+	}
+	BroadcastJoyConPairingChanges(PairingChanges);
 }
 
 int32 FJoyShockInterface::GetJoinPartner(int32 Handle) const
@@ -944,4 +1342,80 @@ int32 FJoyShockInterface::GetPlayerIndexForDevice(int32 Handle) const
 	}
 	const int32* Slot = PlayerSlotByPrimary.Find(GetGroupPrimary(Handle));
 	return Slot != nullptr ? *Slot : INDEX_NONE;
+}
+
+bool FJoyShockInterface::SetJoyConHorizontal(int32 Handle, bool bHorizontal)
+{
+	TArray<FJoyConPairingChange> PairingChanges;
+	{
+		FScopeLock ContainerLock(&ControllerContainerLock);
+		FControllerState* State = ControllerStateByDeviceHandle.Find(Handle);
+		if (State == nullptr || !State->bIsConnected
+			|| (State->HardwareDeviceIdentifier != TEXT("JoyConLeft")
+				&& State->HardwareDeviceIdentifier != TEXT("JoyConRight")))
+		{
+			return false;
+		}
+
+		if (bHorizontal)
+		{
+			const int32* PartnerPtr = JoinPartner.Find(Handle);
+			if (PartnerPtr != nullptr)
+			{
+				const int32 Partner = *PartnerPtr;
+				PairingChanges.Add(MakeJoyConPairingChange(Handle, Partner, false));
+				JoinPartner.Remove(Partner);
+				JoinPartner.Remove(Handle);
+				if (FControllerState* PartnerState = ControllerStateByDeviceHandle.Find(Partner))
+				{
+					PartnerState->bJoyConHorizontal = true;
+				}
+				RefreshPlayerAssignments();
+			}
+		}
+		State->bJoyConHorizontal = bHorizontal;
+	}
+	BroadcastJoyConPairingChanges(PairingChanges);
+	return true;
+}
+
+bool FJoyShockInterface::IsJoyConHorizontal(int32 Handle) const
+{
+	FScopeLock ContainerLock(&ControllerContainerLock);
+	const FControllerState* State = ControllerStateByDeviceHandle.Find(Handle);
+	return State != nullptr && State->bIsConnected && State->bJoyConHorizontal;
+}
+
+bool FJoyShockInterface::FillControllerInfo(FJSL4UControllerInfo& Info) const
+{
+	FScopeLock ContainerLock(&ControllerContainerLock);
+	const FControllerState* State = ControllerStateByDeviceHandle.Find(Info.DeviceId);
+	if (State == nullptr || !State->bIsConnected)
+	{
+		return false;
+	}
+
+	const int32* Slot = PlayerSlotByPrimary.Find(GetGroupPrimary(Info.DeviceId));
+	Info.PlayerIndex = Slot != nullptr ? *Slot : INDEX_NONE;
+	Info.JoinedToDeviceId = JoinPartner.FindRef(Info.DeviceId);
+	if (!JoinPartner.Contains(Info.DeviceId))
+	{
+		Info.JoinedToDeviceId = INDEX_NONE;
+	}
+	Info.ConnectionId = State->ConnectionId;
+	Info.InputDeviceId = State->InputDevice.GetId();
+	Info.PlatformUserId = State->PlatformUser.GetInternalId();
+	Info.HardwareDeviceIdentifier = State->HardwareDeviceIdentifier;
+	if (State->HardwareDeviceIdentifier == TEXT("JoyConLeft")
+		|| State->HardwareDeviceIdentifier == TEXT("JoyConRight"))
+	{
+		Info.JoyConGripMode = State->bJoyConHorizontal
+			? EJSL4UJoyConGripMode::Horizontal
+			: EJSL4UJoyConGripMode::Vertical;
+	}
+	else
+	{
+		Info.JoyConGripMode = EJSL4UJoyConGripMode::NotApplicable;
+	}
+	return true;
 }

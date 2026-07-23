@@ -7,6 +7,17 @@
 bool handle_input(JoyShock* jc, uint8_t* packet, int32 len, bool &hasIMU) {
 	hasIMU = true;
 	if (packet[0] == 0) return false; // ignore non-responses
+	if (jc->controller_type == ControllerType::n_switch && !jc->is_switch2_pro)
+	{
+		// Reject short/unknown Switch reports before touching last/current state. Otherwise a command
+		// response can look like a complete zeroed input frame and synthesize releases on every key.
+		const bool bStandardReport = packet[0] == 0x21 || packet[0] == 0x30 || packet[0] == 0x31;
+		const int32 minimumLength = packet[0] == 0x21 ? 12 : 49;
+		if (!bStandardReport || len < minimumLength)
+		{
+			return false;
+		}
+	}
 									  // remember last input
 
 	//printf("%d: %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x\n",
@@ -397,21 +408,11 @@ bool handle_input(JoyShock* jc, uint8_t* packet, int32 len, bool &hasIMU) {
 
 	// most of this JoyCon and Pro Controller stuff is adapted from MFosse's Joycon driver.
 
-	// bluetooth button pressed packet:
-	if (packet[0] == 0x3F) {
-
-		//uint16_t old_buttons = jc->buttons;
-		//int8_t old_dstick = jc->dstick;
-
-		jc->dstick = packet[3];
-		// todo: get button states here aswell:
-	}
-
 	int buttons_pressed = 0;
 
-	// input update packet:
-	// 0x21 is just buttons, 0x30 includes gyro, 0x31 includes NFC (large packet size)
-	if (packet[0] == 0x21 || packet[0] == 0x30 || packet[0] == 0x31) {
+	// Input update packet: 0x21 has buttons/sticks but no IMU; 0x30 includes IMU; 0x31 also
+	// includes NFC data. Button-only reports must preserve the last valid motion sample.
+	{
 
 		// offset for usb or bluetooth data:
 		/*int offset = settings.usingBluetooth ? 0 : 10;*/
@@ -513,8 +514,10 @@ bool handle_input(JoyShock* jc, uint8_t* packet, int32 len, bool &hasIMU) {
 		jc->battery = (stick_data[1] & 0xF0) >> 4;
 		//printf("JoyCon battery: %d\n", jc->battery);
 
-		// Accelerometer:
-		// Accelerometer data is absolute
+		// Accelerometer: only the full 0x30/0x31 reports contain these bytes.
+		// Accelerometer data is absolute.
+		hasIMU = packet[0] == 0x30 || packet[0] == 0x31;
+		if (hasIMU)
 		{
 			// get accelerometer X:
 			float accelSampleZ = (float)uint16_to_int16(packet[13] | (packet[14] << 8) & 0xFF00) * jc->acc_cal_coeff[0];
@@ -602,7 +605,10 @@ bool handle_input(JoyShock* jc, uint8_t* packet, int32 len, bool &hasIMU) {
 			jc->simple_state.buttons |= ((buttons_pressed >> 4) << JSOFFSET_SR) & JSMASK_SR;
 
 			// just need to negate gyroZ
-			imu_state.gyroZ = -imu_state.gyroZ;
+			if (hasIMU)
+			{
+				imu_state.gyroZ = -imu_state.gyroZ;
+			}
 		}
 
 		// right:
@@ -621,12 +627,15 @@ bool handle_input(JoyShock* jc, uint8_t* packet, int32 len, bool &hasIMU) {
 			jc->simple_state.buttons |= ((buttons_pressed >> 20) << JSOFFSET_SR) & JSMASK_SR;
 
 			// for some reason we need to negate x and y, and z on the right joycon
-			imu_state.gyroX = -imu_state.gyroX;
-			imu_state.gyroY = -imu_state.gyroY;
-			imu_state.gyroZ = -imu_state.gyroZ;
+			if (hasIMU)
+			{
+				imu_state.gyroX = -imu_state.gyroX;
+				imu_state.gyroY = -imu_state.gyroY;
+				imu_state.gyroZ = -imu_state.gyroZ;
 
-			imu_state.accelX = -imu_state.accelX;
-			imu_state.accelY = -imu_state.accelY;
+				imu_state.accelX = -imu_state.accelX;
+				imu_state.accelY = -imu_state.accelY;
+			}
 
 		}
 
@@ -654,18 +663,24 @@ bool handle_input(JoyShock* jc, uint8_t* packet, int32 len, bool &hasIMU) {
 			jc->simple_state.buttons |= ((int)(jc->simple_state.rTrigger) << JSOFFSET_ZR) & JSMASK_ZR;
 
 			// just need to negate gyroZ
-			imu_state.gyroZ = -imu_state.gyroZ;
+			if (hasIMU)
+			{
+				imu_state.gyroZ = -imu_state.gyroZ;
+			}
 		}
 	}
 
-	jc->modifying_lock.Lock();
-	jc->push_sensor_samples(imu_state.gyroX, imu_state.gyroY, imu_state.gyroZ,
-		imu_state.accelX, imu_state.accelY, imu_state.accelZ, jc->delta_time);
+	if (hasIMU)
+	{
+		jc->modifying_lock.Lock();
+		jc->push_sensor_samples(imu_state.gyroX, imu_state.gyroY, imu_state.gyroZ,
+			imu_state.accelX, imu_state.accelY, imu_state.accelZ, jc->delta_time);
 
-	jc->get_calibrated_gyro(imu_state.gyroX, imu_state.gyroY, imu_state.gyroZ);
-	jc->modifying_lock.Unlock();
+		jc->get_calibrated_gyro(imu_state.gyroX, imu_state.gyroY, imu_state.gyroZ);
+		jc->modifying_lock.Unlock();
 
-	jc->imu_state = imu_state;
+		jc->imu_state = imu_state;
+	}
 
 	return true;
 }

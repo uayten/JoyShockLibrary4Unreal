@@ -31,7 +31,6 @@ public class JoyShockLibrary4Unreal : ModuleRules
 			{
 				"ApplicationCore",
 				"Core",
-				"DeveloperSettings",
 				"InputDevice",
 				// ... add other public dependencies that you statically link with here ...
 			}
