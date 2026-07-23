@@ -3,6 +3,19 @@ This is a fork of JibbSmart's [JoyShockLibrary](https://github.com/JibbSmart/Joy
 
 **It fills the gaps rather than replacing Unreal's input.** Anything a standard gamepad can do — buttons, sticks, triggers, rumble, motion — reaches your game through Unreal's own input system, as the same keys and the same nodes an Xbox pad already uses. The `JSL4U*` nodes exist only for what Unreal and Windows have no concept of: gyro calibration, the light bar, joining two Joy-Cons into one player, assigning a controller to a player. So write your game against the engine's APIs and it supports every gamepad, and reach for a `JSL4U*` node when you want something only these controllers can do.
 
+## Hardware validation
+
+The current Unreal Engine 5.8 overhaul has been exercised with the following hardware. “Needs regression
+test” means the implementation is present, not that the controller is known to be broken.
+
+| Controller | Current validation |
+| --- | --- |
+| Joy-Con (L/R) | Gameplay input, solo-horizontal and joined presentation, motion, pairing/separation, player LEDs and multiple simultaneous controllers tested. |
+| Nintendo Switch 2 Pro Controller | USB gameplay input, calibrated sticks, motion, player LEDs and fixed-amplitude rumble tested. |
+| DualShock 4 | Bluetooth gameplay input, stick conventions and motion tested. Rumble could not be validated because the available controller's rumble hardware is broken. |
+| DualSense / DualSense Edge | USB/Bluetooth input, motion, touchpad, light, player indicators and rumble are implemented, but need a hardware regression test after this overhaul. |
+| Nintendo Switch Pro Controller | USB/Bluetooth input, motion, player LEDs and HD rumble are implemented, but need a hardware regression test after this overhaul. |
+
 ## Installation
 - Download or clone the JoyShockLibrary4Unreal repo from this GitHub page and add it to your game's Plugins folder. The path to the Content folder should look like this: `<project>/Plugins/JoyShockLibrary4Unreal/Content`.
 - Make sure that JoyShockLibrary4Unreal is enabled in your project's .uproject file or Plug-in settings.
@@ -299,4 +312,4 @@ No official Sony or Nintendo libraries were used in the development or testing o
 - A massive thanks to JibbSmart for creating the original JoyShockLibrary plug-in, and for answering the questions I sent to his Twitter DMs. For the full credits of the original JoyShockLibrary, check out his [JoyShockLibrary](https://github.com/JibbSmart/JoyShockLibrary) repo.
 - microdee for the [HIDUE](https://github.com/microdee/HIDUE) Unreal plug-in, which JSL4U relies on for both USB and Bluetooth connections.
 - Bundled DualSense 3D model created by [Saleem Akhtar](https://www.artstation.com/marketplace/p/zBM9R/ps5-duelsense-controller-3d-model-fbx).
-- [uayten](https://github.com/uayten) for adding Nintendo Switch 2 Pro Controller (USB) support with rumble, Joy-Con combined/separated pairing with dedicated Blueprint nodes, and fixing editor freezes when controllers connect/disconnect.
+- [uayten](https://github.com/uayten) for the Unreal Engine 5.8 native-input and local-multiplayer overhaul; stable controller discovery, identity and player routing; Joy-Con horizontal play, joining/separation events and player LEDs; Nintendo Switch 2 Pro Controller USB input and rumble; the per-controller mirror, sensor HUD and demo workflow; consistent engine-facing stick axes; and controller connection/disconnection freeze and shutdown-crash fixes.
