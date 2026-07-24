@@ -203,8 +203,8 @@ void JoyShock::get_and_flush_cumulative_gyro(float& gyroX, float& gyroY, float& 
 	modifying_lock.Lock();
 	if (num_cumulative_gyro_samples == 0) {
 		gyroX = cumulative_gyro_x;
-		gyroX = cumulative_gyro_y;
-		gyroX = cumulative_gyro_z;
+		gyroY = cumulative_gyro_y;
+		gyroZ = cumulative_gyro_z;
 	}
 	else {
 		gyroX = cumulative_gyro_x / num_cumulative_gyro_samples;
@@ -369,6 +369,72 @@ bool JoyShock::send_subcommand(int command, int subcommand, uint8_t *data, int l
 		memcpy(data, buf, 0x40); //TODO
 	}
 	return true;
+}
+
+bool JoyShock::send_subcommand_with_ack(int subcommand, const uint8_t *data, int len) {
+	// Bluetooth drops subcommands, and a configuration subcommand lost during init fails silently and
+	// permanently: the controller keeps streaming buttons, so nothing downstream ever notices that (say)
+	// the IMU enable never landed, and the polling loop deliberately never re-configures a live stream.
+	// The controller acknowledges every subcommand with an 0x21 report that echoes the subcommand id in
+	// byte 14 and sets bit 7 of the ack byte at byte 13 (the same layout get_spi_data relies on), so
+	// wait for that echo and re-send when it doesn't come.
+	for (int attempt = 0; attempt < 3; attempt++) {
+		unsigned char buf[0x40];
+		memset(buf, 0, sizeof(buf));
+		if (data && len > 0) {
+			memcpy(buf, data, len);
+		}
+		if (!send_subcommand(0x1, subcommand, buf, len)) {
+			continue; // nothing came back within the timeout; re-send
+		}
+		// send_subcommand leaves the first report it read back in buf. That is the ack only when no input
+		// report beat it, so skip past interleaved input reports (bounded: once the controller streams at
+		// 60Hz most reads return ordinary input, and an unbounded wait would hang on a lost ack).
+		for (int read = 0; read < 16; read++) {
+			if (buf[0] == 0x21 && buf[14] == subcommand) {
+				if (buf[13] & 0x80) {
+					return true;
+				}
+				break; // explicit NACK: re-send rather than keep waiting
+			}
+			const int res = hid_read_timeout(handle, buf, sizeof(buf), 100);
+			if (res < 0) {
+				return false; // device is gone; retrying can't bring it back
+			}
+			if (res == 0) {
+				break; // link went quiet; re-send
+			}
+		}
+	}
+	return false;
+}
+
+bool JoyShock::write_subcommand(int subcommand, const uint8_t *data, int len) {
+	// Same wire layout send_subcommand produces over Bluetooth (and that get_spi_data proves also works
+	// raw over USB after the handshake): [0x01][4-bit counter][8 neutral rumble bytes][subcmd][payload].
+	unsigned char buf[0x40];
+	memset(buf, 0, sizeof(buf));
+	buf[0] = 0x01;
+	buf[1] = std::uint8_t((++global_count) & 0xF);
+	if (global_count > 0xF) {
+		global_count = 0x0;
+	}
+	static const unsigned char neutralRumble[8] = { 0x00, 0x01, 0x40, 0x40, 0x00, 0x01, 0x40, 0x40 };
+	memcpy(buf + 2, neutralRumble, 8);
+	buf[10] = static_cast<unsigned char>(subcommand);
+	if (data && len > 0) {
+		memcpy(buf + 11, data, len);
+	}
+	return hid_write(handle, buf, 11 + len) >= 0;
+}
+
+void JoyShock::note_output_result(uint8_t FunctionBits, bool bSucceeded) {
+	if (bSucceeded) {
+		failed_output_functions &= static_cast<uint8_t>(~FunctionBits);
+	}
+	else {
+		failed_output_functions |= FunctionBits;
+	}
 }
 
 void JoyShock::rumble(int frequency, int intensity) {
@@ -604,7 +670,7 @@ bool JoyShock::get_switch_controller_info() {
 	return true;
 }
 
-void JoyShock::enable_IMU(unsigned char *buf, int bufLength) {
+bool JoyShock::enable_IMU(unsigned char *buf, int bufLength) {
 	memset(buf, 0, bufLength);
 
 	// Enable IMU data
@@ -624,12 +690,22 @@ void JoyShock::enable_IMU(unsigned char *buf, int bufLength) {
 			init_ds4_bt();
 			enable_gyro_ds4_bt(buf, bufLength);
 		}
+		return true;
 	}
-	else
+
+	if (!is_usb)
 	{
-		buf[0] = 0x01; // Enabled
-		send_subcommand(0x1, 0x40, buf, 1);
+		// Two Joy-Cons share one radio, so this is where a dropped subcommand actually happens -- and a
+		// lost enable leaves a controller that streams buttons with zeroed IMU for the whole session.
+		const uint8_t enabled = 0x01;
+		return send_subcommand_with_ack(0x40, &enabled, 1);
 	}
+
+	// USB does not drop packets, and the 0x80 0x92-framed reply layout has not been verified against the
+	// 0x21 ack match, so the USB path keeps the historical fire-and-forget send.
+	buf[0] = 0x01; // Enabled
+	send_subcommand(0x1, 0x40, buf, 1);
+	return true;
 }
 
 bool JoyShock::init_usb() {
@@ -1119,11 +1195,15 @@ void JoyShock::set_sw2_rumble(int smallRumble, int bigRumble) {
 		const auto now = std::chrono::steady_clock::now();
 		if (std::chrono::duration_cast<std::chrono::seconds>(now - sw2_last_open_attempt).count() < 2)
 		{
+			note_output_result(OutputFunctionRumble, false);
 			return;
 		}
 		sw2_last_open_attempt = now;
 		if (!sw2_open_winusb())
 		{
+			// This is the concrete Steam conflict: the WinUSB command interface allows one owner, and
+			// another application already holds it.
+			note_output_result(OutputFunctionRumble, false);
 			return;
 		}
 		UE_LOG(LogJoyShockLibrary, Log, TEXT("SW2: command interface acquired on retry; rumble available.\n"));
@@ -1150,7 +1230,8 @@ void JoyShock::set_sw2_rumble(int smallRumble, int bigRumble) {
 	cmdBuf[8] = bWantOn ? 0x01 : 0x00;
 
 	ULONG written = 0;
-	WinUsb_WritePipe(static_cast<WINUSB_INTERFACE_HANDLE>(sw2_winusb_handle), sw2_out_pipe, cmdBuf, sizeof(cmdBuf), &written, nullptr);
+	const bool bWritten = WinUsb_WritePipe(static_cast<WINUSB_INTERFACE_HANDLE>(sw2_winusb_handle), sw2_out_pipe, cmdBuf, sizeof(cmdBuf), &written, nullptr) != 0;
+	note_output_result(OutputFunctionRumble, bWritten);
 
 	// Drain the ack so responses don't accumulate in the pipe's buffer.
 	unsigned char resp[64];
@@ -1272,7 +1353,8 @@ void JoyShock::set_switch_rumble(int smallRumble, int bigRumble) {
 	EncodeSide(hfAmp, lfAmp, buf + 6); // right actuator
 
 	// Plain hid_write: report 0x10 has no reply, and a blocking read here would fight the poll thread.
-	hid_write(this->handle, buf, sizeof(buf));
+	const int res = hid_write(this->handle, buf, sizeof(buf));
+	note_output_result(OutputFunctionRumble, res >= 0);
 }
 
 bool JoyShock::init_bt() {
@@ -1331,7 +1413,13 @@ bool JoyShock::init_bt() {
 	//UE_LOG(LogJoyShockLibrary, Log, TEXT("Set vibration\n"));
 
 	// Enable IMU data
-	enable_IMU(buf, 0x40);
+	const bool imuEnabled = enable_IMU(buf, 0x40);
+	if (!imuEnabled)
+	{
+		UE_LOG(LogJoyShockLibrary, Warning,
+			TEXT("Controller %d (%s) never acknowledged the IMU enable; leaving init unfinished so the next enumeration pass retries it.\n"),
+			this->intHandle, *this->name);
+	}
 
 	// Set input report mode (to push at 60hz)
 	// x00	Active polling mode for IR camera data. Answers with more than 300 bytes ID 31 packet
@@ -1342,8 +1430,14 @@ bool JoyShock::init_bt() {
 	// 30	NPad standard mode. Pushes current state @60Hz. Default in SDK if arg is not in the list
 	// 31	NFC mode. Pushes large packets @60Hz
 	UE_LOG(LogJoyShockLibrary, Log, TEXT("Set input report mode to 0x30...\n"));
-	buf[0] = 0x30;
-	send_subcommand(0x01, 0x03, buf, 1);
+	const uint8_t reportMode = 0x30;
+	const bool modeSet = send_subcommand_with_ack(0x03, &reportMode, 1);
+	if (!modeSet)
+	{
+		UE_LOG(LogJoyShockLibrary, Warning,
+			TEXT("Controller %d (%s) never acknowledged report mode 0x30; leaving init unfinished so the next enumeration pass retries it.\n"),
+			this->intHandle, *this->name);
+	}
 
 	// @CTCaer
 
@@ -1351,7 +1445,11 @@ bool JoyShock::init_bt() {
 	UE_LOG(LogJoyShockLibrary, Log, TEXT("Getting calibration data...\n"));
 	result = get_switch_controller_info();
 
-	return result;
+	// Run every step before judging success: even a partially configured controller should stream what it
+	// can (buttons keep working exactly as they did when these sends were fire-and-forget). Reporting the
+	// failure is what matters -- it keeps `initialised` false so the next enumeration pass re-runs init,
+	// instead of a lost subcommand silently costing the IMU for the whole session.
+	return result && imuEnabled && modeSet;
 }
 
 void JoyShock::init_ds4_bt() {
@@ -1678,9 +1776,11 @@ void JoyShock::set_ds4_rumble_light_usb(unsigned char smallRumble, unsigned char
 	buf[10] = 0x00;
 	// now we need a CRC-32 of previous bytes
 	//uint32_t = crc_32(buf, 75);
-	//buf[75] = 
+	//buf[75] =
 
-	hid_write(handle, buf, 31);
+	// Rumble, light bar and player identification share this one report, so a failed write blocks them all.
+	note_output_result(OutputFunctionRumble | OutputFunctionPlayerIndicator,
+		hid_write(handle, buf, 31) >= 0);
 }
 
 void JoyShock::set_ds4_rumble_light_bt(unsigned char smallRumble, unsigned char bigRumble,
@@ -1744,7 +1844,9 @@ void JoyShock::set_ds4_rumble_light_bt(unsigned char smallRumble, unsigned char 
 	//buf[77] = (crc >> 8) & 0xFF;
 	//buf[78] = crc & 0xFF;
 
-	hid_write(handle, &buf[1], 78);
+	// Rumble, light bar and player identification share this one report, so a failed write blocks them all.
+	note_output_result(OutputFunctionRumble | OutputFunctionPlayerIndicator,
+		hid_write(handle, &buf[1], 78) >= 0);
 }
 
 void JoyShock::set_ds5_rumble_light_usb(unsigned char smallRumble, unsigned char bigRumble,
@@ -1804,7 +1906,9 @@ void JoyShock::set_ds5_rumble_light_usb(unsigned char smallRumble, unsigned char
     //buf[77] = (crc >> 8) & 0xFF;
     //buf[78] = crc & 0xFF;
 
-    hid_write(handle, &buf[1], 74);
+    // Rumble, LEDs and player lights share this one report, so a failed write blocks them all.
+    note_output_result(OutputFunctionRumble | OutputFunctionPlayerIndicator,
+        hid_write(handle, &buf[1], 74) >= 0);
 }
 
 // Calling the Dualsense anything but the DS5 is confusing, since DS also = DualShock, and the DualSense is the PS5 Controller anyway
@@ -1875,7 +1979,9 @@ void JoyShock::set_ds5_rumble_light_bt(unsigned char smallRumble, unsigned char 
     //buf[77] = (crc >> 8) & 0xFF;
     //buf[78] = crc & 0xFF;
 
-    hid_write(handle, &buf[1], 78);
+    // Rumble, LEDs and player lights share this one report, so a failed write blocks them all.
+    note_output_result(OutputFunctionRumble | OutputFunctionPlayerIndicator,
+        hid_write(handle, &buf[1], 78) >= 0);
 }
 
 //// mfosse credits Hypersect (Ryan Juckett), but I've removed deadzones so the consuming application can deal with them

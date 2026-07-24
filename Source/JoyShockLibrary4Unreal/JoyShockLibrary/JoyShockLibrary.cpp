@@ -120,7 +120,15 @@ void pollIndividualLoop(JoyShock *jc) {
 
 	int numTimeOuts = 0;
 	int consecutiveReportsWithoutIMU = 0;
+	// Joy-Con firmware can acknowledge the IMU enable during init and still never start the sensor
+	// (observed on the first Joy-Con to wake the Bluetooth radio: acked 0x40, then streamed zeroed IMU
+	// forever). These drive the in-stream repair: an off->on toggle of subcommand 0x40, split across two
+	// report reads so the controller gets an input-report interval to process the disable.
+	int imuRepairAttempts = 0;
+	bool bImuRepairToggleOffSent = false;
 	bool bLoggedMissingIMU = false;
+	// Functions already reported as blocked, so each one fires a single event per failure episode.
+	uint8_t reportedBlockedFunctions = 0;
 	bool hasIMU = false;
 	bool lockedThread = false;
 	// Whether this device ever delivered a real input packet. Used to avoid re-scanning for a "phantom"
@@ -265,6 +273,7 @@ void pollIndividualLoop(JoyShock *jc) {
 					{
 						bSent = jc->set_switch_player_lights(playerLightMask);
 					}
+					jc->note_output_result(JoyShock::OutputFunctionPlayerIndicator, bSent);
 					if (bSent)
 					{
 						UE_LOG(LogJoyShockLibrary, Verbose,
@@ -282,6 +291,7 @@ void pollIndividualLoop(JoyShock *jc) {
 				&& !jc->is_switch2_pro && (jc->left_right == 2 || jc->left_right == 3))
 			{
 				bHomeLightCleared = jc->clear_switch_home_light();
+				jc->note_output_result(JoyShock::OutputFunctionHomeLight, bHomeLightCleared);
 				if (bHomeLightCleared)
 				{
 					UE_LOG(LogJoyShockLibrary, Verbose,
@@ -420,13 +430,40 @@ void pollIndividualLoop(JoyShock *jc) {
 						JSL4UModule.GetOnPollTouch().ExecuteIfBound(jc->intHandle, jc->touch_state, jc->last_touch_state, jc->delta_time);
 					}
 				}
-				// IMU is configured once as part of the controller handshake. Never send configuration
-				// subcommands from the live polling loop: on Bluetooth Joy-Cons that interrupts the
-				// established input stream and can leave the controller unresponsive. Missing IMU samples
-				// are reported once, while buttons/sticks continue to use the existing stream unchanged.
+				// IMU is configured with a verified ack as part of the controller handshake, but Joy-Con
+				// firmware can acknowledge the enable and still never start the sensor. When the stream
+				// stays IMU-less, toggle subcommand 0x40 off and back on from here -- as bare writes only
+				// (see write_subcommand for why that is the one subcommand form this thread may use).
+				// Reading a reply here, or re-running the full init handshake, remains forbidden: the
+				// former steals input reports, the latter drops the Bluetooth link outright.
 				if (!hasIMU)
 				{
 					consecutiveReportsWithoutIMU++;
+					const bool bCanRepairIMU = jc->controller_type == ControllerType::n_switch
+						&& !jc->is_switch2_pro;
+					if (bCanRepairIMU && imuRepairAttempts < 3)
+					{
+						if (bImuRepairToggleOffSent)
+						{
+							// Second half of the toggle, one report later, so the controller had a full
+							// input-report interval to process the disable.
+							const uint8_t imuOn = 0x01;
+							jc->note_output_result(JoyShock::OutputFunctionMotionSensor,
+								jc->write_subcommand(0x40, &imuOn, 1));
+							bImuRepairToggleOffSent = false;
+							imuRepairAttempts++;
+						}
+						else if (consecutiveReportsWithoutIMU >= 60 + 250 * imuRepairAttempts)
+						{
+							UE_LOG(LogJoyShockLibrary, Log,
+								TEXT("Controller %d (%s): no IMU samples after %d reports; toggling the IMU enable in-stream (attempt %d/3)."),
+								jc->intHandle, *jc->name, consecutiveReportsWithoutIMU, imuRepairAttempts + 1);
+							const uint8_t imuOff = 0x00;
+							jc->note_output_result(JoyShock::OutputFunctionMotionSensor,
+								jc->write_subcommand(0x40, &imuOff, 1));
+							bImuRepairToggleOffSent = true;
+						}
+					}
 					if (!bLoggedMissingIMU && consecutiveReportsWithoutIMU >= 250)
 					{
 						UE_LOG(LogJoyShockLibrary, Warning,
@@ -446,8 +483,34 @@ void pollIndividualLoop(JoyShock *jc) {
 						bLoggedMissingIMU = false;
 					}
 					consecutiveReportsWithoutIMU = 0;
+					imuRepairAttempts = 0;
+					bImuRepairToggleOffSent = false;
 				}
 				
+				// A failed output write is ambiguous on its own: an unplugged controller fails its writes
+				// too, but its next read returns -1 and is handled above as a disconnect. A write that
+				// fails while input keeps arriving means something else owns the controller's output path
+				// (Steam Input, most often). Report each function once, on the transition into failure; a
+				// later successful write of that function re-arms it.
+				{
+					const uint8_t failedFunctions = jc->failed_output_functions.load();
+					const uint8_t newlyFailed = failedFunctions & ~reportedBlockedFunctions;
+					reportedBlockedFunctions = failedFunctions;
+					for (uint8_t FunctionIndex = 0; newlyFailed != 0 && FunctionIndex < 4; FunctionIndex++)
+					{
+						if ((newlyFailed & (1 << FunctionIndex)) == 0)
+						{
+							continue;
+						}
+						const EJSL4UControllerFunction Function = static_cast<EJSL4UControllerFunction>(FunctionIndex);
+						UE_LOG(LogJoyShockLibrary, Warning,
+							TEXT("Controller %d (%s): %s output is being rejected while input still flows -- another application (Steam Input, typically) appears to be holding this controller."),
+							jc->intHandle, *jc->name, *UEnum::GetValueAsString(Function));
+						std::shared_lock<std::shared_timed_mutex> lock(JSL4UModule._callbackLock);
+						JSL4UModule.GetOnFunctionBlocked().ExecuteIfBound(jc->intHandle, Function);
+					}
+				}
+
 				// dualshock 4 bluetooth might need waking up
 				if (jc->controller_type == ControllerType::s_ds4 && !jc->is_usb)
 				{
@@ -1000,8 +1063,11 @@ TArray<FJSL4UControllerInfo> UJoyShockLibrary::JSL4UGetControllersOfPlayerIndex(
 	return Result;
 }
 
-TArray<FJSL4UControllerInfo> UJoyShockLibrary::JSL4UGetControllersOfPlayer(APlayerController* PlayerController)
+TArray<FJSL4UControllerInfo> UJoyShockLibrary::JSL4UGetControllersOfPlayer(AController* Controller)
 {
+	// Accepting the base class lets the reference from a Pawn's Possessed event plug in without a
+	// Blueprint-side cast; AI controllers simply own no physical input devices.
+	const APlayerController* PlayerController = Cast<APlayerController>(Controller);
 	if (PlayerController == nullptr)
 	{
 		return {};
@@ -1011,6 +1077,15 @@ TArray<FJSL4UControllerInfo> UJoyShockLibrary::JSL4UGetControllersOfPlayer(APlay
 	// the same mapper. The player's legacy controller id is a different number and would silently pick the
 	// wrong slot for anyone but player 0.
 	const int32 UserIndex = IPlatformInputDeviceMapper::Get().GetUserIndexForPlatformUser(PlayerController->GetPlatformUserId());
+
+	// A PlayerController with no Local Player yet (remote net client, or too early in startup) resolves to
+	// index -1. Return empty rather than passing -1 through: unassigned devices also carry -1, so the
+	// pass-through would hand back controllers that belong to nobody.
+	if (UserIndex < 0)
+	{
+		return {};
+	}
+
 	return JSL4UGetControllersOfPlayerIndex(UserIndex);
 }
 

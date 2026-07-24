@@ -16,6 +16,7 @@ DECLARE_DELEGATE_OneParam(FJoyShockConnectedDelegate, int32);
 DECLARE_DELEGATE_TwoParams(FJoyShockDisconnectedDelegate, int32, bool);
 DECLARE_DELEGATE_SixParams(FJoyShockPollDelegate, int32, FJoyShockState, FJoyShockState, FIMUState, FIMUState, float);
 DECLARE_DELEGATE_FourParams(FJoyShockPollTouchDelegate, int32, FTouchState, FTouchState, float);
+DECLARE_DELEGATE_TwoParams(FJoyShockFunctionBlockedDelegate, int32, EJSL4UControllerFunction);
 
 // Fired on the game thread once a device has been fully added to / removed from the input device
 // interface, so listeners can safely call the JSL4U* API from them (e.g. to rebuild a controller list).
@@ -25,6 +26,10 @@ DECLARE_MULTICAST_DELEGATE_OneParam(FJSL4UDeviceConnectedEvent, int32 /*DeviceId
 DECLARE_MULTICAST_DELEGATE_TwoParams(FJSL4UDeviceDisconnectedEvent, int32 /*DeviceId*/, bool /*bTimedOut*/);
 DECLARE_MULTICAST_DELEGATE_ThreeParams(FJSL4UJoyConPairingChangedEvent,
 	int32 /*LeftDeviceId*/, int32 /*RightDeviceId*/, bool /*bJoined*/);
+// Fired on the game thread when a controller function's output failed while its input kept flowing --
+// the observable signature of another application (Steam Input, typically) holding the controller.
+DECLARE_MULTICAST_DELEGATE_TwoParams(FJSL4UDeviceFunctionBlockedEvent,
+	int32 /*DeviceId*/, EJSL4UControllerFunction /*Function*/);
 
 
 #define JoyShockLockedBindLambda(Module, Delegate, Lambda) { \
@@ -74,12 +79,14 @@ public:
 	FORCEINLINE FJoyShockDisconnectedDelegate& GetOnDisconnected() { return OnDisconnected; }
 	FORCEINLINE FJoyShockPollDelegate& GetOnPoll() { return OnPoll; }
 	FORCEINLINE FJoyShockPollTouchDelegate& GetOnPollTouch() { return OnPollTouch; }
+	FORCEINLINE FJoyShockFunctionBlockedDelegate& GetOnFunctionBlocked() { return OnFunctionBlocked; }
 
 	// Game-thread device add/remove events. UJoyShockSubsystem re-exposes these to Blueprint; bind here
 	// from C++ if you need them before/without a GameInstance.
 	FORCEINLINE FJSL4UDeviceConnectedEvent& GetOnDeviceConnected() { return OnDeviceConnected; }
 	FORCEINLINE FJSL4UDeviceDisconnectedEvent& GetOnDeviceDisconnected() { return OnDeviceDisconnected; }
 	FORCEINLINE FJSL4UJoyConPairingChangedEvent& GetOnJoyConPairingChanged() { return OnJoyConPairingChanged; }
+	FORCEINLINE FJSL4UDeviceFunctionBlockedEvent& GetOnDeviceFunctionBlocked() { return OnDeviceFunctionBlocked; }
 
 	// The live input-device interface owns the controller state, player-slot assignment and Joy-Con joining.
 	// It registers itself here on creation so the Blueprint pairing API can reach it. May be null before the
@@ -95,10 +102,12 @@ protected:
 	FJoyShockDisconnectedDelegate OnDisconnected;
 	FJoyShockPollDelegate OnPoll;
 	FJoyShockPollTouchDelegate OnPollTouch;
+	FJoyShockFunctionBlockedDelegate OnFunctionBlocked;
 
 	FJSL4UDeviceConnectedEvent OnDeviceConnected;
 	FJSL4UDeviceDisconnectedEvent OnDeviceDisconnected;
 	FJSL4UJoyConPairingChangedEvent OnJoyConPairingChanged;
+	FJSL4UDeviceFunctionBlockedEvent OnDeviceFunctionBlocked;
 
 #if PLATFORM_WINDOWS
 	FWindowsDeviceChangeMessageHandler WindowsDeviceChangeMessageHandler;

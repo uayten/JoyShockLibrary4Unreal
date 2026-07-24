@@ -53,6 +53,13 @@ FJoyShockInterface::FJoyShockInterface(const TSharedRef<FGenericApplicationMessa
 		PendingDisconnects.Enqueue(TPair<int32, bool>(DeviceHandle, bHasTimedOut));
 	});
 
+	JoyShockLockedBindLambda(JSL4UModule, GetOnFunctionBlocked(), [this](int32 DeviceHandle, EJSL4UControllerFunction Function)
+	{
+		// Also fires on a polling thread; queue it so the module's game-thread event (and the Blueprint
+		// event the subsystem builds on it) fires where the rest of the JSL4U API is safe to call.
+		PendingBlockedFunctions.Enqueue(TPair<int32, EJSL4UControllerFunction>(DeviceHandle, Function));
+	});
+
 	// These two run on the polling threads. What keeps `this` alive under them is the destructor unbinding
 	// them under _callbackLock -- not a null check here, which could never fire: `this` is captured by value,
 	// so it is non-null even after the object it points at is gone.
@@ -110,6 +117,7 @@ FJoyShockInterface::~FJoyShockInterface()
 			JSL4UModule.GetOnDisconnected().Unbind();
 			JSL4UModule.GetOnPoll().Unbind();
 			JSL4UModule.GetOnPollTouch().Unbind();
+			JSL4UModule.GetOnFunctionBlocked().Unbind();
 		}
 
 		if (JSL4UModule.GetActiveInterface() == this)
@@ -380,6 +388,17 @@ void FJoyShockInterface::SendControllerEvents()
 				UE_LOG(LogJoyShockLibrary, Verbose, TEXT("Broadcasting connect of device %d, %d listener(s)."),
 					ConnectedDeviceId, JSL4UModule.GetOnDeviceConnected().IsBound() ? 1 : 0);
 				JSL4UModule.GetOnDeviceConnected().Broadcast(ConnectedDeviceId);
+			}
+		}
+
+		// Blocked-function reports touch no containers, so they broadcast straight from the drain.
+		TPair<int32, EJSL4UControllerFunction> PendingBlocked;
+		while (PendingBlockedFunctions.Dequeue(PendingBlocked))
+		{
+			if (FJoyShockLibrary4UnrealModule::IsAvailable())
+			{
+				FJoyShockLibrary4UnrealModule::GetInstance().GetOnDeviceFunctionBlocked()
+					.Broadcast(PendingBlocked.Key, PendingBlocked.Value);
 			}
 		}
 	}

@@ -306,11 +306,39 @@ public:
 
 	bool send_subcommand(int32 command, int32 subcommand, uint8_t *data, int32 len);
 
+	// Sends a Switch subcommand and waits for the controller's 0x21 acknowledgement, re-sending on loss.
+	// Use for configuration subcommands whose silent loss is permanent (IMU enable, report mode): unlike
+	// send_subcommand, a true return means the controller actually applied the command.
+	bool send_subcommand_with_ack(int32 subcommand, const uint8_t *data, int32 len);
+
+	// Writes a Switch subcommand without reading any reply. The only subcommand form that is safe from the
+	// polling thread: that thread is the handle's sole reader once the controller streams, so a read here
+	// would steal input reports, while a bare write rides alongside the stream like the rumble packets the
+	// polling thread already sends. The 0x21 ack arrives interleaved in the input stream and is parsed as
+	// a harmless buttons-only report.
+	bool write_subcommand(int32 subcommand, const uint8_t *data, int32 len);
+
+	// One bit per output capability, mirroring EJSL4UControllerFunction (bit = 1 << (uint8)Function). A set
+	// bit means that function's most recent write failed. Whether that means "blocked by another
+	// application" is judged by the polling loop, not here: only a device whose input keeps flowing gets
+	// its failures reported -- an unplugged controller fails its writes too, and its read says so first.
+	static constexpr uint8_t OutputFunctionRumble = 1 << 0;
+	static constexpr uint8_t OutputFunctionPlayerIndicator = 1 << 1;
+	static constexpr uint8_t OutputFunctionHomeLight = 1 << 2;
+	static constexpr uint8_t OutputFunctionMotionSensor = 1 << 3;
+	std::atomic<uint8_t> failed_output_functions{ 0 };
+
+	// Records the outcome of an output write for the given function bits: failure marks them, success
+	// clears them (which also re-arms the polling loop's one-shot blocked report).
+	void note_output_result(uint8_t FunctionBits, bool bSucceeded);
+
 	void rumble(int32 frequency, int32 intensity);
 
 	bool get_switch_controller_info();
 
-	void enable_IMU(unsigned char *buf, int32 bufLength);
+	// Returns whether the controller confirmed the IMU is on. Only the Bluetooth Switch path can report
+	// failure; the other transports keep their historical fire-and-forget behaviour and return true.
+	bool enable_IMU(unsigned char *buf, int32 bufLength);
 
 	bool init_usb();
 

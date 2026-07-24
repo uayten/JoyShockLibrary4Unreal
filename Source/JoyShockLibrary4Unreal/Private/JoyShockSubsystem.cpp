@@ -65,6 +65,13 @@ void UJoyShockSubsystem::Initialize(FSubsystemCollectionBase& Collection)
 			}
 		});
 
+	FunctionBlockedHandle = JSL4UModule.GetOnDeviceFunctionBlocked().AddWeakLambda(this,
+		[this](int32 DeviceId, EJSL4UControllerFunction Function)
+		{
+			const FJSL4UControllerInfo Info = UJoyShockLibrary::JSL4UGetControllerInfoAndSettings(DeviceId);
+			OnControllerFunctionBlocked.Broadcast(Info, Function);
+		});
+
 	// Controllers already connected when this subsystem is created never produced an event for it to hear,
 	// so seed from JSL4UGetConnectedControllers on Init and use the events only for changes after that.
 	const TArray<FJSL4UControllerInfo> ExistingControllers = UJoyShockLibrary::JSL4UGetConnectedControllers();
@@ -215,6 +222,7 @@ void UJoyShockSubsystem::Deinitialize()
 		JSL4UModule.GetOnDeviceConnected().Remove(ConnectedHandle);
 		JSL4UModule.GetOnDeviceDisconnected().Remove(DisconnectedHandle);
 		JSL4UModule.GetOnJoyConPairingChanged().Remove(PairingChangedHandle);
+		JSL4UModule.GetOnDeviceFunctionBlocked().Remove(FunctionBlockedHandle);
 
 		// Rumble is sustained by the polling threads, which belong to the module and keep running after the
 		// game stops -- so a controller still rumbling when the game ends would rumble until something set
@@ -227,6 +235,7 @@ void UJoyShockSubsystem::Deinitialize()
 	ConnectedHandle.Reset();
 	DisconnectedHandle.Reset();
 	PairingChangedHandle.Reset();
+	FunctionBlockedHandle.Reset();
 	LastControllerInfoByDeviceId.Reset();
 
 	Super::Deinitialize();

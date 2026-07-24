@@ -6,7 +6,20 @@
 
 DECLARE_LOG_CATEGORY_EXTERN(LogJoyShockLibrary, Verbose, All);
 
+class AController;
 class APlayerController;
+
+// A physical output capability the plugin drives on a controller. Used by the blocked-function event to
+// name which capability another application appears to be interfering with. Values are also bit indices
+// into JoyShock::failed_output_functions, so the order is load-bearing.
+UENUM(BlueprintType, meta = (DisplayName = "JSL4U Controller Function"))
+enum class EJSL4UControllerFunction : uint8
+{
+	Rumble UMETA(ToolTip = "Vibration output (direct and sustained rumble)."),
+	PlayerIndicator UMETA(ToolTip = "Player LEDs / light-bar player identification."),
+	HomeLight UMETA(ToolTip = "The Switch HOME notification light."),
+	MotionSensor UMETA(ToolTip = "IMU configuration commands (enabling or repairing gyro and accelerometer).")
+};
 
 /*#if _MSC_VER // this is defined when compiling with Visual Studio
 #define JOY_SHOCK_API __declspec(dllexport) // Visual Studio needs annotating exported functions with this
@@ -604,15 +617,19 @@ public:
 		meta = (DisplayName = "JSL4U Get Controllers Assigned To Player Index", ToolTip = "Returns every controller feeding this zero-based player slot. A joined Joy-Con pair returns both halves."))
 	static TArray<FJSL4UControllerInfo> JSL4UGetControllersOfPlayerIndex(int32 PlayerIndex);
 
-	// The controller(s) of the player behind a PlayerController -- i.e. of whoever issued the command you
-	// are reacting to. Defaults to self inside a PlayerController Blueprint, so this is the one-node answer
+	// The controller(s) of the player behind a Controller -- i.e. of whoever issued the command you
+	// are reacting to. Defaults to self inside a Controller Blueprint, so this is the one-node answer
 	// to "which controller is this player holding?" (e.g. to rumble it).
+	// Takes the base AController so the reference a Pawn's Possessed event (or Get Controller) hands out
+	// plugs in directly -- the PlayerController downcast happens here, natively. An AIController (or a
+	// PlayerController with no Local Player yet, e.g. a remote net client) owns no physical input devices
+	// and returns an empty array.
 	// Note: do NOT build this out of "Get Player Controller ID". That is the legacy controller id, which is
 	// a different number from the platform user index that player slots are assigned from -- this converts
 	// through the same IPlatformInputDeviceMapper the assignment uses.
 	UFUNCTION(BlueprintPure, Category = "JoyShock Library|Controller Assignment",
-		meta = (DefaultToSelf = "PlayerController", DisplayName = "JSL4U Get Controllers Assigned To Player", ToolTip = "Returns every controller feeding the Local Player owned by Player Controller. Defaults to Self in a PlayerController Blueprint."))
-	static TArray<FJSL4UControllerInfo> JSL4UGetControllersOfPlayer(APlayerController* PlayerController);
+		meta = (DefaultToSelf = "Controller", DisplayName = "JSL4U Get Controllers Assigned To Player", ToolTip = "Returns every controller feeding the Local Player behind this Controller. Accepts the Controller from a Pawn's Possessed event directly; AI controllers return an empty array. Defaults to Self in a Controller Blueprint."))
+	static TArray<FJSL4UControllerInfo> JSL4UGetControllersOfPlayer(AController* Controller);
 
 	/**
 	 * Asks the plugin to re-scan for controllers, on a background thread.

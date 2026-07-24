@@ -13,6 +13,8 @@ DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FJSL4UControllerInfoConnectedDelegat
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FJSL4UControllerInfoDisconnectedDelegate, FJSL4UControllerInfo, Controller, bool, bTimedOut);
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FJSL4UJoyConsPairingDelegate,
 	FJSL4UControllerInfo, LeftJoyCon, FJSL4UControllerInfo, RightJoyCon);
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FJSL4UControllerFunctionBlockedDelegate,
+	FJSL4UControllerInfo, Controller, EJSL4UControllerFunction, Function);
 
 DECLARE_DYNAMIC_DELEGATE_OneParam(FJSL4UControllerInfoConnectedSignature, FJSL4UControllerInfo, Controller);
 DECLARE_DYNAMIC_DELEGATE_TwoParams(FJSL4UControllerInfoDisconnectedSignature, FJSL4UControllerInfo, Controller, bool, bTimedOut);
@@ -55,6 +57,20 @@ public:
 	UPROPERTY(BlueprintAssignable, Category = "JoyShock Library|Events",
 		meta = (DisplayName = "On Joy-Cons Separated", ToolTip = "Fires after a joined pair becomes two standalone horizontal controllers. Both controller infos already contain the new grip and player assignments."))
 	FJSL4UJoyConsPairingDelegate OnJoyConsSeparated;
+
+	/**
+	 * Fires when a controller function's output is being rejected while the controller's input keeps
+	 * arriving -- the observable signature of another application (Steam Input, typically) holding the
+	 * controller's output path. Fires once per function per failure episode: a later successful write of
+	 * that function re-arms it, so a recurring conflict fires again rather than spamming every frame.
+	 *
+	 * Detection is per attempted write, so this only fires when the game actually uses the function (e.g.
+	 * the first rumble request while Steam holds the controller), and only for failures the OS reports --
+	 * an application that silently swallows output without failing the write is not detectable here.
+	 */
+	UPROPERTY(BlueprintAssignable, Category = "JoyShock Library|Events",
+		meta = (DisplayName = "On Controller Function Blocked", ToolTip = "Fires when a controller function (rumble, player LEDs, HOME light, motion configuration) is rejected while input keeps flowing -- usually another application such as Steam holding the controller. Fires once per function until that function works again."))
+	FJSL4UControllerFunctionBlockedDelegate OnControllerFunctionBlocked;
 
 	/**
 	 * Calls Event once for every controller that is already connected, then keeps calling it for every
@@ -120,5 +136,6 @@ private:
 	FDelegateHandle ConnectedHandle;
 	FDelegateHandle DisconnectedHandle;
 	FDelegateHandle PairingChangedHandle;
+	FDelegateHandle FunctionBlockedHandle;
 	TMap<int32, FJSL4UControllerInfo> LastControllerInfoByDeviceId;
 };

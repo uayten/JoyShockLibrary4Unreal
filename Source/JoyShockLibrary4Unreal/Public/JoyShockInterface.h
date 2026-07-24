@@ -198,6 +198,9 @@ private:
 	// We queue them here and drain them at the start of SendControllerEvents (which runs on the game thread).
 	TQueue<int32, EQueueMode::Mpsc> PendingConnects;
 	TQueue<TPair<int32, bool>, EQueueMode::Mpsc> PendingDisconnects;
+	// Blocked-function reports also originate on the polling threads; they only need the game-thread
+	// module event (no container or mapper access), so the drain broadcasts them directly.
+	TQueue<TPair<int32, EJSL4UControllerFunction>, EQueueMode::Mpsc> PendingBlockedFunctions;
 
 	struct FJoyConPairingChange
 	{
