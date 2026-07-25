@@ -12,9 +12,11 @@ test” means the implementation is present, not that the controller is known to
 | --- | --- |
 | Joy-Con (L/R) | Gameplay input, solo-horizontal and joined presentation, motion, pairing/separation, player LEDs and multiple simultaneous controllers tested. |
 | Nintendo Switch 2 Pro Controller | USB gameplay input, calibrated sticks, motion, player LEDs and fixed-amplitude rumble tested. |
-| DualShock 4 | Bluetooth gameplay input, stick conventions and motion tested. Rumble could not be validated because the available controller's rumble hardware is broken. |
+| DualShock 4 | Bluetooth and USB gameplay input, stick conventions, motion, battery reporting and cable/Bluetooth transport switching tested. Battery percentages were checked against DS4Windows. Rumble could not be validated because the available controller's rumble hardware is broken. |
 | DualSense / DualSense Edge | USB/Bluetooth input, motion, touchpad, light, player indicators and rumble are implemented, but need a hardware regression test after this overhaul. |
-| Nintendo Switch Pro Controller | USB/Bluetooth input, motion, player LEDs and HD rumble are implemented, but need a hardware regression test after this overhaul. |
+| Nintendo Switch Pro Controller | USB/Bluetooth input, motion, player LEDs and HD rumble are implemented, but need a hardware regression test after this overhaul. No unit has been available for testing. |
+| Nintendo Switch 2 Joy-Con | Not implemented and not tested; no unit has been available. |
+| Xbox / other XInput pads | Handled entirely by Unreal, not by this plugin. The plugin only takes their player slots into account so a JoyShock controller lands where a second Xbox pad would. That slot-sharing behaviour still needs a hardware test. |
 
 ## Installation
 - Download or clone the JoyShockLibrary4Unreal repo from this GitHub page and add it to your game's Plugins folder. The path to the Content folder should look like this: `<project>/Plugins/JoyShockLibrary4Unreal/Content`.
@@ -140,6 +142,54 @@ For buttons that are exclusive to JoyShock inputs, new input events have been ad
 
 The Switch 2 Pro Controller's exclusive buttons also have their own input events: **JoyShock C Button (Switch 2)**, **JoyShock Grip Left GL (Switch 2)** and **JoyShock Grip Right GR (Switch 2)**.
 
+### Reacting to controllers connecting, pairing and running low
+
+Controllers finish enumerating on a background thread, at a moment nothing in the game controls: in the
+editor they are usually ready before the level loads, in a packaged game they usually are not, and a
+Bluetooth controller may arrive minutes in. Code that only handles "already connected" works on the
+machine it was written on and nowhere else.
+
+The **Wait For…** nodes remove that distinction. Each is a single latent node whose event pins carry their
+payload as ordinary data pins — no Create Event, no Bind Event, no matching custom-event signatures:
+
+- **Wait For Controller Changes** — `On Connected` fires immediately for every controller already
+  connected and then for each new one, so there is no window in which a controller can be missed;
+  `On Disconnected` reports the last known identity and whether reports simply stopped.
+- **Wait For Joy-Con Pairing Changes** — `On Joined` / `On Separated`, with both halves' identities
+  already carrying their new player assignment.
+- **Wait For Battery Changes** — `On Low Battery` (once per episode, re-arming when the controller is
+  charged or plugged in) and `On Charging Changed`.
+- **Wait For Controller Function Blocked** — see *Conflicts with other applications* below.
+
+Each node's `Async Action` output accepts **Cancel**, which is how a widget stops listening when it is
+removed. `Remove From Parent` does not unbind anything on its own.
+
+The equivalent events are also available on the **JoyShock Subsystem** for C++ and for Blueprints that
+prefer assignable delegates.
+
+### Battery
+
+`Controller Info` reports **Battery Level** and **Is Charging** for Joy-Cons, Switch Pro, DualShock 4 and
+DualSense, plus **Battery Percent** where the hardware measures one.
+
+Battery Level is a coarse enum — `Empty`, `Critical`, `Low`, `Medium`, `Full` — deliberately, not a
+percentage: a Switch controller reports five states, so a percentage there would be invented precision,
+and a game written against a percentage misbehaves on exactly the controllers that cannot supply one.
+Only the PlayStation controllers fill Battery Percent; it is `-1` elsewhere and is meant for display, not
+for decisions. `Unknown` means the controller does not report charge (the Switch 2 Pro Controller), and is
+never a low battery.
+
+### Conflicts with other applications
+
+Steam Input, DS4Windows and similar tools can hold a controller's output path while input keeps flowing,
+so rumble or player LEDs stop working with nothing to explain why. **Wait For Controller Function Blocked**
+fires when an output write is rejected while the controller is still delivering input, naming which
+capability is affected: `Rumble`, `Player Indicator`, `Home Light` or `Motion Sensor`. It fires once per
+function until that function works again, and only when the game actually uses it.
+
+Only failures the OS reports are detectable this way. An application that swallows output without failing
+the write cannot be distinguished from one that is not running.
+
 ### Native input-device metadata
 
 Every connection is registered with Unreal's `FInputDeviceRegistry`, and the plugin supplies the same `Config/Input.ini` hardware metadata pattern used by the engine's XInput and WinDualShock plugins. `UInputDeviceSubsystem` therefore sees these as standard **Gamepad** devices with stable identifiers:
@@ -246,10 +296,19 @@ Current nodes are grouped by responsibility:
 
 - **Controllers** — discovery, connection checks and complete controller identity.
 - **Controller Assignment** and **Local Multiplayer** — controller-to-player routing and native Local Player creation.
-- **Joy-Con Pairing** — joining and separating Joy-Cons.
+- **Joy-Con Pairing** — joining and separating Joy-Cons, and resolving a pair from either half.
 - **Input State**, **Motion** and **Touchpad** — direct state queries for features not already better handled by Enhanced Input.
 - **Gyro Calibration** — calibration mode, manual calibration, status and persistent offsets.
-- **Output** — light color, player indicator and direct-device rumble.
+- **Output** — light color, player indicator, HOME light and direct-device rumble.
+- **Events** — the latent **Wait For…** nodes described above.
+
+For anything drawing a controller on screen, **JSL4U Get Joy-Con Pair** answers the whole question in one
+call: given either half, it returns whether it is a pair plus both halves' identities, with `Primary`
+always naming the same half no matter which one was asked. `JSL4U Is Joy-Con Primary` is the same idea
+reduced to a bool, and is true for any standalone controller of any type — so one node decides "should
+this actor draw?" for pairs and single controllers alike. Note that `Primary` identifies a device, not a
+side: which half leads depends on connection order, so read `Controller Type` when something must land on
+a specific half.
 
 **Player indicators follow Unreal assignment automatically.** Joy-Cons, Switch Pro and Switch 2 Pro
 Controllers use Nintendo's distinct player patterns (including combination patterns for players 5-8),
@@ -260,7 +319,8 @@ assignment change.
 Nintendo's blue HOME-button light is a notification light, not a player number. Controllers can retain
 that light from firmware or a previous host, so JSL4U clears it on Joy-Con R and Switch Pro after their
 input stream starts using Nintendo's explicit zero-brightness pattern; assignment uses only the four green
-player LEDs. Before the game or editor process
+player LEDs. A game that wants that light as a feedback channel can take it with **JSL4U Set Home Light**,
+after which the plugin stops clearing it on that controller for the rest of the connection. Before the game or editor process
 opens, the plugin is not running and cannot change a controller's retained/default LED state. Switch 2 Pro
 initialization likewise preserves its current indicator until Unreal assigns its actual Local Player,
 instead of briefly turning every player LED off.
@@ -284,7 +344,20 @@ multiplayer example are not part of normal plugin output. For low-level HID trou
 `JoyShock.Debug.InputStalls 1` warns if a connected controller stops delivering reports for more than one
 second and reports when delivery resumes. Set it back to `0` to disable it.
 
-A single `Enabling IMU data...` line is expected while a controller is first initialized. The live polling thread deliberately does not retry configuration commands: sending an IMU subcommand into an established Bluetooth Joy-Con stream can interrupt buttons and sticks as well as motion. If a controller continues to send gameplay input without motion samples, the plugin emits one warning and preserves that stream; reconnect the controller to perform a clean handshake instead of mutating it mid-session.
+A single `Enabling IMU data...` line is expected while a controller is first initialized.
+
+Bluetooth drops subcommands, and a lost one fails silently and permanently: the controller keeps streaming
+buttons while its motion values stay at zero for the whole session. The Joy-Con handshake therefore waits
+for the controller's acknowledgement of the IMU enable and the report-mode change, re-sending when it does
+not arrive. Joy-Con firmware can also acknowledge the enable and still never start the sensor, so a stream
+that stays motionless is repaired in place by toggling the IMU off and on — as a bare write, never a
+subcommand exchange, because reading a reply from the polling thread would steal input reports. If both
+fail, the plugin logs one warning and preserves the working button/stick stream rather than mutating it
+further.
+
+Configuration subcommands are otherwise never sent into an established Bluetooth stream. Re-asserting the
+HOME light on a timer, for instance, caused right Joy-Cons to drop off Bluetooth after a few minutes, so
+that light is cleared exactly once per connection.
 
 ## Which versions of Unreal Engine has this been tested with?
 It has been used in Unreal Engine 5.4 and, more recently, 5.8 (where it uses the new `FInputDeviceRegistry` API that replaces the deprecated `FInputDeviceScope`). I expect it to work in other versions of Unreal, but if you find any issues, feel free to let me know.
@@ -299,10 +372,19 @@ No official Sony or Nintendo libraries were used in the development or testing o
 ## Planned future updates
 
 ### Plugin
+- **Bluetooth (BLE) support for the Switch 2 Pro Controller.** It currently works over USB only
 - Amplitude-accurate rumble on the Switch 2 Pro Controller, so force feedback effects that fade in or out don't come out as a flat buzz on it. Needs its amplitude channel reverse-engineering over USB
 - Generalising Joy-Con joining, so that any set of controllers can drive a single player rather than only a left + right Joy-Con pair
-- Bluetooth (BLE) support for the Switch 2 Pro Controller
 - Check whether tracked controllers are released when a play session ends. `JslDisconnectAndDisposeAll` exists but may not be wired to the end of PIE, which would leave devices tracked between runs
+
+### Hardware still to be tested
+These are implemented but unverified, purely because no unit has been available. Reports from anyone who
+owns one are very welcome.
+
+- **Nintendo Switch 2 Joy-Con** — untested
+- **Nintendo Switch Pro Controller (Switch 1)** — untested since the Unreal Engine 5.8 overhaul
+- **Xbox and other XInput pads** — Unreal handles them directly, but the plugin skips player slots they already occupy so a JoyShock controller lands where a second Xbox pad would. That interaction needs a test with both kinds of controller connected at once
+- **DualSense battery reporting** — the report offsets come from public reverse-engineering rather than measurement, and are marked as unverified in the code. The DualShock 4 equivalents were checked against DS4Windows
 
 ### Demo level
 - A controller-assignment screen demonstrating explicit reassignment and joined Joy-Cons
