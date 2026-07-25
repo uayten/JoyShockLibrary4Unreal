@@ -387,8 +387,10 @@ owns one are very welcome.
 - **DualSense battery reporting** — the report offsets come from public reverse-engineering rather than measurement, and are marked as unverified in the code. The DualShock 4 equivalents were checked against DS4Windows
 
 ### Demo level
+- **Controller models still missing from the on-screen mirror.** Only the Joy-Con pair, the Joy-Con grip, the DualShock 4 and the DualSense are modelled; everything else falls back to whatever the mirror is given. Needed: Nintendo Switch 2 Joy-Con, Nintendo Switch Pro Controller, Nintendo Switch 2 Pro Controller, and an Xbox pad for the controllers Unreal handles directly
 - A controller-assignment screen demonstrating explicit reassignment and joined Joy-Cons
 - Reconnection handling that deliberately transfers or retires the previous Pawn, depending on game policy
+- Persisting gyro calibration between sessions with **Get / Set Gyro Calibration Offset** and a SaveGame, which the calibration panel currently only describes in text
 
 ## Credits
 - A massive thanks to JibbSmart for creating the original JoyShockLibrary plug-in, and for answering the questions I sent to his Twitter DMs. For the full credits of the original JoyShockLibrary, check out his [JoyShockLibrary](https://github.com/JibbSmart/JoyShockLibrary) repo.

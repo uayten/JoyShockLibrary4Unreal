@@ -873,7 +873,7 @@ public:
 	static void JslSetGyroSpace(int32 deviceId, int32 gyroSpace);
 
 	UFUNCTION(BlueprintCallable, Category = "JoyShock Library|Motion",
-		meta = (DisplayName = "JSL4U Set Gyro Space", ToolTip = "Chooses how gyro axes are transformed: local controller space, gravity-corrected world space or adaptive player space."))
+		meta = (DisplayName = "JSL4U Set Gyro Space", ToolTip = "TYPICAL USE: Player Space, the usual choice for gyro aiming -- as adaptive as world space and as robust as local space. Local Space is the untransformed controller frame; World Space corrects by the measured gravity direction so yaw is always around the real vertical. Worth exposing as a player preference in a game that aims with gyro."))
 	static void JSL4USetGyroSpace(
 		UPARAM(DisplayName = "Device Id") int32 InDeviceID,
 		UPARAM(DisplayName = "Gyro Space") EJSL4UGyroSpace InGyroSpace);
@@ -948,30 +948,30 @@ public:
 	 * @param Mode      Automatic for the set-and-forget behaviour most games want; Manual to drive it yourself.
 	 */
 	UFUNCTION(BlueprintCallable, Category = "JoyShock Library|Gyro Calibration",
-		meta = (DisplayName = "JSL4U Set Gyro Calibration Mode", ToolTip = "Selects automatic drift calibration or manual calibration for this controller. Automatic is the recommended set-and-forget mode."))
+		meta = (DisplayName = "JSL4U Set Gyro Calibration Mode", ToolTip = "TYPICAL USE: set this to Automatic once per controller and use nothing else in this category. Automatic keeps the drift offset current by noticing when the controller is being held still; Manual hands that entirely to the Start/Stop nodes and is only for games that want an explicit 'hold still' step."))
 	static void JSL4USetGyroCalibrationMode(int32 DeviceId, EJSL4UGyroCalibrationMode Mode);
 
 	// Begins gathering samples for the gyro's drift offset. Call with the controller sitting still, and call
 	// JSL4UStopGyroCalibration when you're done -- the longer it gathers, the better the offset. Only
 	// meaningful in Manual mode.
 	UFUNCTION(BlueprintCallable, Category = "JoyShock Library|Gyro Calibration",
-		meta = (DisplayName = "JSL4U Start Manual Gyro Calibration", ToolTip = "Starts collecting gyro drift samples. Keep the controller still and use this only while calibration mode is Manual."))
+		meta = (DisplayName = "JSL4U Start Manual Gyro Calibration", ToolTip = "Starts collecting gyro drift samples; the controller must stay still until Stop. Only meaningful in Manual mode -- in Automatic the controller already does this for itself, so most games never call this."))
 	static void JSL4UStartGyroCalibration(int32 DeviceId);
 
 	// Stops gathering samples. The offset measured so far stays in effect.
 	UFUNCTION(BlueprintCallable, Category = "JoyShock Library|Gyro Calibration",
-		meta = (DisplayName = "JSL4U Stop Manual Gyro Calibration", ToolTip = "Stops collecting manual calibration samples and keeps the measured drift offset."))
+		meta = (DisplayName = "JSL4U Stop Manual Gyro Calibration", ToolTip = "Stops collecting manual calibration samples and keeps the measured offset. Pairs with Start Manual Gyro Calibration; like it, unnecessary in Automatic mode."))
 	static void JSL4UStopGyroCalibration(int32 DeviceId);
 
 	// Throws away the offset gathered so far and starts over. Use this when a calibration was taken while the
 	// controller was in fact being moved, which leaves the gyro worse off than no calibration at all.
 	UFUNCTION(BlueprintCallable, Category = "JoyShock Library|Gyro Calibration",
-		meta = (DisplayName = "JSL4U Reset Gyro Calibration", ToolTip = "Discards the current gyro drift offset so calibration can start again."))
+		meta = (DisplayName = "JSL4U Reset Gyro Calibration", ToolTip = "Discards the current drift offset and starts over. This is the one manual node worth exposing to players even in Automatic mode: an offset measured while the controller was moving leaves the gyro worse than no calibration, and this is the way out. Good behind a 'Recalibrate gyro' button."))
 	static void JSL4UResetGyroCalibration(int32 DeviceId);
 
 	// This controller's calibration state, for driving a calibration screen (progress, "hold still" prompts).
 	UFUNCTION(BlueprintPure, Category = "JoyShock Library|Gyro Calibration",
-		meta = (DisplayName = "JSL4U Get Gyro Calibration Status", ToolTip = "Returns calibration mode, progress, confidence and whether the controller is currently steady."))
+		meta = (DisplayName = "JSL4U Get Gyro Calibration Status", ToolTip = "Returns calibration mode, confidence, whether the controller reads as steady right now, and whether a manual calibration is running. Needed only to drive a calibration screen's prompts and progress; games without one never call it."))
 	static FJSL4UGyroCalibrationStatus JSL4UGetGyroCalibrationStatus(int32 DeviceId);
 
 	/**
@@ -980,7 +980,7 @@ public:
 	 * to calibrate again. Pairs exactly with JSL4USetGyroCalibrationOffset.
 	 */
 	UFUNCTION(BlueprintPure, Category = "JoyShock Library|Gyro Calibration",
-		meta = (DisplayName = "JSL4U Get Gyro Calibration Offset", ToolTip = "Returns the saved gyro drift offset in the same Unreal axes as Get IMU State."))
+		meta = (DisplayName = "JSL4U Get Gyro Calibration Offset", ToolTip = "Returns the drift offset, in the same Unreal axes as Get IMU State. Only useful if the game saves settings per controller, to spare a returning player a fresh calibration -- otherwise ignore this pair."))
 	static FVector JSL4UGetGyroCalibrationOffset(int32 DeviceId);
 
 	// Restores an offset previously read with JSL4UGetGyroCalibrationOffset.
