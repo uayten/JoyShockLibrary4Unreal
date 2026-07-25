@@ -65,6 +65,9 @@ public:
 	void UnjoinAllControllers();
 	// Returns the handle joined with this one, or INDEX_NONE if it isn't joined.
 	int32 GetJoinPartner(int32 Handle) const;
+	// Whether this handle is the one that represents its logical controller (see GetGroupPrimary). A
+	// standalone controller is its own primary; exactly one half of a joined pair is.
+	bool IsJoinPrimary(int32 Handle) const;
 	// Overrides one Joy-Con's presentation. Horizontal mode is the standalone default; setting it on a
 	// joined half dissolves the pair. Vertical mode is available for exceptional games such as Just Dance.
 	bool SetJoyConHorizontal(int32 Handle, bool bHorizontal);

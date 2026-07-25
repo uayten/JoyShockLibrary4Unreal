@@ -60,7 +60,7 @@ void JoyShock::enable_gyro_ds4_bt(unsigned char *buf, int bufLength)
 // spells the ids as "_VID&0002xxxx_PID&xxxx" instead of USB's "VID_xxxx&PID_xxxx", so the path is a
 // reliable and cheap answer. Non-Windows platforms fall through to the report-id probe below, which is
 // where this used to be decided.
-static bool IsBluetoothHidPath(const FString& InPath)
+bool IsBluetoothHidPath(const FString& InPath)
 {
 	// Bluetooth HID (HIDP) service class UUID -- present in the path of every Windows Bluetooth HID device.
 	return InPath.Contains(TEXT("{00001124-0000-1000-8000-00805f9b34fb}"))
@@ -1297,8 +1297,22 @@ bool JoyShock::clear_switch_home_light() {
 	// Subcommand 0x38 controls the blue HOME notification light independently of subcommand 0x30's
 	// four green player LEDs. This is Nintendo's five-byte "steady brightness 0" pattern; an all-zero
 	// payload is not an off command and can make the ring light instead.
-	unsigned char buf[5] = { 0x01, 0x00, 0x00, 0x11, 0x11 };
-	return send_subcommand(0x01, 0x38, buf, sizeof(buf));
+	return set_switch_home_light(0);
+}
+
+bool JoyShock::set_switch_home_light(unsigned char intensity) {
+	// Nintendo's "steady brightness" form of subcommand 0x38: with no mini cycles requested, the ring
+	// simply holds the start intensity carried in the high nibble of byte 1. The remaining bytes are
+	// mini-cycle timings that go unused here but still have to carry the values Nintendo sends -- an
+	// all-zero payload is not an off command and can leave the ring cycling instead.
+	//
+	// Written without reading a reply: the polling thread is the handle's sole reader, and send_subcommand
+	// blocks in hid_read_timeout for up to a second there, consuming input reports that belong to the
+	// stream. That was survivable while the light was set exactly once, but it is re-asserted periodically
+	// now, so it has to use the write-only path. See write_subcommand.
+	const unsigned char clamped = intensity > 0x0F ? 0x0F : intensity;
+	const unsigned char buf[5] = { 0x01, static_cast<unsigned char>(clamped << 4), 0x00, 0x11, 0x11 };
+	return write_subcommand(0x38, buf, sizeof(buf));
 }
 
 void JoyShock::set_switch_rumble(int smallRumble, int bigRumble) {

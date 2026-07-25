@@ -51,6 +51,10 @@ enum ControllerType { n_switch, s_ds4, s_ds };
 #define PRO_CONTROLLER_2 0x2069
 #define L_OR_R(lr) (lr == 1 ? 'L' : (lr == 2 ? 'R' : '?'))
 
+// Whether this Windows HID path belongs to a Bluetooth device. Used both to decide a controller's
+// transport at connect time and to recognise the cable when the same controller appears twice.
+bool IsBluetoothHidPath(const FString& InPath);
+
 class JoyShock {
 
 public:
@@ -60,6 +64,26 @@ public:
 	FString path;
 
 	wchar_t *serial;
+
+	// The controller's own MAC address, lower-case and without separators, or empty when it could not be
+	// determined. This is the only thing that identifies a physical controller across transports: plugging
+	// a USB cable into a controller that is already paired over Bluetooth enumerates a SECOND HID device
+	// with its own path, which the plugin would otherwise treat as a second controller. See JslConnectDevices.
+	FString mac_address;
+
+	// Transport switching. A controller reachable two ways at once (paired over Bluetooth, then plugged
+	// in) should be read over the cable -- lower latency, no packet loss -- and fall back to the radio the
+	// moment the cable is pulled, with the game seeing neither transition. This mirrors what a PS4/PS5
+	// does, except that there the console and firmware negotiate it; here both links stay live and the
+	// only decision is which handle to read.
+	//
+	// Both swaps are performed BY the polling thread on itself. It owns the handle, so nothing has to stop
+	// it first -- which is what keeps enumeration from ever having to join a thread while holding the
+	// connected lock, a deadlock the polling thread's own disconnect path would walk straight into.
+	//
+	// Guarded by modifying_lock, since enumeration writes pending_transport_path from another thread.
+	FString pending_transport_path;
+	FString fallback_path;
 
 	FString name;
 
@@ -92,6 +116,25 @@ public:
 
 	int8_t dstick;
 	uint8_t battery;
+
+	// Charge, normalised across controller families so the Blueprint layer does not have to know each
+	// vendor's encoding: 0 = empty, 1 = critical, 2 = low, 3 = medium, 4 = full, and 0xFF for "this
+	// controller does not report it". Written by the polling thread as reports arrive, read by the game
+	// thread, hence atomic.
+	// Set once the first Sony battery byte has been logged for this connection. The DS4/DualSense offsets
+	// were written from public documentation rather than measured here, so the first reading is logged to
+	// be compared against what the OS reports -- once, not per report, since it is a verification aid and
+	// not a running diagnostic.
+	bool logged_battery_byte = false;
+
+	static constexpr uint8_t BatteryLevelUnknown = 0xFF;
+	std::atomic<uint8_t> battery_level{ BatteryLevelUnknown };
+	std::atomic<bool> battery_charging{ false };
+
+	// Charge as a percentage, or -1 where the hardware does not report one finely enough to be worth
+	// quoting. Only the Sony controllers fill this: a Switch controller reports five states, and turning
+	// those into "75%" would be inventing digits the hardware never measured.
+	std::atomic<int32> battery_percent{ -1 };
 
 	int32 global_count = 0;
 
@@ -365,6 +408,17 @@ public:
 	// The blue HOME-button light is a notification light, not a player indicator. Keep it off when
 	// JSL4U owns the controller so it cannot be confused with the four green player LEDs.
 	bool clear_switch_home_light();
+
+	// Sets the HOME ring to a steady brightness (0-15). Zero is off, which is what clear_switch_home_light
+	// asks for.
+	bool set_switch_home_light(unsigned char intensity);
+
+	// Ownership of the HOME light. The plugin keeps the light off by default and re-asserts that
+	// periodically, because the firmware turns it back on by itself. That upkeep must stop the moment a
+	// game sets the light deliberately, or the two would fight and the game's value would survive at most
+	// five seconds -- so the first JSL4USetHomeLight call hands ownership over for good.
+	std::atomic<bool> home_light_owned_by_game{ false };
+	std::atomic<unsigned char> wanted_home_light{ 0 };
 
 	void init_ds4_bt();
 

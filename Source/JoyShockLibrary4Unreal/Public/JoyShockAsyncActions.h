@@ -3,6 +3,7 @@
 #pragma once
 
 #include "CoreMinimal.h"
+#include "Containers/Ticker.h"
 #include "Engine/CancellableAsyncAction.h"
 #include "JoyShockSubsystem.h"
 #include "JoyShockAsyncActions.generated.h"
@@ -96,6 +97,62 @@ private:
 	void HandleSeparated(FJSL4UControllerInfo LeftJoyCon, FJSL4UControllerInfo RightJoyCon);
 
 	TWeakObjectPtr<UJoyShockSubsystem> Subsystem;
+};
+
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FJSL4ULowBatteryDelegate,
+	FJSL4UControllerInfo, Controller, EJSL4UBatteryLevel, Level);
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FJSL4UChargingChangedDelegate,
+	FJSL4UControllerInfo, Controller, bool, bIsCharging);
+
+UCLASS()
+class JOYSHOCKLIBRARY4UNREAL_API UJSL4UWaitForBatteryChanges : public UCancellableAsyncAction
+{
+	GENERATED_BODY()
+
+public:
+	// Fires when a controller's charge falls to Warn At Level or below while it is not charging. Fires
+	// once per episode: it re-arms when the controller charges past that level again, or is plugged in.
+	UPROPERTY(BlueprintAssignable, meta = (DisplayName = "On Low Battery"))
+	FJSL4ULowBatteryDelegate OnLowBattery;
+
+	// Fires whenever a controller starts or stops drawing power. Plugging in a warned controller also
+	// clears its warning, so a game can dismiss the low-battery UI from here without tracking state.
+	UPROPERTY(BlueprintAssignable, meta = (DisplayName = "On Charging Changed"))
+	FJSL4UChargingChangedDelegate OnChargingChanged;
+
+	/**
+	 * Watches every connected controller's charge.
+	 *
+	 * Battery moves over minutes, so this polls once a second rather than adding a per-report event path;
+	 * a controller that is already low when the node activates is reported on the first poll.
+	 *
+	 * Controllers reporting Unknown (the Switch 2 Pro Controller does) never raise On Low Battery -- an
+	 * absent reading is not a flat battery.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "JoyShock Library|Events",
+		meta = (BlueprintInternalUseOnly = "true", WorldContext = "WorldContextObject",
+			DisplayName = "Wait For Battery Changes", AdvancedDisplay = "WarnAtLevel",
+			Keywords = "JSL4U battery low charge charging power joyshock"))
+	static UJSL4UWaitForBatteryChanges* WaitForBatteryChanges(UObject* WorldContextObject,
+		EJSL4UBatteryLevel WarnAtLevel = EJSL4UBatteryLevel::Low);
+
+	virtual void Activate() override;
+	virtual void SetReadyToDestroy() override;
+
+private:
+	bool Poll(float DeltaTime);
+
+	struct FBatteryWatch
+	{
+		EJSL4UBatteryLevel Level = EJSL4UBatteryLevel::Unknown;
+		bool bIsCharging = false;
+		bool bLowReported = false;
+		bool bSeen = false;
+	};
+
+	EJSL4UBatteryLevel WarnLevel = EJSL4UBatteryLevel::Low;
+	TMap<int32, FBatteryWatch> WatchByDeviceId;
+	FTSTicker::FDelegateHandle TickerHandle;
 };
 
 UCLASS()

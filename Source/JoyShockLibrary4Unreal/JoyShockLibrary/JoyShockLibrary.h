@@ -352,6 +352,27 @@ enum class EJSL4UControllerType : uint8
 	ProController2 = 6 UMETA(DisplayName = "Pro Controller 2")
 };
 
+/**
+ * A controller's charge, in the coarse steps the hardware actually reports.
+ *
+ * Deliberately not a percentage: a Switch controller reports five states in its input report, so a
+ * percentage would be invented precision. Sony controllers report finer steps, which are bucketed into
+ * the same five so a game can treat every controller the same way.
+ *
+ * Unknown is not "flat" -- it means this controller does not report charge (the Switch 2 Pro Controller,
+ * currently), or none has arrived yet. Compare against it explicitly before treating a value as low.
+ */
+UENUM(BlueprintType)
+enum class EJSL4UBatteryLevel : uint8
+{
+	Unknown = 0 UMETA(ToolTip = "This controller does not report its charge, or no report has arrived yet."),
+	Empty = 1 UMETA(ToolTip = "Effectively flat; shutdown is imminent."),
+	Critical = 2 UMETA(ToolTip = "Very low."),
+	Low = 3 UMETA(ToolTip = "Low -- the level Wait For Battery Changes warns at by default."),
+	Medium = 4 UMETA(ToolTip = "Comfortably charged."),
+	Full = 5 UMETA(ToolTip = "Full or nearly full.")
+};
+
 UENUM(BlueprintType)
 enum class EJSL4UJoyConGripMode : uint8
 {
@@ -462,6 +483,22 @@ struct JOYSHOCKLIBRARY4UNREAL_API FJSL4UControllerInfo // typedef struct JSL_SET
 	UPROPERTY(BlueprintReadOnly)
 	int32 PlayerLedNumber = 0;
 
+	// Charge level, in the coarse steps the hardware reports. Unknown when the controller does not report
+	// it. Sony values still need verification against real hardware -- see the parsing in InputHelpers.cpp.
+	UPROPERTY(BlueprintReadOnly)
+	EJSL4UBatteryLevel BatteryLevel = EJSL4UBatteryLevel::Unknown;
+
+	// Whether the controller is drawing power (cable, dock, or a Joy-Con seated in a charging grip).
+	UPROPERTY(BlueprintReadOnly)
+	bool bIsCharging = false;
+
+	// Charge from 0 to 100, or -1 when the controller does not report one finely enough to quote. Only the
+	// PlayStation controllers fill this. Prefer Battery Level for anything that decides something: it is
+	// the only reading every family can give, so a game written against it behaves the same on a Joy-Con
+	// as on a DualSense. This is for display -- a percentage on a settings screen, a battery bar.
+	UPROPERTY(BlueprintReadOnly)
+	int32 BatteryPercent = -1;
+
 	UPROPERTY(BlueprintReadOnly)
 	FColor Color = FColor::Black;
 
@@ -538,7 +575,7 @@ public:
 	// (e.g. "0 JoyCon (R), 1 DualSense, 2 JoyCon (L)") and pick which Joy-Cons to join. Use
 	// "Enum to String" on ControllerType for a readable name.
 	UFUNCTION(BlueprintCallable, Category = "JoyShock Library|Controllers",
-		meta = (ToolTip = "Returns every connected JoyShock controller with its plugin and Unreal device identities, model, assignment and current settings."))
+		meta = (DisplayName = "JSL4U Get Connected Controllers", ToolTip = "Returns every connected JoyShock controller with its plugin and Unreal device identities, model, assignment and current settings."))
 	static TArray<FJSL4UControllerInfo> JSL4UGetConnectedControllers();
 
 	// True for controller types that can be joined into a pair -- currently the left and right Joy-Cons.
@@ -551,17 +588,17 @@ public:
 	// delivered to the lower device id's player (e.g. joining 0 and 2 -> both feed player 0). Both ids must
 	// be Joy-Cons (one left, one right). Returns true on success.
 	UFUNCTION(BlueprintCallable, Category = "JoyShock Library|Joy-Con Pairing",
-		meta = (ToolTip = "Pairs one left and one right Joy-Con so both feed the same player. Returns false when either device is unavailable or the types are incompatible."))
+		meta = (DisplayName = "JSL4U Join Joy-Cons", ToolTip = "Pairs one left and one right Joy-Con so both feed the same player. Returns false when either device is unavailable or the types are incompatible."))
 	static bool JSL4UJoinJoyCons(int32 DeviceIdA, int32 DeviceIdB);
 
 	// Undoes a join involving this device id (both halves go back to being their own players).
 	UFUNCTION(BlueprintCallable, Category = "JoyShock Library|Joy-Con Pairing",
-		meta = (ToolTip = "Dissolves the Joy-Con pair containing this device. Both halves return to independent assignment."))
+		meta = (DisplayName = "JSL4U Unjoin Joy-Con", ToolTip = "Dissolves the Joy-Con pair containing this device. Both halves return to independent assignment."))
 	static void JSL4UUnjoinJoyCon(int32 DeviceId);
 
 	// Undoes every Joy-Con join.
 	UFUNCTION(BlueprintCallable, Category = "JoyShock Library|Joy-Con Pairing",
-		meta = (ToolTip = "Dissolves every joined Joy-Con pair."))
+		meta = (DisplayName = "JSL4U Unjoin All Joy-Cons", ToolTip = "Dissolves every joined Joy-Con pair."))
 	static void JSL4UUnjoinAllJoyCons();
 
 	// Overrides one Joy-Con's grip presentation. Horizontal rotates its stick/buttons into standard
@@ -570,6 +607,58 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "JoyShock Library|Joy-Con Pairing",
 		meta = (DisplayName = "JSL4U Set Joy-Con Grip Mode", ToolTip = "Sets one Joy-Con to Horizontal or Vertical presentation. Horizontal separates a joined pair. Standalone Joy-Cons use Horizontal by default."))
 	static bool JSL4USetJoyConGripMode(int32 DeviceId, EJSL4UJoyConGripMode GripMode);
+
+	/**
+	 * Whether this Joy-Con is currently joined with another, and to which one -- read live rather than
+	 * from a struct.
+	 *
+	 * Prefer this over a stored Controller Info's JoinedToDeviceId whenever the answer is needed at an
+	 * arbitrary moment (drawing a mirror, refreshing UI). A Controller Info is a snapshot: one captured
+	 * when a controller connected still says "not joined" forever, because joining happens later, and
+	 * nothing rewrites the copy the caller kept. This asks the input interface for the current pairing.
+	 */
+	UFUNCTION(BlueprintPure, Category = "JoyShock Library|Joy-Con Pairing",
+		meta = (DisplayName = "JSL4U Get Joy-Con Partner", Keywords = "join joined pair partner",
+			ToolTip = "Returns whether this Joy-Con is joined right now, and its partner's Device Id (-1 when standalone). Reads live pairing state, unlike a stored Controller Info."))
+	static bool JSL4UGetJoinPartner(int32 DeviceId, int32& PartnerDeviceId);
+
+	/**
+	 * Whether this device is the one that represents its logical controller: true for any standalone
+	 * controller, and for exactly one half of a joined pair.
+	 *
+	 * This is the plugin's own grouping rule (the same one player slots are assigned from), so it answers
+	 * "should this actor draw the pair, or stand down?" without the caller inventing a tie-break that
+	 * could drift from the plugin's. Note it identifies a device, not a side: which half wins depends on
+	 * connection order, so a pair's primary may be the right Joy-Con. When the answer must always be the
+	 * same physical half (drawing a grip that holds both), branch on Controller Type instead.
+	 */
+	UFUNCTION(BlueprintPure, Category = "JoyShock Library|Joy-Con Pairing",
+		meta = (DisplayName = "JSL4U Is Joy-Con Primary", Keywords = "join joined pair primary leader",
+			ToolTip = "True when this device represents its logical controller: always true for a standalone controller of any type, and true for exactly one half of a joined Joy-Con pair. Use it to decide which of two paired actors is the active one."))
+	static bool JSL4UIsJoinPrimary(int32 DeviceId);
+
+	/**
+	 * Resolves a whole logical controller from any one of its device ids, in a single call: whether it is
+	 * a joined pair, which half leads it, and both halves' full identities.
+	 *
+	 * Ask it with either half and the answer is the same -- Primary is always the device the plugin uses
+	 * to represent the pair (the same one Is Join Primary reports and player slots are assigned from), and
+	 * Partner is always the other. That stability is the point: an actor drawing a pair does not have to
+	 * work out which of the two it happens to be attached to.
+	 *
+	 * Standalone controllers are not a special case to handle separately: Primary is that controller,
+	 * Partner comes back unset (its Is Connected is false), and the return value is false. So this is also
+	 * a safe first call at start-up, where controllers are already connected and no pairing event will
+	 * ever arrive to announce them.
+	 *
+	 * Primary is a device, not a side: which half leads depends on connection order, so a pair's Primary
+	 * may be the right Joy-Con. When something has to go on a specific half -- painting the left Joy-Con's
+	 * colour on the left half of a mesh -- read Controller Type on each returned info rather than assuming.
+	 */
+	UFUNCTION(BlueprintPure, Category = "JoyShock Library|Joy-Con Pairing",
+		meta = (DisplayName = "JSL4U Get Joy-Con Pair", ToolTip = "Given either half, returns whether it is a joined pair plus both controller infos (Primary leads, Partner is the other half). A standalone controller returns itself as Primary, an unset Partner and false. Reads live state, so it works for controllers that were already connected at start-up."))
+	static bool JSL4UGetJoyConPair(int32 DeviceId, FJSL4UControllerInfo& PrimaryController,
+		FJSL4UControllerInfo& PartnerController);
 
 	// Returns the player slot (0, 1, 2, ...) the given controller's input is delivered to, or -1 if it
 	// isn't connected. Both halves of a joined Joy-Con pair return the same slot. Useful for UI.
@@ -598,7 +687,7 @@ public:
 	 * @return False if DeviceId is not a connected controller.
 	 */
 	UFUNCTION(BlueprintCallable, Category = "JoyShock Library|Controller Assignment",
-		meta = (ToolTip = "Assigns this controller to a zero-based player slot. Pass -1 to restore automatic assignment. Joined Joy-Cons move together."))
+		meta = (DisplayName = "JSL4U Assign Controller To Player Index", ToolTip = "Assigns this controller to a zero-based player slot. Pass -1 to restore automatic assignment. Joined Joy-Cons move together."))
 	static bool JSL4UAssignControllerToPlayerIndex(int32 DeviceId, int32 PlayerIndex);
 
 	// Assigns a controller to the player behind a PlayerController -- the setter counterpart of
@@ -606,7 +695,7 @@ public:
 	// player". Same caveat as the getter: do NOT build this out of "Get Player Controller ID", which is the
 	// legacy controller id rather than the platform user index slots are assigned from.
 	UFUNCTION(BlueprintCallable, Category = "JoyShock Library|Controller Assignment",
-		meta = (DefaultToSelf = "PlayerController", ToolTip = "Assigns this controller to the Local Player owned by Player Controller. Defaults to Self in a PlayerController Blueprint."))
+		meta = (DisplayName = "JSL4U Assign Controller To Player", DefaultToSelf = "PlayerController", ToolTip = "Assigns this controller to the Local Player owned by Player Controller. Defaults to Self in a PlayerController Blueprint."))
 	static bool JSL4UAssignControllerToPlayer(int32 DeviceId, APlayerController* PlayerController);
 
 	// The inverse of JSL4UGetPlayerIndexOfController: every controller currently feeding a player slot. Two entries for
@@ -640,7 +729,7 @@ public:
 	 * Repeated calls while a scan is running are coalesced into one follow-up pass.
 	 */
 	UFUNCTION(BlueprintCallable, Category = "JoyShock Library|Controllers",
-		meta = (ToolTip = "Requests an asynchronous controller rescan. Normal device changes are detected automatically, so this is only needed when the platform sends no notification."))
+		meta = (DisplayName = "JSL4U Refresh Controllers", ToolTip = "Requests an asynchronous controller rescan. Normal device changes are detected automatically, so this is only needed when the platform sends no notification."))
 	static void JSL4URefreshControllers();
 
 	static int32 JslConnectDevices();
@@ -669,7 +758,7 @@ public:
 	 * an id you are already holding on to, without building the whole controller list to look it up.
 	 */
 	UFUNCTION(BlueprintPure, Category = "JoyShock Library|Controllers",
-		meta = (ToolTip = "Returns true only when Device Id currently identifies a connected controller that is delivering input. Device Id values may be reused after disconnect."))
+		meta = (DisplayName = "JSL4U Is Controller Connected", ToolTip = "Returns true only when Device Id currently identifies a connected controller that is delivering input. Device Id values may be reused after disconnect."))
 	static bool JSL4UIsControllerConnected(int32 DeviceId);
 
 	static bool JslStillConnected(int32 deviceId);
@@ -706,34 +795,34 @@ public:
 	static FIMUState JslGetIMUState(int32 deviceId);
 
 	UFUNCTION(BlueprintPure, Category = "JoyShock Library|Motion",
-		meta = (ToolTip = "Returns gyroscope and acceleration values in Unreal axes after applying the selected gyro space."))
+		meta = (DisplayName = "JSL4U Get IMU State", ToolTip = "Returns gyroscope and acceleration values in Unreal axes after applying the selected gyro space."))
 	static FJSL4UIMUState JSL4UGetIMUState(int32 DeviceId);
 
 	UFUNCTION(BlueprintPure, Category = "JoyShock Library|Motion",
-		meta = (ToolTip = "Returns untransformed gyroscope and acceleration values in Unreal axes, ignoring the selected gyro space."))
+		meta = (DisplayName = "JSL4U Get Raw IMU State", ToolTip = "Returns untransformed gyroscope and acceleration values in Unreal axes, ignoring the selected gyro space."))
 	static FJSL4UIMUState JSL4UGetRawIMUState(int32 DeviceId);
 	
 	static FMotionState JslGetMotionState(int32 deviceId);
 
 	UFUNCTION(BlueprintPure, Category = "JoyShock Library|Motion",
-		meta = (ToolTip = "Returns processed orientation, acceleration and gravity in Unreal coordinates."))
+		meta = (DisplayName = "JSL4U Get Motion State", ToolTip = "Returns processed orientation, acceleration and gravity in Unreal coordinates."))
 	static FJSL4UMotionState JSL4UGetMotionState(int32 DeviceId);
 
 	UFUNCTION(BlueprintPure, Category = "JoyShock Library|Motion",
-		meta = (ToolTip = "Returns the motion processor's untransformed orientation, acceleration and gravity values."))
+		meta = (DisplayName = "JSL4U Get Raw Motion State", ToolTip = "Returns the motion processor's untransformed orientation, acceleration and gravity values."))
 	static FJSL4UMotionState JSL4UGetRawMotionState(int32 DeviceId);
 
 	static FTouchState JslGetTouchState(int32 deviceId, bool previous = false);
 
 	UFUNCTION(BlueprintPure, Category = "JoyShock Library|Touchpad",
-		meta = (ToolTip = "Returns both touch contacts. Enable Previous to read the preceding report instead of the current report."))
+		meta = (DisplayName = "JSL4U Get Touch State", ToolTip = "Returns both touch contacts. Enable Previous to read the preceding report instead of the current report."))
 	static FJSL4UTouchState JSL4UGetTouchState(int32 DeviceId, bool bPrevious = false);
 
 	// The touchpad's size in its own units (1920 x 943 on the DualShock 4 and DualSense), or zero for a
 	// controller without one. JSL4UGetTouchState reports touches normalised to 0-1, so multiply by this if
 	// you need touchpad-native coordinates -- e.g. to keep a drag's aspect ratio right.
 	UFUNCTION(BlueprintPure, Category = "JoyShock Library|Touchpad",
-		meta = (ToolTip = "Returns the touchpad's native width and height, or zero for a controller without a touchpad. Touch State positions are normalized from 0 to 1."))
+		meta = (DisplayName = "JSL4U Get Touchpad Size", ToolTip = "Returns the touchpad's native width and height, or zero for a controller without a touchpad. Touch State positions are normalized from 0 to 1."))
 	static FVector2D JSL4UGetTouchpadSize(int32 DeviceId);
 
 	static bool JslGetTouchpadDimension(int32 deviceId, int32 &sizeX, int32 &sizeY);
@@ -743,7 +832,7 @@ public:
 	// get thumbsticks
 
 	UFUNCTION(BlueprintPure, Category = "JoyShock Library|Input State",
-		meta = (ToolTip = "Returns the current left-stick position from -1 to 1. Prefer Enhanced Input for gameplay bindings."))
+		meta = (DisplayName = "JSL4U Get Left Stick", ToolTip = "Returns the current left-stick position from -1 to 1. Prefer Enhanced Input for gameplay bindings."))
 	static FVector2D JSL4UGetLeftStick(int32 DeviceId);
 	
 	static float JslGetLeftX(int32 deviceId);
@@ -751,7 +840,7 @@ public:
 	static float JslGetLeftY(int32 deviceId);
 
 	UFUNCTION(BlueprintPure, Category = "JoyShock Library|Input State",
-		meta = (ToolTip = "Returns the current right-stick position from -1 to 1. Prefer Enhanced Input for gameplay bindings."))
+		meta = (DisplayName = "JSL4U Get Right Stick", ToolTip = "Returns the current right-stick position from -1 to 1. Prefer Enhanced Input for gameplay bindings."))
 	static FVector2D JSL4UGetRightStick(int32 DeviceId);
 
 	static float JslGetRightX(int32 deviceId);
@@ -784,7 +873,7 @@ public:
 	static void JslSetGyroSpace(int32 deviceId, int32 gyroSpace);
 
 	UFUNCTION(BlueprintCallable, Category = "JoyShock Library|Motion",
-		meta = (ToolTip = "Chooses how gyro axes are transformed: local controller space, gravity-corrected world space or adaptive player space."))
+		meta = (DisplayName = "JSL4U Set Gyro Space", ToolTip = "Chooses how gyro axes are transformed: local controller space, gravity-corrected world space or adaptive player space."))
 	static void JSL4USetGyroSpace(
 		UPARAM(DisplayName = "Device Id") int32 InDeviceID,
 		UPARAM(DisplayName = "Gyro Space") EJSL4UGyroSpace InGyroSpace);
@@ -859,7 +948,7 @@ public:
 	 * @param Mode      Automatic for the set-and-forget behaviour most games want; Manual to drive it yourself.
 	 */
 	UFUNCTION(BlueprintCallable, Category = "JoyShock Library|Gyro Calibration",
-		meta = (ToolTip = "Selects automatic drift calibration or manual calibration for this controller. Automatic is the recommended set-and-forget mode."))
+		meta = (DisplayName = "JSL4U Set Gyro Calibration Mode", ToolTip = "Selects automatic drift calibration or manual calibration for this controller. Automatic is the recommended set-and-forget mode."))
 	static void JSL4USetGyroCalibrationMode(int32 DeviceId, EJSL4UGyroCalibrationMode Mode);
 
 	// Begins gathering samples for the gyro's drift offset. Call with the controller sitting still, and call
@@ -877,12 +966,12 @@ public:
 	// Throws away the offset gathered so far and starts over. Use this when a calibration was taken while the
 	// controller was in fact being moved, which leaves the gyro worse off than no calibration at all.
 	UFUNCTION(BlueprintCallable, Category = "JoyShock Library|Gyro Calibration",
-		meta = (ToolTip = "Discards the current gyro drift offset so calibration can start again."))
+		meta = (DisplayName = "JSL4U Reset Gyro Calibration", ToolTip = "Discards the current gyro drift offset so calibration can start again."))
 	static void JSL4UResetGyroCalibration(int32 DeviceId);
 
 	// This controller's calibration state, for driving a calibration screen (progress, "hold still" prompts).
 	UFUNCTION(BlueprintPure, Category = "JoyShock Library|Gyro Calibration",
-		meta = (ToolTip = "Returns calibration mode, progress, confidence and whether the controller is currently steady."))
+		meta = (DisplayName = "JSL4U Get Gyro Calibration Status", ToolTip = "Returns calibration mode, progress, confidence and whether the controller is currently steady."))
 	static FJSL4UGyroCalibrationStatus JSL4UGetGyroCalibrationStatus(int32 DeviceId);
 
 	/**
@@ -891,12 +980,12 @@ public:
 	 * to calibrate again. Pairs exactly with JSL4USetGyroCalibrationOffset.
 	 */
 	UFUNCTION(BlueprintPure, Category = "JoyShock Library|Gyro Calibration",
-		meta = (ToolTip = "Returns the saved gyro drift offset in the same Unreal axes as Get IMU State."))
+		meta = (DisplayName = "JSL4U Get Gyro Calibration Offset", ToolTip = "Returns the saved gyro drift offset in the same Unreal axes as Get IMU State."))
 	static FVector JSL4UGetGyroCalibrationOffset(int32 DeviceId);
 
 	// Restores an offset previously read with JSL4UGetGyroCalibrationOffset.
 	UFUNCTION(BlueprintCallable, Category = "JoyShock Library|Gyro Calibration",
-		meta = (ToolTip = "Restores a gyro drift offset previously returned by Get Gyro Calibration Offset."))
+		meta = (DisplayName = "JSL4U Set Gyro Calibration Offset", ToolTip = "Restores a gyro drift offset previously returned by Get Gyro Calibration Offset."))
 	static void JSL4USetGyroCalibrationOffset(int32 DeviceId, FVector Offset);
 
 	// calibration
@@ -940,7 +1029,7 @@ public:
 	 * @param Color     The colour to display. Alpha is ignored.
 	 */
 	UFUNCTION(BlueprintCallable, Category = "JoyShock Library|Output",
-		meta = (ToolTip = "Sets a DualShock 4 or DualSense light color. Controllers without a controllable light ignore this call."))
+		meta = (DisplayName = "JSL4U Set Light Color", ToolTip = "Sets a DualShock 4 or DualSense light color. Controllers without a controllable light ignore this call."))
 	static void JSL4USetLightColor(int32 DeviceId, FColor Color);
 
 	/**
@@ -997,6 +1086,25 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "JoyShock Library|Output",
 		meta = (DisplayName = "JSL4U Set Player Indicator", ToolTip = "Shows a one-based player number on Switch, Switch 2 or DualSense player LEDs. The DualShock 4 has no numeric indicator and ignores this call; use Set Light Color for its RGB light bar."))
 	static void JSL4USetPlayerNumber(int32 DeviceId, int32 Number);
+
+	/**
+	 * Sets the blue HOME ring light on a right Joy-Con or Pro Controller (0 = off, 1 = full brightness).
+	 * Other controllers ignore this.
+	 *
+	 * This is Nintendo's *notification* light, not a player indicator -- on a real Switch it stays off
+	 * during play and the system uses it for pairing, low battery and lost-connection feedback. The four
+	 * green player LEDs are the player identity (see Set Player Indicator); driving this one instead is
+	 * likely to read as a system message rather than as "you are player 2".
+	 *
+	 * The plugin keeps this light off by default, re-asserting that periodically because the firmware
+	 * turns it back on by itself. Calling this hands ownership to the game permanently: the automatic
+	 * upkeep stops for that controller, and the light then holds whatever the game last set -- including
+	 * zero. There is no way back to automatic for the rest of the connection, which is deliberate: a game
+	 * that has opinions about this light should not have them silently overwritten five seconds later.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "JoyShock Library|Output",
+		meta = (DisplayName = "JSL4U Set Home Light", ToolTip = "Sets the HOME ring light brightness (0-1) on a right Joy-Con or Pro Controller. This is a notification light, not a player indicator. Calling it stops the plugin's automatic keep-it-off upkeep for that controller."))
+	static void JSL4USetHomeLight(int32 DeviceId, float Brightness);
 
 	// Converts the same semantic one-based number into Nintendo's four visible LED states. This is useful
 	// for controller mirrors and UI; the physical controller is updated automatically by assignment.

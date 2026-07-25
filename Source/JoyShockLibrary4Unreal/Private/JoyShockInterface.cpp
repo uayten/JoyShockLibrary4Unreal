@@ -1320,6 +1320,12 @@ int32 FJoyShockInterface::GetJoinPartner(int32 Handle) const
 	return Partner != nullptr ? *Partner : INDEX_NONE;
 }
 
+bool FJoyShockInterface::IsJoinPrimary(int32 Handle) const
+{
+	FScopeLock ContainerLock(&ControllerContainerLock);
+	return GetGroupPrimary(Handle) == Handle;
+}
+
 bool FJoyShockInterface::SetPlayerIndexForDevice(int32 Handle, int32 PlayerIndex)
 {
 	FScopeLock ContainerLock(&ControllerContainerLock);

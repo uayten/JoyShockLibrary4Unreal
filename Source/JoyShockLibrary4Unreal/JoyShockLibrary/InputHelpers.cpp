@@ -4,6 +4,14 @@
 
 // #include <cmath>
 
+// Buckets a percentage into the coarse levels the plugin exposes (0 = empty ... 4 = full). Shared by
+// every controller family that reports a percentage, so a DualShock 4 and a DualSense at the same charge
+// report the same level even though they encode it differently.
+static uint8_t BatteryLevelFromPercent(int32 Percent)
+{
+	return Percent >= 80 ? 4 : Percent >= 50 ? 3 : Percent >= 25 ? 2 : Percent >= 10 ? 1 : 0;
+}
+
 bool handle_input(JoyShock* jc, uint8_t* packet, int32 len, bool &hasIMU) {
 	hasIMU = true;
 	if (packet[0] == 0) return false; // ignore non-responses
@@ -183,6 +191,34 @@ bool handle_input(JoyShock* jc, uint8_t* packet, int32 len, bool &hasIMU) {
 				return false; // ignore packets from Dongle with no connected controller
 		}
 		if (isValid) {
+			// Battery: byte 30 of the DS4 report holds the charge in its low nibble and the cable flag in
+			// bit 4. The charge counts further while charging (up to 11) than on battery (up to 8), so the
+			// buckets below are thresholds rather than a fixed divisor.
+			//
+			// NOT YET VERIFIED ON HARDWARE. Offset and encoding come from public reverse-engineering of the
+			// DS4 report, not from a controller on this desk -- the risk is a plausible-looking but wrong
+			// level rather than an obvious failure. Check against the battery indicator before trusting it.
+			if (indexOffset + 30 < len) {
+				const uint8_t batteryByte = packet[indexOffset + 30];
+				const uint8_t rawCharge = batteryByte & 0x0F;
+				const bool bCharging = (batteryByte & 0x10) != 0;
+				// Verified on hardware against DS4Windows: the raw count runs to 8 on battery and to 11
+				// while charging, so it is a fraction of a moving maximum rather than a fixed 0-15 scale.
+				// A controller reading 7 on battery is 87%, which is what the OS reports for it -- reading
+				// the same 7 as sevenths-of-fifteen is what made a nearly full controller look half empty.
+				const int32 maxCharge = bCharging ? 11 : 8;
+				const int32 percent = FMath::Min<int32>(rawCharge, maxCharge) * 100 / maxCharge;
+				jc->battery_charging.store(bCharging);
+				jc->battery_percent.store(percent);
+				jc->battery_level.store(BatteryLevelFromPercent(percent));
+				if (!jc->logged_battery_byte) {
+					jc->logged_battery_byte = true;
+					UE_LOG(LogJoyShockLibrary, Verbose,
+						TEXT("DS4 battery: device %d byte[%d] = 0x%02X -> %d%%, charging %d"),
+						jc->intHandle, indexOffset + 30, batteryByte, percent, bCharging ? 1 : 0);
+				}
+			}
+
 			// Gyroscope:
 			// Gyroscope data is relative (degrees/s)
 			int16_t gyroSampleX = uint16_to_int16(packet[indexOffset+13] | (packet[indexOffset+14] << 8) & 0xFF00);
@@ -298,6 +334,31 @@ bool handle_input(JoyShock* jc, uint8_t* packet, int32 len, bool &hasIMU) {
         int indexOffset = 1;
         if(!jc->is_usb) {
             indexOffset = 2;
+        }
+
+        // Battery: byte 53 of the DualSense report packs the charge (low nibble, 0-10 in tenths) and a
+        // power-state code (high nibble: 0 discharging, 1 charging, 2 charged).
+        //
+        // NOT YET VERIFIED ON HARDWARE, exactly as for the DS4 above -- offset and encoding come from
+        // public reverse-engineering rather than measurement here.
+        if (indexOffset + 52 < len) {
+            const uint8_t batteryByte = packet[indexOffset + 52];
+            const uint8_t rawCharge = batteryByte & 0x0F;
+            const uint8_t powerState = (batteryByte >> 4) & 0x0F;
+            // The DualSense counts in tenths (0-10) with the power state in the high nibble.
+            //
+            // STILL UNVERIFIED ON HARDWARE, unlike the DS4 above. The one-shot log below is what confirms
+            // it: compare the reported percentage against what the OS shows for the same controller.
+            const int32 percent = FMath::Min<int32>(rawCharge * 10, 100);
+            jc->battery_charging.store(powerState == 0x01 || powerState == 0x02);
+            jc->battery_percent.store(percent);
+            jc->battery_level.store(BatteryLevelFromPercent(percent));
+            if (!jc->logged_battery_byte) {
+                jc->logged_battery_byte = true;
+                UE_LOG(LogJoyShockLibrary, Log,
+                    TEXT("DualSense battery (UNVERIFIED offset): device %d report 0x%02X len %d, byte[%d] = 0x%02X -> %d%%, power state %d"),
+                    jc->intHandle, packet[0], len, indexOffset + 52, batteryByte, percent, powerState);
+            }
         }
 
         // Gyroscope:
@@ -511,7 +572,18 @@ bool handle_input(JoyShock* jc, uint8_t* packet, int32 len, bool &hasIMU) {
 				jc->stick_cal_y_r);
 		}
 
-		jc->battery = (stick_data[1] & 0xF0) >> 4;
+		// Byte 2 of the standard report carries the charge in bits 5-7 and the charging flag in bit 4.
+		//
+		// This used to read stick_data[1], which is not that byte at all: stick_data has been advanced to
+		// the stick block by here (byte 6 for a left Joy-Con, 9 for a right one), so it was reading the
+		// low bits of the analog stick's Y axis. The "battery" therefore tracked stick noise, and the
+		// charging flag -- a single bit of a jittering ADC reading -- flickered on a controller sitting
+		// still. It went unnoticed for as long as nothing exposed the value.
+		if (len > 2) {
+			jc->battery = (packet[2] & 0xF0) >> 4;
+			jc->battery_charging.store((packet[2] & 0x10) != 0);
+			jc->battery_level.store((packet[2] & 0xE0) >> 5);
+		}
 		//printf("JoyCon battery: %d\n", jc->battery);
 
 		// Accelerometer: only the full 0x30/0x31 reports contain these bytes.

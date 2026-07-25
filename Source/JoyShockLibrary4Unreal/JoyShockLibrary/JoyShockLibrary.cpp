@@ -110,6 +110,50 @@ static unsigned char PlayerNumberToDualSenseLedMask(int32 PlayerNumber)
 		: 0;
 }
 
+// Moves this controller onto a different HID path and re-runs whatever init that transport needs.
+// Returns false and leaves the controller untouched if the new path cannot be opened, so a failed swap
+// is never worse than not attempting one.
+//
+// Called only from the polling thread: it owns the handle, so the swap needs no synchronisation with a
+// reader, and no other thread has to be stopped for it to happen.
+static bool SwitchControllerTransport(JoyShock* jc, const FString& NewPath, bool bNewIsUsb)
+{
+	hid_device* NewHandle = hid_open_path(TCHAR_TO_UTF8(*NewPath));
+	if (NewHandle == nullptr)
+	{
+		return false;
+	}
+
+	hid_close(jc->handle);
+	jc->handle = NewHandle;
+	hid_set_nonblocking(jc->handle, 0);
+	jc->is_usb = bNewIsUsb;
+	jc->path = NewPath;
+
+	// The two transports speak different init sequences, and the wrong one leaves the controller silent
+	// (see the note in enable_IMU about how that failure used to hide).
+	if (jc->controller_type == ControllerType::s_ds4)
+	{
+		// USB needs no init at a swap: a DS4 streams its full report (IMU included) over USB by default,
+		// and the light/rumble state init would set is re-sent by the polling loop anyway, because the
+		// caller invalidates its last-sent tracking. Skipping it also keeps the swap's blocking-I/O
+		// surface as small as possible -- this runs where a wedged exchange costs a controller, and used
+		// to cost the whole editor. Bluetooth genuinely needs its init: the feature-report read inside is
+		// what switches the controller back into the full 0x11 report mode.
+		if (!bNewIsUsb)
+		{
+			jc->init_ds4_bt();
+		}
+	}
+	else if (jc->controller_type == ControllerType::n_switch && !jc->is_switch2_pro)
+	{
+		bNewIsUsb ? jc->init_usb() : jc->init_bt();
+	}
+	// The DualSense needs no explicit init for either transport, matching JslConnectDevices.
+
+	return true;
+}
+
 void pollIndividualLoop(JoyShock *jc) {
 	FJoyShockLibrary4UnrealModule& JSL4UModule = FJoyShockLibrary4UnrealModule::GetInstance();
 
@@ -150,6 +194,8 @@ void pollIndividualLoop(JoyShock *jc) {
 	unsigned char lastSentBigRumble = 0;
 	auto lastSw2RumbleTime = std::chrono::steady_clock::now();
 	auto lastSw2InitRetryTime = std::chrono::steady_clock::now();
+	// 0xFF is not a reachable intensity (the field is 4 bits), so the first game-set value always sends.
+	unsigned char lastSentHomeLight = 0xFF;
 
 	// DualShock 4 / DualSense: rumble, light colour and the player LED all ride in the SAME output report,
 	// so they are tracked together and sent as one packet whenever any of them changes. Seeded from what
@@ -167,12 +213,101 @@ void pollIndividualLoop(JoyShock *jc) {
 		unsigned char buf[64];
 		memset(buf, 0, 64);
 
+		// Enumeration found this same physical controller on a better transport (the cable). Adopt it here
+		// rather than there, so the swap happens on the thread that owns the handle.
+		{
+			jc->modifying_lock.Lock();
+			const FString PendingPath = jc->pending_transport_path;
+			jc->pending_transport_path.Reset();
+			jc->modifying_lock.Unlock();
+
+			if (!PendingPath.IsEmpty())
+			{
+				const FString PreviousPath = jc->path;
+				// Deliberately NOT under _connectedLock. The swap's init performs blocking HID I/O, and on
+				// a freshly replugged device that I/O can block until the cable is pulled again -- holding
+				// the exclusive lock through it froze every Jsl* getter on the game thread, i.e. the whole
+				// editor, on the second plug of a session. The lock is not needed for handle safety any
+				// more: enumeration does no I/O on a tracked device's handle (every family marks
+				// initialised now), and this thread is the handle's only user. Worst case an init that
+				// wedges costs this one controller until its read fails, which the fallback below already
+				// handles -- degradation instead of a frozen editor.
+				const bool bSwitched = SwitchControllerTransport(jc, PendingPath, true);
+				if (bSwitched)
+				{
+					jc->modifying_lock.Lock();
+					jc->fallback_path = PreviousPath;
+					jc->modifying_lock.Unlock();
+					UE_LOG(LogJoyShockLibrary, Log,
+						TEXT("Controller %d (%s) switched to its USB connection; the Bluetooth path is kept as a fallback."),
+						jc->intHandle, *jc->name);
+					// Rumble/LED state is re-sent by the tracking below, since the values it last sent went
+					// to a handle that is now closed.
+					lastSentSmallRumble = 0;
+					lastSentBigRumble = 0;
+					lastSentPlayerNumber = -1;
+					bHomeLightCleared = false;
+					continue;
+				}
+				// Unmap the path we never managed to adopt: enumeration registered it as ours when queueing
+				// the swap, and leaving it there would make every replug look "already tracked" and never
+				// retry. This brief map-only mutation is what the lock is actually for.
+				JSL4UModule._connectedLock.lock();
+				_byPath.Remove(PendingPath);
+				JSL4UModule._connectedLock.unlock();
+				UE_LOG(LogJoyShockLibrary, Warning,
+					TEXT("Controller %d (%s): could not open its USB connection; staying on Bluetooth."),
+					jc->intHandle, *jc->name);
+			}
+		}
+
 		// 10 seconds of no signal means forget this controller
 		int reuseCounter = jc->reuse_counter;
 		int res = hid_read_timeout(jc->handle, buf, 64, 1000);
 
 		if (res == -1)
 		{
+			// The cable was pulled on a controller that is still paired over Bluetooth. That is not a
+			// disconnect -- the controller never left -- so return to the radio instead of telling the game
+			// its controller is gone, which would cost the player their pawn for the sake of unplugging.
+			jc->modifying_lock.Lock();
+			const FString FallbackPath = jc->fallback_path;
+			jc->modifying_lock.Unlock();
+
+			if (!FallbackPath.IsEmpty())
+			{
+				const FString AbandonedPath = jc->path;
+				// Lock-free for the same reason as the swap onto the cable above: the init inside can
+				// block, and only map mutations need the lock.
+				const bool bSwitched = SwitchControllerTransport(jc, FallbackPath, false);
+				if (bSwitched)
+				{
+					// Drop the cable's path so replugging is seen as a new transport rather than as
+					// something already tracked.
+					JSL4UModule._connectedLock.lock();
+					_byPath.Remove(AbandonedPath);
+					JSL4UModule._connectedLock.unlock();
+
+					jc->modifying_lock.Lock();
+					jc->fallback_path.Reset();
+					jc->modifying_lock.Unlock();
+
+					UE_LOG(LogJoyShockLibrary, Log,
+						TEXT("Controller %d (%s) lost its USB connection and returned to Bluetooth."),
+						jc->intHandle, *jc->name);
+					lastSentSmallRumble = 0;
+					lastSentBigRumble = 0;
+					lastSentPlayerNumber = -1;
+					bHomeLightCleared = false;
+					numTimeOuts = 0;
+					continue;
+				}
+				// Both transports are gone: this really is a disconnect, so fall through.
+				jc->modifying_lock.Lock();
+				jc->fallback_path.Reset();
+				jc->modifying_lock.Unlock();
+			}
+
 			// disconnected!
 			UE_LOG(LogJoyShockLibrary, Log, TEXT("Controller %d disconnected\n"), jc->intHandle);
 
@@ -286,16 +421,56 @@ void pollIndividualLoop(JoyShock *jc) {
 
 			// The blue HOME light on a right Joy-Con / Pro Controller is a notification channel, not one
 			// of Nintendo's four player indicators. Controllers can retain a pulse from firmware or a
-			// previous host, so explicitly clear it once after the live input stream is established.
-			if (!bHomeLightCleared && jc->controller_type == ControllerType::n_switch
+			// previous host, so clear it once the live input stream is established -- and then keep
+			// re-asserting it.
+			//
+			// Clearing it only once was not enough: the firmware owns this light and turns it back on by
+			// itself (a reconnect or a battery notification is enough), after which nothing here ever
+			// switched it off again and it stayed lit for the rest of the session. It is cheap to repeat
+			// next to a 60Hz input stream, and the write-only path means it cannot disturb that stream.
+			if (jc->controller_type == ControllerType::n_switch
 				&& !jc->is_switch2_pro && (jc->left_right == 2 || jc->left_right == 3))
 			{
-				bHomeLightCleared = jc->clear_switch_home_light();
-				jc->note_output_result(JoyShock::OutputFunctionHomeLight, bHomeLightCleared);
-				if (bHomeLightCleared)
+				if (jc->home_light_owned_by_game.load())
 				{
-					UE_LOG(LogJoyShockLibrary, Verbose,
-						TEXT("Cleared HOME notification light on device %d"), jc->intHandle);
+					// A game has taken the light over (JSL4USetHomeLight). Its value is authoritative from
+					// then on, and the keep-it-off upkeep below stops -- otherwise the two would fight and
+					// the game's light would last at most one upkeep interval. Sent on change only, like
+					// the player indicator.
+					const unsigned char wantedHomeLight = jc->wanted_home_light.load();
+					if (wantedHomeLight != lastSentHomeLight)
+					{
+						const bool bSent = jc->set_switch_home_light(wantedHomeLight);
+						jc->note_output_result(JoyShock::OutputFunctionHomeLight, bSent);
+						if (bSent)
+						{
+							lastSentHomeLight = wantedHomeLight;
+							UE_LOG(LogJoyShockLibrary, Verbose,
+								TEXT("HOME light on device %d set to intensity %d by the game"),
+								jc->intHandle, wantedHomeLight);
+						}
+					}
+				}
+				else if (!bHomeLightCleared)
+				{
+					// Cleared exactly once per connection, never on a timer.
+					//
+					// This was briefly re-asserted every few seconds, because the firmware can switch the
+					// light back on by itself. That cost far more than it bought: subcommand 0x38 goes only
+					// to a right Joy-Con or Pro Controller, and those started dropping off Bluetooth after
+					// a while -- the very hazard the IMU note above describes, that configuration
+					// subcommands disturb an established Bluetooth stream. A notification light that may
+					// come back on is a blemish; a controller that disconnects mid-game is a broken game.
+					//
+					// The flag is reset after a transport switch, so a swapped controller is cleared again.
+					const bool bSent = jc->clear_switch_home_light();
+					jc->note_output_result(JoyShock::OutputFunctionHomeLight, bSent);
+					if (bSent)
+					{
+						bHomeLightCleared = true;
+						UE_LOG(LogJoyShockLibrary, Verbose,
+							TEXT("Cleared HOME notification light on device %d"), jc->intHandle);
+					}
 				}
 			}
 
@@ -545,6 +720,12 @@ void pollIndividualLoop(JoyShock *jc) {
 		}
 		_joyshocks.Remove(jc->intHandle);
 		_byPath.Remove(jc->path);
+		// A controller that was switched to its cable is mapped under both paths, so the idle one has to go
+		// too -- otherwise it would keep a dead device "tracked" and block that path from ever reconnecting.
+		if (!jc->fallback_path.IsEmpty())
+		{
+			_byPath.Remove(jc->fallback_path);
+		}
 		if (!lockedThread)
 		{
 			JSL4UModule._connectedLock.unlock();
@@ -604,6 +785,47 @@ void UJoyShockLibrary::JSL4URefreshControllers()
 	FJoyShockLibrary4UnrealModule::GetInstance().RequestConnectDevices();
 }
 
+// Reads the MAC address that identifies this physical controller, independently of how it is attached.
+//
+// Bluetooth hands it over as the HID serial number. USB usually leaves that blank, so it has to be asked
+// for with a vendor feature report -- which is the case that matters here, because a USB cable plugged
+// into an already-paired controller is exactly when a phantom second device appears.
+//
+// Returns an empty string when the address cannot be determined; callers must treat that as "cannot tell"
+// and let the device through, never as a match. Wrongly merging two real controllers into one would be a
+// far worse failure than the duplicate this exists to prevent.
+static FString ReadControllerMacAddress(hid_device* InHandle, const hid_device_info* dev)
+{
+	if (dev->serial_number != nullptr && dev->serial_number[0] != L'\0')
+	{
+		FString Serial(dev->serial_number);
+		Serial.ReplaceInline(TEXT(":"), TEXT(""));
+		Serial.ReplaceInline(TEXT("-"), TEXT(""));
+		return Serial.ToLower();
+	}
+
+	// Only the PlayStation controllers have a known report for this. A Nintendo controller without a
+	// serial number simply goes unmatched, which is the safe direction.
+	if (dev->vendor_id != DS_VENDOR)
+	{
+		return FString();
+	}
+
+	const bool bIsDualSense = dev->product_id == DS_USB || dev->product_id == DS_USB_V2;
+	unsigned char featureBuf[64];
+	memset(featureBuf, 0, sizeof(featureBuf));
+	featureBuf[0] = bIsDualSense ? 0x09 : 0x12;
+	const int res = hid_get_feature_report(InHandle, featureBuf, sizeof(featureBuf));
+	if (res < 7)
+	{
+		return FString();
+	}
+
+	// Bytes 1-6 carry the controller's own address, least significant byte first.
+	return FString::Printf(TEXT("%02x%02x%02x%02x%02x%02x"),
+		featureBuf[6], featureBuf[5], featureBuf[4], featureBuf[3], featureBuf[2], featureBuf[1]);
+}
+
 int32 UJoyShockLibrary::JslConnectDevices()
 {
 	FJoyShockLibrary4UnrealModule& JSL4UModule = FJoyShockLibrary4UnrealModule::GetInstance();
@@ -615,9 +837,48 @@ int32 UJoyShockLibrary::JslConnectDevices()
 	// Enumerate and print the HID devices on the system
 	struct hid_device_info *devs, *cur_dev;
 
-	JSL4UModule._connectedLock.lock();
+	// Discovery is split into three phases so that NO blocking HID I/O ever happens while holding
+	// _connectedLock. The game thread's Jsl* getters take that lock shared, so any wedged I/O under it --
+	// hid_get_feature_report has no timeout, and a freshly replugged device can leave one hanging until
+	// the cable is pulled -- freezes the whole editor, which is exactly what repeated DS4 replugs did.
+	//
+	// Phase 1 snapshots the tracked paths/identities under the lock; phase 2 does every open, identity
+	// read and constructor probe lock-free; phase 3 retakes the lock and merges, re-validating everything
+	// against the live maps, because poll threads may have disconnected or transport-switched devices
+	// while phase 2 was blocked on hardware.
 
 	hid_init();
+
+	// Phase 1: snapshot.
+	TSet<FString> TrackedPaths;
+	struct FTrackedIdentity { int32 DeviceId; bool bIsUsb; };
+	TMap<FString, FTrackedIdentity> TrackedByMac;
+
+	JSL4UModule._connectedLock.lock();
+	for (const TTuple<FString, JoyShock*>& Pair : _byPath)
+	{
+		TrackedPaths.Add(Pair.Key);
+	}
+	for (const TTuple<int32, JoyShock*>& Pair : _joyshocks)
+	{
+		if (Pair.Value != nullptr && !Pair.Value->mac_address.IsEmpty())
+		{
+			TrackedByMac.Add(Pair.Value->mac_address, { Pair.Key, Pair.Value->is_usb });
+		}
+	}
+	JSL4UModule._connectedLock.unlock();
+
+	// Phase 2: all the blocking work, without the lock.
+	//
+	// One physical controller can appear as two HID devices: plugging a USB cable into a controller that
+	// is already paired over Bluetooth does not end the Bluetooth link, it adds a second path. Both stream
+	// input, so without the MAC comparison the game gains a phantom controller -- taking a player slot,
+	// and in a game that spawns per controller, an extra character -- for what the player experiences as
+	// simply putting their controller on charge. A cable for an already-tracked controller is instead
+	// recorded as a transport upgrade and handed to that device's own polling thread.
+	struct FTransportUpgrade { FString Mac; FString Path; };
+	TArray<FTransportUpgrade> TransportUpgrades;
+	TArray<JoyShock*> NewDevices;
 
 	devs = hid_enumerate(0x0, 0x0);
 	cur_dev = devs;
@@ -656,11 +917,8 @@ int32 UJoyShockLibrary::JslConnectDevices()
 
 		// If we're already tracking this device, leave it entirely alone. Its own poll thread is the sole
 		// authority on disconnection (hid_read returning -1), so we don't need to reconcile it here.
-		// Re-opening / re-initialising an already-tracked device does blocking HID I/O while we hold
-		// _connectedLock, and if that device has just been unplugged the I/O hangs -- which stalls every
-		// other poll thread's disconnect cleanup (so the other controller never reports a disconnect) and
-		// freezes the game thread's Jsl* getters during play. We only ever create genuinely new devices.
-		if (_byPath.Contains(path))
+		// (Snapshot-based: a path that becomes tracked during this pass is caught again in phase 3.)
+		if (TrackedPaths.Contains(path))
 		{
 			cur_dev = cur_dev->next;
 			continue;
@@ -671,21 +929,106 @@ int32 UJoyShockLibrary::JslConnectDevices()
 		hid_device* handle = hid_open_path(cur_dev->path);
 		if (handle != nullptr)
 		{
-			UE_LOG(LogJoyShockLibrary, Log, TEXT("\tcreating new JoyShock\n"));
-			JoyShock* jc = new JoyShock(cur_dev, handle, GetUniqueHandle(path), path);
-			_joyshocks.Emplace(jc->intHandle, jc);
-			_byPath.Emplace(path, jc);
+			const FString DeviceMac = ReadControllerMacAddress(handle, cur_dev);
+			const FTrackedIdentity* Existing = DeviceMac.IsEmpty() ? nullptr : TrackedByMac.Find(DeviceMac);
+			if (Existing != nullptr)
+			{
+				// The existing connection wins: nothing about the player's controller should change just
+				// because they put it on charge. Only a cable for a Bluetooth-tracked controller upgrades.
+				const bool bIsUsbPath = !IsBluetoothHidPath(path);
+				if (bIsUsbPath && !Existing->bIsUsb)
+				{
+					TransportUpgrades.Add({ DeviceMac, path });
+					UE_LOG(LogJoyShockLibrary, Log,
+						TEXT("\tdevice at %s is device %d (MAC %s) on its cable; handing it over for a transport switch\n"),
+						*path, Existing->DeviceId, *DeviceMac);
+				}
+				else
+				{
+					UE_LOG(LogJoyShockLibrary, Log,
+						TEXT("\tdevice at %s is the same physical controller as device %d (MAC %s); keeping the existing connection\n"),
+						*path, Existing->DeviceId, *DeviceMac);
+				}
+				// Either way this pass does not own the handle: the polling thread opens the path itself.
+				hid_close(handle);
+			}
+			else
+			{
+				// The constructor runs its transport probe (blocking feature-report I/O on PlayStation
+				// controllers) -- another reason this phase must be lock-free.
+				UE_LOG(LogJoyShockLibrary, Log, TEXT("\tcreating new JoyShock\n"));
+				JoyShock* jc = new JoyShock(cur_dev, handle, GetUniqueHandle(path), path);
+				jc->mac_address = DeviceMac;
+				NewDevices.Add(jc);
+			}
 		}
 
 		cur_dev = cur_dev->next;
 	}
 	hid_free_enumeration(devs);
 
-	// init joyshocks:
-	for (TTuple<int32, JoyShock*> pair : _joyshocks)
+	// Phase 3: merge under the lock, re-validating every decision against the live maps.
+	JSL4UModule._connectedLock.lock();
+
+	for (const FTransportUpgrade& Upgrade : TransportUpgrades)
 	{
-		JoyShock* jc = pair.Value;
-		
+		JoyShock* ExistingDevice = nullptr;
+		for (const TTuple<int32, JoyShock*>& Pair : _joyshocks)
+		{
+			if (Pair.Value != nullptr && Pair.Value->mac_address == Upgrade.Mac)
+			{
+				ExistingDevice = Pair.Value;
+				break;
+			}
+		}
+		// Stale if the controller disconnected during phase 2, already moved onto a cable, or the path got
+		// claimed meanwhile.
+		if (ExistingDevice == nullptr || ExistingDevice->is_usb || _byPath.Contains(Upgrade.Path))
+		{
+			continue;
+		}
+		ExistingDevice->modifying_lock.Lock();
+		ExistingDevice->pending_transport_path = Upgrade.Path;
+		ExistingDevice->modifying_lock.Unlock();
+		_byPath.Emplace(Upgrade.Path, ExistingDevice);
+	}
+
+	for (JoyShock* jc : NewDevices)
+	{
+		// The path may have been claimed while phase 2 ran (a transport switch, or a concurrent caller of
+		// this function). The live device wins over our fresh handle.
+		if (_byPath.Contains(jc->path))
+		{
+			delete jc;
+			continue;
+		}
+		_joyshocks.Emplace(jc->intHandle, jc);
+		_byPath.Emplace(jc->path, jc);
+	}
+
+	// Collect the devices this pass has to bring online, then release the lock before touching any of them.
+	//
+	// Init is blocking HID I/O -- and unbounded, not merely slow: hidapi's Windows hid_write waits on its
+	// overlapped result with no timeout, so a controller that never completes the write (which is what a
+	// freshly replugged one does) never returns. Under the lock that is an editor hang lasting until the
+	// cable is pulled, which is precisely the USB replug freeze. Working from a snapshot is what makes
+	// dropping the lock safe: every device in it has no polling thread yet, and only a polling thread ever
+	// frees a device, so none of these pointers can go away while we use them.
+	TArray<JoyShock*> DevicesToBringOnline;
+	for (const TTuple<int32, JoyShock*>& Pair : _joyshocks)
+	{
+		if (Pair.Value != nullptr && Pair.Value->thread == nullptr)
+		{
+			DevicesToBringOnline.Add(Pair.Value);
+		}
+	}
+	const int32 totalDevices = _joyshocks.Num();
+
+	JSL4UModule._connectedLock.unlock();
+
+	// init joyshocks:
+	for (JoyShock* jc : DevicesToBringOnline)
+	{
 		if (jc->initialised)
 		{
 			continue;
@@ -702,6 +1045,16 @@ int32 UJoyShockLibrary::JslConnectDevices()
 			else {
 				jc->init_ds4_usb();
 			}
+			// Mark it done, for the reason spelled out for the Switch controllers below: an already-
+			// connected controller must never be re-initialised from here. The DS4 was the one family left
+			// out of that, so every device change re-ran a blocking HID exchange on a controller whose
+			// polling thread was using the very same handle -- while holding _connectedLock.
+			//
+			// That was survivable only while nothing else touched the handle. Once a controller could move
+			// between transports, the polling thread would close that handle mid-exchange, the enumeration
+			// thread's read would never return, and the lock it holds would freeze every Jsl* getter on the
+			// game thread -- an editor hang lasting until the controller was physically unplugged.
+			jc->initialised = true;
 		} // dualsense
 		else if (jc->controller_type == ControllerType::s_ds)
 		{
@@ -732,36 +1085,23 @@ int32 UJoyShockLibrary::JslConnectDevices()
 		jc->deviceNumber = 0; // left
 	}
 
-	for (TTuple<int32, JoyShock*> pair : _joyshocks)
+	// Same snapshot, still lock-free: every device here is one this pass is bringing online, so it has no
+	// polling thread and nothing else can be writing to it.
+	for (JoyShock* jc : DevicesToBringOnline)
 	{
-		JoyShock *jc = pair.Value;
-
-		// Only perform HID I/O on devices we're bringing online in this pass (thread == nullptr).
-		// This runs on every WM_DEVICECHANGE (including disconnects), and writing to a controller that
-		// already has a running poll thread can block on a device that has just been disconnected (e.g.
-		// bluetooth turned off) while we hold _connectedLock -- which would stall the poll threads and,
-		// during play, the game thread's Jsl* getters, freezing the editor.
-		const bool bIsNewDevice = jc->thread == nullptr;
-
 		// DS4 has no separate player indicator, but its RGB light bar and rumble start in the same report.
 		// This is safe before its polling thread exists. All later output, including every numeric player
 		// indicator, is written by that controller's polling thread.
-		if (bIsNewDevice && jc->controller_type == ControllerType::s_ds4)
+		if (jc->controller_type == ControllerType::s_ds4)
 		{
 			jc->set_ds4_rumble_light(0, 0, jc->led_r, jc->led_g, jc->led_b);
 		}
 
-		// threads for polling
-		if (bIsNewDevice)
-		{
-			UE_LOG(LogJoyShockLibrary, Log, TEXT("\tstarting new thread\n"));
-			jc->thread = new std::thread(pollIndividualLoop, jc);
-		}
+		// threads for polling. From here the device is owned by its polling thread, so this is the last
+		// point at which this function may touch it.
+		UE_LOG(LogJoyShockLibrary, Log, TEXT("\tstarting new thread\n"));
+		jc->thread = new std::thread(pollIndividualLoop, jc);
 	}
-
-	const int32 totalDevices = _joyshocks.Num();
-
-	JSL4UModule._connectedLock.unlock();
 
 	// Deliberately no connect notification here. Being enumerable is not the same as being a working
 	// controller: a device that has just dropped off Bluetooth lingers in HID enumeration for a moment, and
@@ -851,7 +1191,8 @@ static FJSLSettings JSL4UReadJslSettings(JoyShock* jc)
 
 // Builds the Blueprint-facing struct from the raw JSL settings. Leaves the interface-owned fields
 // (PlayerIndex / JoinedToDeviceId) at their defaults -- see JSL4UFillPlayerFields.
-static FJSL4UControllerInfo JSL4UMakeControllerInfo(int32 DeviceId, const FJSLSettings& JslSettings)
+static FJSL4UControllerInfo JSL4UMakeControllerInfo(int32 DeviceId, const FJSLSettings& JslSettings,
+	const JoyShock* jc)
 {
 	// The colour arrives packed as 0xRRGGBB (both the Switch body colour read over SPI and the DS4/DualSense
 	// LED colour are assembled that way), so it has to go into FColor as (R, G, B) -- passing it reversed
@@ -865,6 +1206,19 @@ static FJSL4UControllerInfo JSL4UMakeControllerInfo(int32 DeviceId, const FJSLSe
 	Info.DeviceId = DeviceId;
 	Info.ControllerType = JSL4UControllerTypeFromLegacy(JslSettings.controllerType);
 	Info.PlayerLedNumber = JslSettings.playerNumber;
+
+	if (jc != nullptr)
+	{
+		// The polling thread stores 0-4 (or BatteryLevelUnknown); the Blueprint enum reserves 0 for
+		// Unknown, so a reported level shifts up by one. Anything unexpected reads as Unknown rather than
+		// as a low battery -- a wrong "flat controller" warning is worse than no warning.
+		const uint8 RawLevel = jc->battery_level.load();
+		Info.BatteryLevel = RawLevel <= 4
+			? static_cast<EJSL4UBatteryLevel>(RawLevel + 1)
+			: EJSL4UBatteryLevel::Unknown;
+		Info.bIsCharging = jc->battery_charging.load();
+		Info.BatteryPercent = jc->battery_percent.load();
+	}
 	Info.Color = FColor(Red, Green, Blue);
 	Info.bHasMotionSensors = Info.ControllerType != EJSL4UControllerType::Undefined;
 	Info.bHasRumble = Info.ControllerType != EJSL4UControllerType::Undefined;
@@ -913,7 +1267,7 @@ TArray<FJSL4UControllerInfo> UJoyShockLibrary::JSL4UGetConnectedControllers()
 			// input, so a device still lingering in enumeration after a disconnect never shows up here.
 			if (Pair.Value != nullptr && Pair.Value->has_delivered_input.load())
 			{
-				Result.Add(JSL4UMakeControllerInfo(Pair.Key, JSL4UReadJslSettings(Pair.Value)));
+				Result.Add(JSL4UMakeControllerInfo(Pair.Key, JSL4UReadJslSettings(Pair.Value), Pair.Value));
 			}
 		}
 	}
@@ -984,6 +1338,52 @@ bool UJoyShockLibrary::JSL4USetJoyConGripMode(int32 DeviceId, EJSL4UJoyConGripMo
 	FJoyShockInterface* Interface = FJoyShockLibrary4UnrealModule::GetInstance().GetActiveInterface();
 	return Interface != nullptr
 		&& Interface->SetJoyConHorizontal(DeviceId, GripMode == EJSL4UJoyConGripMode::Horizontal);
+}
+
+bool UJoyShockLibrary::JSL4UGetJoinPartner(int32 DeviceId, int32& PartnerDeviceId)
+{
+	FJoyShockInterface* Interface = FJoyShockLibrary4UnrealModule::GetInstance().GetActiveInterface();
+	PartnerDeviceId = Interface != nullptr ? Interface->GetJoinPartner(DeviceId) : INDEX_NONE;
+	return PartnerDeviceId != INDEX_NONE;
+}
+
+bool UJoyShockLibrary::JSL4UIsJoinPrimary(int32 DeviceId)
+{
+	FJoyShockInterface* Interface = FJoyShockLibrary4UnrealModule::GetInstance().GetActiveInterface();
+	// Without an interface there is no pairing at all, so every device stands alone -- and a standalone
+	// device is its own primary. Returning true keeps a mirror visible rather than hiding everything.
+	return Interface == nullptr || Interface->IsJoinPrimary(DeviceId);
+}
+
+bool UJoyShockLibrary::JSL4UGetJoyConPair(int32 DeviceId, FJSL4UControllerInfo& PrimaryController,
+	FJSL4UControllerInfo& PartnerController)
+{
+	PrimaryController = JSL4UGetControllerInfoAndSettings(DeviceId);
+	PartnerController = FJSL4UControllerInfo();
+
+	int32 PartnerDeviceId = INDEX_NONE;
+	if (!JSL4UGetJoinPartner(DeviceId, PartnerDeviceId))
+	{
+		// Standalone: the caller's controller leads a group of one. Partner stays unset rather than being
+		// filled with a copy, so "is there a second half" is answerable from the struct alone.
+		return false;
+	}
+
+	const FJSL4UControllerInfo OtherInfo = JSL4UGetControllerInfoAndSettings(PartnerDeviceId);
+
+	// Order the two by the plugin's own grouping rule instead of by which half was asked about. Both halves
+	// therefore get identical answers, which is what lets a caller act on a pair without first working out
+	// which of the two it is holding.
+	if (JSL4UIsJoinPrimary(DeviceId))
+	{
+		PartnerController = OtherInfo;
+	}
+	else
+	{
+		PartnerController = PrimaryController;
+		PrimaryController = OtherInfo;
+	}
+	return true;
 }
 
 int32 UJoyShockLibrary::JSL4UGetPlayerIndexOfController(int32 DeviceId)
@@ -1229,12 +1629,17 @@ FJSL4UMotionState UJoyShockLibrary::JSL4UGetMotionState(int32 DeviceID)
 	FJSL4UMotionState UnrealMotionState;
 
 
-	// Works with no gravity correction
-	UnrealMotionState.Orientation = FQuat(NativeMotionState.rawQuatZ, -NativeMotionState.rawQuatX, -NativeMotionState.rawQuatY, NativeMotionState.rawQuatW);
-	
-	// Restore one of the two below once the gravity correction bug has been fixed in GamepadMotion.hpp
-	// UnrealMotionState.Orientation = FQuat(-NativeMotionState.quatZ, NativeMotionState.quatX, -NativeMotionState.quatY, NativeMotionState.quatW);
-	// UnrealMotionState.Orientation = FQuat(NativeMotionState.quatZ, -NativeMotionState.quatX, NativeMotionState.quatY, -NativeMotionState.quatW);
+	// Gravity-corrected orientation. This used to return rawQuat with a note blaming a bug in
+	// GamepadMotion.hpp, alongside two commented-out attempts at the corrected quaternion -- each using a
+	// DIFFERENT sign pattern from the one on the line below, and neither behaving correctly.
+	//
+	// That was the whole bug. Quaternion and RawQuaternion are the same quantity in the same coordinate
+	// space: both start at identity and accumulate the same per-frame `*= rotation`, and the only
+	// difference is the gravity correction applied to one of them (see Motion::Update). So whatever
+	// conversion is right for one is right for the other, and swapping in a different sign pattern along
+	// with the corrected quaternion made a working conversion look like broken correction maths. The
+	// correction itself is upstream JibbSmart code, unmodified here apart from std:: -> FMath:: swaps.
+	UnrealMotionState.Orientation = FQuat(NativeMotionState.quatZ, -NativeMotionState.quatX, -NativeMotionState.quatY, NativeMotionState.quatW);
 
 	UnrealMotionState.Acceleration = FVector(NativeMotionState.accelZ, NativeMotionState.accelX, -NativeMotionState.accelY);
 	UnrealMotionState.Gravity = FVector(-NativeMotionState.gravZ, NativeMotionState.gravX, NativeMotionState.gravY);
@@ -1245,10 +1650,16 @@ FJSL4UMotionState UJoyShockLibrary::JSL4UGetRawMotionState(int32 DeviceID)
 {
 	FMotionState NativeMotionState = JslGetMotionState(DeviceID);
 	FJSL4UMotionState UnrealMotionState;
-	UnrealMotionState.Orientation = FQuat(NativeMotionState.quatX, NativeMotionState.quatY, -NativeMotionState.quatZ, NativeMotionState.quatW);
 
-	UnrealMotionState.Acceleration = FVector(NativeMotionState.accelX, NativeMotionState.accelY, NativeMotionState.accelZ);
-	UnrealMotionState.Gravity = FVector(NativeMotionState.gravX, NativeMotionState.gravY, NativeMotionState.gravZ);
+	// The uncorrected orientation -- which is what "raw" means here, the counterpart to the corrected one
+	// JSL4UGetMotionState returns. This read quat (the CORRECTED quaternion) with a third sign pattern of
+	// its own: the two getters were reading each other's quaternion. Axes are converted exactly as in
+	// JSL4UGetMotionState, so both getters describe the same space and differ only in the correction --
+	// matching how JSL4UGetRawIMUState relates to JSL4UGetIMUState.
+	UnrealMotionState.Orientation = FQuat(NativeMotionState.rawQuatZ, -NativeMotionState.rawQuatX, -NativeMotionState.rawQuatY, NativeMotionState.rawQuatW);
+
+	UnrealMotionState.Acceleration = FVector(NativeMotionState.accelZ, NativeMotionState.accelX, -NativeMotionState.accelY);
+	UnrealMotionState.Gravity = FVector(-NativeMotionState.gravZ, NativeMotionState.gravX, NativeMotionState.gravY);
 	return UnrealMotionState;
 }
 
@@ -1919,7 +2330,7 @@ FJSL4UControllerInfo UJoyShockLibrary::JSL4UGetControllerInfoAndSettings(int32 D
 		{
 			return {}; // bIsConnected stays false
 		}
-		Info = JSL4UMakeControllerInfo(DeviceId, JSL4UReadJslSettings(jc));
+		Info = JSL4UMakeControllerInfo(DeviceId, JSL4UReadJslSettings(jc), jc);
 	}
 
 	JSL4UFillPlayerFields(Info, Interface);
@@ -2082,6 +2493,29 @@ void UJoyShockLibrary::JSL4USetRumble(int32 DeviceId, float SmallRumble, float B
 void UJoyShockLibrary::JslSetRumble(int32 deviceId, int32 smallRumble, int32 bigRumble)
 {
 	SetRumbleRaw(deviceId, smallRumble, bigRumble);
+}
+
+void UJoyShockLibrary::JSL4USetHomeLight(int32 DeviceId, float Brightness)
+{
+	FJoyShockLibrary4UnrealModule& JSL4UModule = FJoyShockLibrary4UnrealModule::GetInstance();
+
+	std::shared_lock<std::shared_timed_mutex> lock(JSL4UModule._connectedLock);
+
+	JoyShock* jc = GetJoyShockFromHandle(DeviceId);
+	// Only a Switch 1 right Joy-Con (left_right 2) or Pro Controller (3) has this light. The Switch 2 Pro
+	// speaks a different command protocol and is excluded until its equivalent is mapped.
+	if (jc == nullptr || jc->controller_type != ControllerType::n_switch || jc->is_switch2_pro
+		|| (jc->left_right != 2 && jc->left_right != 3))
+	{
+		return;
+	}
+
+	// Store only; the polling thread stays the sole writer to the controller, exactly as with rumble and
+	// the player indicator, so no blocking HID write happens on the game thread.
+	const unsigned char Intensity =
+		static_cast<unsigned char>(FMath::RoundToInt(FMath::Clamp(Brightness, 0.f, 1.f) * 15.f));
+	jc->wanted_home_light.store(Intensity);
+	jc->home_light_owned_by_game.store(true);
 }
 
 void UJoyShockLibrary::JSL4USetPlayerNumber(int32 DeviceId, int32 Number)
