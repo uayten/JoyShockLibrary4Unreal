@@ -191,7 +191,7 @@ public:
 	void release_sw2_command_interface_if_idle();
 
 	// Rumble has two independent sources and they must not overwrite each other. These two are what a game
-	// asks for directly through JSL4USetRumble, and hold until it asks for something else.
+	// asks for directly through JSL4USetControllerRumble, and hold until it asks for something else.
 	unsigned char small_rumble = 0;
 	unsigned char big_rumble = 0;
 
@@ -413,12 +413,22 @@ public:
 	// asks for.
 	bool set_switch_home_light(unsigned char intensity);
 
-	// Ownership of the HOME light. The plugin keeps the light off by default and re-asserts that
-	// periodically, because the firmware turns it back on by itself. That upkeep must stop the moment a
-	// game sets the light deliberately, or the two would fight and the game's value would survive at most
-	// five seconds -- so the first JSL4USetHomeLight call hands ownership over for good.
+	// Ownership of the HOME light. The plugin clears the light once when the controller comes online, and
+	// that upkeep must stop the moment a game sets the light deliberately, or the two would fight -- so the
+	// first JSL4USetHomeLight call hands ownership over for good.
 	std::atomic<bool> home_light_owned_by_game{ false };
 	std::atomic<unsigned char> wanted_home_light{ 0 };
+
+	// Bumped by every JSL4USetHomeLight call, including one that asks for the value the light is already
+	// believed to hold. The polling thread writes whenever this differs from the generation it last sent, so
+	// what reaches the controller is one write per call rather than one write per change.
+	//
+	// The difference matters because this light is not ours alone: the firmware switches it back on by
+	// itself (a reconnect or a battery notification is enough). Comparing intensities meant the plugin
+	// answered "already 0, nothing to do" to a game trying to turn off a light that was physically lit --
+	// so "set 0" appeared to do nothing, while "set 0.5 then 0" worked, because only the second of those
+	// changed the cached value. A game asking for a state is entitled to have it sent.
+	std::atomic<uint32> home_light_generation{ 0 };
 
 	void init_ds4_bt();
 

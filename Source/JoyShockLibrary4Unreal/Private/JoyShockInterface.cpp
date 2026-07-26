@@ -545,11 +545,11 @@ void FJoyShockInterface::SendForceFeedback(int32 DeviceHandle, const FForceFeedb
 	// which is what keeps a blocking HID write off the game thread even while an effect is running every
 	// frame.
 	//
-	// It writes to force feedback's own channel rather than through JSL4USetRumble, because Unreal calls in
-	// here every frame -- with zeroes whenever no effect is playing. Sharing one pair of values meant that
-	// per-frame zero wiped anything a game had set with JSL4USetRumble before the controller could act on
-	// it, so direct rumble simply never happened. The polling thread takes the stronger of the two sources
-	// per motor instead.
+	// It writes to force feedback's own channel rather than through JSL4USetControllerRumble, because Unreal
+	// calls in here every frame -- with zeroes whenever no effect is playing. Sharing one pair of values meant
+	// that per-frame zero wiped anything a game had set with JSL4USetControllerRumble before the controller
+	// could act on it, so direct rumble simply never happened. The polling thread takes the stronger of the
+	// two sources per motor instead.
 	UJoyShockLibrary::SetForceFeedbackRumble(DeviceHandle,
 		FMath::RoundToInt(FMath::Clamp(Values.RightSmall, 0.0f, 1.0f) * 255.0f),
 		FMath::RoundToInt(FMath::Clamp(Values.LeftLarge, 0.0f, 1.0f) * 255.0f));
@@ -947,6 +947,11 @@ bool FJoyShockInterface::OnConnectCallback(int32 InDeviceHandle)
 		State.PreviousTouchState = {};
 	}
 
+	// Same reasoning for the force-feedback channels: SetChannelValue writes one channel and carries the
+	// other three, so a handle inherited from a previous occupant would fold that controller's leftover
+	// intensities into this one's first effect.
+	State.ForceFeedback = FForceFeedbackValues();
+
 	// Allocate a globally-unique input device id for this physical controller. (Using the legacy
 	// RemapControllerIdToPlatformUserAndDevice "best guess" device id here can collide with the keyboard's
 	// device 0 / other controllers, which corrupts the input-device mapper and hangs Enhanced Input's
@@ -974,6 +979,67 @@ bool FJoyShockInterface::OnConnectCallback(int32 InDeviceHandle)
 	return true;
 }
 
+void FJoyShockInterface::ReleaseAllInput(FControllerState& State)
+{
+	// A disconnect is not a neutral event for input that was already in flight. The engine holds the last
+	// value it was given for every key and axis, so a controller switched off (or carried out of Bluetooth
+	// range) mid-input leaves that input latched on with nothing left to ever clear it: a held stick keeps
+	// the character walking, a held button stays down, a gyro rotation rate keeps turning the camera. Nothing
+	// downstream can recover from this on its own, because "no more reports" is indistinguishable from "the
+	// player is holding perfectly still" -- only the device knows it is going away, so only the device can
+	// say so.
+	//
+	// So the last thing this device does is dispatch the neutral state, by feeding the existing dispatchers a
+	// zeroed "current" against the real "previous". That reuses the exact same presentation and edge
+	// detection as a normal frame, which is what makes it complete: every button that is down produces a
+	// release, every axis that is off centre produces a zero, every touch that is down produces an end, and
+	// nothing else is sent.
+	const FPlatformUserId& PlatformUser = State.PlatformUser;
+	const FInputDeviceId& InputDevice = State.InputDevice;
+
+	{
+		FScopeLock StateLock(&SimpleStateLock);
+
+		const bool bJoyConLeft = State.HardwareDeviceIdentifier == TEXT("JoyConLeft");
+		const bool bJoyConRight = State.HardwareDeviceIdentifier == TEXT("JoyConRight");
+		const bool bDualShock4 = State.HardwareDeviceIdentifier == TEXT("DualShock4");
+
+		// Released against the buttons the engine was actually last told about, which means after the same
+		// suppression and grip transform SendControllerEvents applies -- releasing a raw physical bit would
+		// miss the rotated key that is really down on a horizontal Joy-Con.
+		const int32 HeldButtons = TransformJoyConButtons(
+			State.SimpleState.buttons & ~State.SuppressedGripButtons,
+			bJoyConLeft, bJoyConRight, State.bJoyConHorizontal);
+		ProcessButtons(/*CurrentButtons*/ 0, /*PreviousButtons*/ HeldButtons, PlatformUser, InputDevice);
+
+		const FJoyShockState NeutralState = {};
+		ProcessAnalogInputs(NeutralState, State.SimpleState,
+			bJoyConLeft, bJoyConRight, bDualShock4,
+			State.bJoyConHorizontal, State.bJoyConHorizontal,
+			PlatformUser, InputDevice);
+
+		State.SimpleState = NeutralState;
+		State.PreviousSimpleState = NeutralState;
+		State.IMUState = {};
+		State.PreviousIMUState = {};
+	}
+
+	{
+		FScopeLock StateLock(&TouchStateLock);
+		const FTouchState NeutralTouchState = {};
+		ProcessTouchState(NeutralTouchState, State.TouchState, PlatformUser, InputDevice);
+		State.TouchState = NeutralTouchState;
+		State.PreviousTouchState = NeutralTouchState;
+	}
+
+	// Motion has no edge detection to drive -- Unreal keeps whatever was last reported -- so it is zeroed
+	// directly. Rotation rate is the one that matters: a controller that vanishes mid-turn would otherwise
+	// leave a gyro-aiming game spinning forever. Sent unconditionally rather than only for controllers with
+	// an IMU, because every controller this plugin supports has one.
+	MessageHandler->OnMotionDetected(FVector::ZeroVector, FVector::ZeroVector, FVector::ZeroVector,
+		FVector::ZeroVector, PlatformUser, InputDevice);
+}
+
 bool FJoyShockInterface::OnDisconnectCallback(int32 InDeviceHandle, bool bInHasTimedOut)
 {
 	// UE_LOG(LogJoyShockLibrary, Log, TEXT(">>>>>OnDisconnectCallback %d"), InDeviceHandle);
@@ -989,6 +1055,13 @@ bool FJoyShockInterface::OnDisconnectCallback(int32 InDeviceHandle, bool bInHasT
 	{
 		return false;
 	}
+
+	// Before anything else, and specifically before the mapper is told this device is gone: the release
+	// events are routed by the same platform user / input device pairing as normal input, so they have to go
+	// out while that pairing is still live. Runs on the game thread (this is called from the drain at the top
+	// of SendControllerEvents), which is where MessageHandler may be used.
+	ReleaseAllInput(ControllerState);
+
 	ControllerState.bIsConnected = false;
 
 	// Tell the mapper this physical device is gone.
@@ -1188,7 +1261,7 @@ void FJoyShockInterface::RefreshPlayerAssignments()
 		// This covers hot-plugging, explicit reassignment and joined Joy-Con halves (which share Slot).
 		// The setter only stores the semantic one-based number; each controller's polling thread performs
 		// the family-specific output write, so no HID/WinUSB I/O blocks this game-thread refresh.
-		UJoyShockLibrary::JSL4USetPlayerNumber(Handle, Slot + 1);
+		UJoyShockLibrary::JSL4USetPlayerIndicator(Handle, Slot + 1);
 	}
 }
 

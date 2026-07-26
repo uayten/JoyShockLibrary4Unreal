@@ -26,6 +26,18 @@ TMap<FString, JoyShock*> _byPath;
 FCriticalSection _pathHandleLock;
 TMap<FString, int32> _pathHandle;
 
+// How many times in a row a device on this path has been opened, tracked, and then dropped without ever
+// delivering an input report. Guarded by _pathHandleLock.
+//
+// This exists to bound the retry described at PhantomRescanBudget's use site, and is cleared the moment a
+// device on the path delivers input, so a controller that works costs nothing here.
+TMap<FString, int32> _phantomAttemptsByPath;
+
+// A path that has produced this many consecutive phantoms is left alone until the platform reports a real
+// device change. Small on purpose: the point is to cover the handful of passes it takes a controller that is
+// mid-reconnect to start streaming, not to poll dead hardware indefinitely.
+static constexpr int32 PhantomRescanBudget = 3;
+
 static int32 GetUniqueHandle(const FString &path)
 {
 	_pathHandleLock.Lock();
@@ -185,7 +197,7 @@ void pollIndividualLoop(JoyShock *jc) {
 	// it started streaming after init.
 	bool bLoggedFirstRead = false;
 
-	// Rumble: this thread is the SOLE writer of rumble packets/commands (JSL4USetRumble only stores the
+	// Rumble: this thread is the SOLE writer of rumble packets/commands (JSL4USetControllerRumble only stores the
 	// values). Switch 1 rumble decays shortly after a single 0x10 packet, and the Switch 2 only has a short
 	// one-shot preset, so while active the state is re-sent/retriggered continuously; a change to (0,0)
 	// sends one final stop.
@@ -194,8 +206,10 @@ void pollIndividualLoop(JoyShock *jc) {
 	unsigned char lastSentBigRumble = 0;
 	auto lastSw2RumbleTime = std::chrono::steady_clock::now();
 	auto lastSw2InitRetryTime = std::chrono::steady_clock::now();
-	// 0xFF is not a reachable intensity (the field is 4 bits), so the first game-set value always sends.
-	unsigned char lastSentHomeLight = 0xFF;
+	// Which JSL4USetHomeLight call this thread has already acted on. Generation 0 is "no call yet", and the
+	// counter only ever increases, so the first game-set value always sends. Tracking the call rather than
+	// the value is what makes re-sending an unchanged intensity work -- see home_light_generation.
+	uint32 lastSentHomeLightGeneration = 0;
 
 	// DualShock 4 / DualSense: rumble, light colour and the player LED all ride in the SAME output report,
 	// so they are tracked together and sent as one packet whenever any of them changes. Seeded from what
@@ -205,8 +219,6 @@ void pollIndividualLoop(JoyShock *jc) {
 	unsigned char lastSentLedB = jc->led_b;
 	int32 lastSentPlayerNumber = jc->player_number;
 	bool bHomeLightCleared = false;
-
-	float wakeupTimer = 0.0f;
 
 	while (!jc->cancel_thread) {
 		// get input:
@@ -247,6 +259,9 @@ void pollIndividualLoop(JoyShock *jc) {
 					lastSentBigRumble = 0;
 					lastSentPlayerNumber = -1;
 					bHomeLightCleared = false;
+					// Generation 0 means "nothing sent on this handle yet", so a game-owned light is
+					// re-asserted once on the new transport and an unclaimed one falls to the clear below.
+					lastSentHomeLightGeneration = 0;
 					continue;
 				}
 				// Unmap the path we never managed to adopt: enumeration registered it as ours when queueing
@@ -299,6 +314,7 @@ void pollIndividualLoop(JoyShock *jc) {
 					lastSentBigRumble = 0;
 					lastSentPlayerNumber = -1;
 					bHomeLightCleared = false;
+					lastSentHomeLightGeneration = 0;
 					numTimeOuts = 0;
 					continue;
 				}
@@ -435,16 +451,21 @@ void pollIndividualLoop(JoyShock *jc) {
 				{
 					// A game has taken the light over (JSL4USetHomeLight). Its value is authoritative from
 					// then on, and the keep-it-off upkeep below stops -- otherwise the two would fight and
-					// the game's light would last at most one upkeep interval. Sent on change only, like
-					// the player indicator.
-					const unsigned char wantedHomeLight = jc->wanted_home_light.load();
-					if (wantedHomeLight != lastSentHomeLight)
+					// the game's light would last at most one upkeep interval.
+					//
+					// Sent once per call, not once per change: the firmware turns this light back on behind
+					// the plugin's back, so a cached intensity is not evidence of what the light is actually
+					// doing, and "set it to what I already asked for" is a legitimate request. A failed
+					// write leaves the generation unrecorded, which retries on the next report.
+					const uint32 wantedGeneration = jc->home_light_generation.load();
+					if (wantedGeneration != lastSentHomeLightGeneration)
 					{
+						const unsigned char wantedHomeLight = jc->wanted_home_light.load();
 						const bool bSent = jc->set_switch_home_light(wantedHomeLight);
 						jc->note_output_result(JoyShock::OutputFunctionHomeLight, bSent);
 						if (bSent)
 						{
-							lastSentHomeLight = wantedHomeLight;
+							lastSentHomeLightGeneration = wantedGeneration;
 							UE_LOG(LogJoyShockLibrary, Verbose,
 								TEXT("HOME light on device %d set to intensity %d by the game"),
 								jc->intHandle, wantedHomeLight);
@@ -587,6 +608,11 @@ void pollIndividualLoop(JoyShock *jc) {
 					bReceivedInput = true;
 					jc->has_delivered_input.store(true);
 
+					// This path produces working controllers, so it owes nothing to the phantom budget.
+					_pathHandleLock.Lock();
+					_phantomAttemptsByPath.Remove(jc->path);
+					_pathHandleLock.Unlock();
+
 					std::shared_lock<std::shared_timed_mutex> lock(JSL4UModule._callbackLock);
 					JSL4UModule.GetOnConnected().ExecuteIfBound(jc->intHandle);
 				}
@@ -686,16 +712,25 @@ void pollIndividualLoop(JoyShock *jc) {
 					}
 				}
 
-				// dualshock 4 bluetooth might need waking up
-				if (jc->controller_type == ControllerType::s_ds4 && !jc->is_usb)
-				{
-					wakeupTimer += jc->delta_time;
-					if (wakeupTimer > 30.0f)
-					{
-						jc->init_ds4_bt();
-						wakeupTimer = 0.0f;
-					}
-				}
+				// Deliberately no periodic "wake up" re-init for a Bluetooth DualShock 4.
+				//
+				// This used to call init_ds4_bt() every 30 seconds. That is the same mistake the timeout
+				// branch and the HOME light upkeep above each had to unlearn: a configuration exchange
+				// disturbs an established Bluetooth stream, and it does so most readily when the radio is
+				// already busy -- which is exactly what several Joy-Cons on the same adapter make it. The
+				// controller then goes quiet, ten one-second reads time out, and a working controller is
+				// dropped as "disconnected" while it is sitting there streaming.
+				//
+				// It was also worse than a no-op even when it worked. init_ds4_bt writes a full output
+				// report with rumble and colour zeroed, so every thirty seconds the light bar went black
+				// and stayed black: the output tracking below still believed its own last-sent colour, so
+				// nothing re-sent it until the game happened to change it.
+				//
+				// Nothing needs the repeat. The report mode init_ds4_bt selects is a property of the
+				// connection, so it survives for as long as the connection does, and a connection that has
+				// genuinely gone is handled by the read failing -- which is the path that reconnects
+				// cleanly. A controller that is quiet is still present (hid_read returns 0, not -1) and
+				// recovers for free on its next report.
 			}
 		}
 	}
@@ -746,6 +781,28 @@ void pollIndividualLoop(JoyShock *jc) {
 	const bool bShouldNotifyDisconnect = (jc->remove_on_finish || jc->delete_on_finish) // Don't notify if reused
 		&& bReceivedInput;
 
+	// Whether this pass should ask for another scan even though it has nothing to announce -- i.e. whether
+	// this was a phantom, and the path has budget left.
+	//
+	// A phantom holds its path in _byPath for the full ten seconds it takes to time out, and enumeration
+	// skips tracked paths, so for that whole window the real controller behind that path is invisible. Once
+	// the phantom is gone the path is free again -- but the old code notified nothing and scanned nothing for
+	// a device that never delivered input, so the plugin simply stopped looking. The controller then stayed
+	// missing until something else happened to produce a WM_DEVICECHANGE, which is why it appeared to come
+	// back only after unrelated poking around in the editor.
+	//
+	// Rescanning unconditionally is not the answer either: for hardware that lingers in enumeration while
+	// switched off, that is an endless recreate/timeout cycle. Hence the budget -- enough passes to cover a
+	// controller that is mid-reconnect, then quiet.
+	bool bShouldRescanForPhantom = false;
+	if (!bReceivedInput && (jc->remove_on_finish || jc->delete_on_finish))
+	{
+		_pathHandleLock.Lock();
+		int32& Attempts = _phantomAttemptsByPath.FindOrAdd(jc->path);
+		bShouldRescanForPhantom = ++Attempts <= PhantomRescanBudget;
+		_pathHandleLock.Unlock();
+	}
+
 	// disconnect this device
 	if (jc->delete_on_finish)
 	{
@@ -773,6 +830,13 @@ void pollIndividualLoop(JoyShock *jc) {
 		// only creates genuinely new devices and never touches existing ones. The device that has just gone
 		// away is often still enumerable for a moment, so this pass tends to recreate it; that recreated
 		// device is harmless because it never delivers input and so is never announced.
+		JSL4UModule.RequestConnectDevices();
+	}
+	else if (bShouldRescanForPhantom)
+	{
+		UE_LOG(LogJoyShockLibrary, Verbose,
+			TEXT("Device %d never delivered input; re-scanning in case a working controller is behind that path."),
+			intHandle);
 		JSL4UModule.RequestConnectDevices();
 	}
 }
@@ -1281,7 +1345,7 @@ TArray<FJSL4UControllerInfo> UJoyShockLibrary::JSL4UGetConnectedControllers()
 	return Result;
 }
 
-bool UJoyShockLibrary::JSL4UIsJoinable(EJSL4UControllerType ControllerType)
+bool UJoyShockLibrary::JSL4UIsControllerTypeJoinable(EJSL4UControllerType ControllerType)
 {
 	return ControllerType == EJSL4UControllerType::JoyConLeft
 		|| ControllerType == EJSL4UControllerType::JoyConRight;
@@ -1297,7 +1361,7 @@ bool UJoyShockLibrary::JSL4UJoinJoyCons(int32 DeviceIdA, int32 DeviceIdB)
 	const EJSL4UControllerType TypeA = JSL4UControllerTypeFromLegacy(JslGetControllerType(DeviceIdA));
 	const EJSL4UControllerType TypeB = JSL4UControllerTypeFromLegacy(JslGetControllerType(DeviceIdB));
 
-	if (!JSL4UIsJoinable(TypeA) || !JSL4UIsJoinable(TypeB))
+	if (!JSL4UIsControllerTypeJoinable(TypeA) || !JSL4UIsControllerTypeJoinable(TypeB))
 	{
 		UE_LOG(LogJoyShockLibrary, Warning, TEXT("JSL4UJoinJoyCons: both device ids must be Joy-Cons (got %d and %d)."), DeviceIdA, DeviceIdB);
 		return false;
@@ -1340,14 +1404,14 @@ bool UJoyShockLibrary::JSL4USetJoyConGripMode(int32 DeviceId, EJSL4UJoyConGripMo
 		&& Interface->SetJoyConHorizontal(DeviceId, GripMode == EJSL4UJoyConGripMode::Horizontal);
 }
 
-bool UJoyShockLibrary::JSL4UGetJoinPartner(int32 DeviceId, int32& PartnerDeviceId)
+bool UJoyShockLibrary::JSL4UGetJoyConPartner(int32 DeviceId, int32& PartnerDeviceId)
 {
 	FJoyShockInterface* Interface = FJoyShockLibrary4UnrealModule::GetInstance().GetActiveInterface();
 	PartnerDeviceId = Interface != nullptr ? Interface->GetJoinPartner(DeviceId) : INDEX_NONE;
 	return PartnerDeviceId != INDEX_NONE;
 }
 
-bool UJoyShockLibrary::JSL4UIsJoinPrimary(int32 DeviceId)
+bool UJoyShockLibrary::JSL4UIsJoyConPrimary(int32 DeviceId)
 {
 	FJoyShockInterface* Interface = FJoyShockLibrary4UnrealModule::GetInstance().GetActiveInterface();
 	// Without an interface there is no pairing at all, so every device stands alone -- and a standalone
@@ -1358,23 +1422,23 @@ bool UJoyShockLibrary::JSL4UIsJoinPrimary(int32 DeviceId)
 bool UJoyShockLibrary::JSL4UGetJoyConPair(int32 DeviceId, FJSL4UControllerInfo& PrimaryController,
 	FJSL4UControllerInfo& PartnerController)
 {
-	PrimaryController = JSL4UGetControllerInfoAndSettings(DeviceId);
+	PrimaryController = JSL4UGetControllerInfo(DeviceId);
 	PartnerController = FJSL4UControllerInfo();
 
 	int32 PartnerDeviceId = INDEX_NONE;
-	if (!JSL4UGetJoinPartner(DeviceId, PartnerDeviceId))
+	if (!JSL4UGetJoyConPartner(DeviceId, PartnerDeviceId))
 	{
 		// Standalone: the caller's controller leads a group of one. Partner stays unset rather than being
 		// filled with a copy, so "is there a second half" is answerable from the struct alone.
 		return false;
 	}
 
-	const FJSL4UControllerInfo OtherInfo = JSL4UGetControllerInfoAndSettings(PartnerDeviceId);
+	const FJSL4UControllerInfo OtherInfo = JSL4UGetControllerInfo(PartnerDeviceId);
 
 	// Order the two by the plugin's own grouping rule instead of by which half was asked about. Both halves
 	// therefore get identical answers, which is what lets a caller act on a pair without first working out
 	// which of the two it is holding.
-	if (JSL4UIsJoinPrimary(DeviceId))
+	if (JSL4UIsJoyConPrimary(DeviceId))
 	{
 		PartnerController = OtherInfo;
 	}
@@ -1386,7 +1450,7 @@ bool UJoyShockLibrary::JSL4UGetJoyConPair(int32 DeviceId, FJSL4UControllerInfo& 
 	return true;
 }
 
-int32 UJoyShockLibrary::JSL4UGetPlayerIndexOfController(int32 DeviceId)
+int32 UJoyShockLibrary::JSL4UGetAssignedPlayerIndex(int32 DeviceId)
 {
 	FJoyShockInterface* Interface = FJoyShockLibrary4UnrealModule::GetInstance().GetActiveInterface();
 	return Interface != nullptr ? Interface->GetPlayerIndexForDevice(DeviceId) : INDEX_NONE;
@@ -1429,7 +1493,7 @@ bool UJoyShockLibrary::JSL4UAssignControllerToPlayer(int32 DeviceId, APlayerCont
 	}
 
 	// Convert through the same IPlatformInputDeviceMapper the slot assignment uses -- see the note on
-	// JSL4UGetControllersOfPlayer about why the legacy controller id is the wrong number here.
+	// JSL4UGetControllersAssignedToPlayer about why the legacy controller id is the wrong number here.
 	const FPlatformUserId User = PlayerController->GetPlatformUserId();
 	const int32 UserIndex = IPlatformInputDeviceMapper::Get().GetUserIndexForPlatformUser(User);
 
@@ -1451,7 +1515,7 @@ bool UJoyShockLibrary::JSL4UAssignControllerToPlayer(int32 DeviceId, APlayerCont
 	return JSL4UAssignControllerToPlayerIndex(DeviceId, UserIndex);
 }
 
-TArray<FJSL4UControllerInfo> UJoyShockLibrary::JSL4UGetControllersOfPlayerIndex(int32 PlayerIndex)
+TArray<FJSL4UControllerInfo> UJoyShockLibrary::JSL4UGetControllersAssignedToPlayerIndex(int32 PlayerIndex)
 {
 	// Filtering the full list keeps this on the single-pass path in JSL4UGetConnectedControllers rather
 	// than adding a second way to read the same state.
@@ -1463,7 +1527,7 @@ TArray<FJSL4UControllerInfo> UJoyShockLibrary::JSL4UGetControllersOfPlayerIndex(
 	return Result;
 }
 
-TArray<FJSL4UControllerInfo> UJoyShockLibrary::JSL4UGetControllersOfPlayer(AController* Controller)
+TArray<FJSL4UControllerInfo> UJoyShockLibrary::JSL4UGetControllersAssignedToPlayer(AController* Controller)
 {
 	// Accepting the base class lets the reference from a Pawn's Possessed event plug in without a
 	// Blueprint-side cast; AI controllers simply own no physical input devices.
@@ -1486,7 +1550,7 @@ TArray<FJSL4UControllerInfo> UJoyShockLibrary::JSL4UGetControllersOfPlayer(ACont
 		return {};
 	}
 
-	return JSL4UGetControllersOfPlayerIndex(UserIndex);
+	return JSL4UGetControllersAssignedToPlayerIndex(UserIndex);
 }
 
 // JslDisconnectAndDisposeAll used to live here. It was exposed to Blueprint, called by nothing, and
@@ -1553,7 +1617,7 @@ FJoyShockState UJoyShockLibrary::JslGetSimpleState(int32 deviceId)
 	return {};
 }
 
-FJSL4UJoyShockState UJoyShockLibrary::JSL4UGetSimpleState(int32 DeviceId)
+FJSL4UJoyShockState UJoyShockLibrary::JSL4UGetControllerState(int32 DeviceId)
 {
 	const FJoyShockState& LegacySimpleState = JslGetSimpleState(DeviceId);
 	return {
@@ -1899,10 +1963,10 @@ void UJoyShockLibrary::JslGetAndFlushAccumulatedGyro(int32 deviceId, float& gyro
 	gyroX = gyroY = gyroZ = 0.f;
 }
 
-FVector UJoyShockLibrary::JSL4UGetAndFlushAccumulatedGyro(int32 InDeviceId)
+FVector UJoyShockLibrary::JSL4UGetAndClearAccumulatedGyro(int32 DeviceId)
 {
 	float GyroX, GyroY, GyroZ;
-	JslGetAndFlushAccumulatedGyro(InDeviceId, GyroY, GyroZ, GyroX);
+	JslGetAndFlushAccumulatedGyro(DeviceId, GyroY, GyroZ, GyroX);
 	return FVector(-GyroX, GyroY, -GyroZ);
 }
 
@@ -1927,9 +1991,9 @@ void UJoyShockLibrary::JslSetGyroSpace(int32 deviceId, int32 gyroSpace)
 	}
 }
 
-void UJoyShockLibrary::JSL4USetGyroSpace(int32 InDeviceID, EJSL4UGyroSpace InGyroSpace)
+void UJoyShockLibrary::JSL4USetGyroSpace(int32 DeviceId, EJSL4UGyroSpace GyroSpace)
 {
-	JslSetGyroSpace(InDeviceID, static_cast<int32>(InGyroSpace));
+	JslSetGyroSpace(DeviceId, static_cast<int32>(GyroSpace));
 }
 
 // get accelerometer
@@ -2006,7 +2070,7 @@ bool UJoyShockLibrary::JslGetTouchDown(int32 deviceId, bool secondTouch)
 	return false;
 }
 
-FVector2D UJoyShockLibrary::JSL4UGetTouch(int32 DeviceId, bool bSecondTouch)
+FVector2D UJoyShockLibrary::JSL4UGetTouchPosition(int32 DeviceId, bool bSecondTouch)
 {
 	FJoyShockLibrary4UnrealModule& JSL4UModule = FJoyShockLibrary4UnrealModule::GetInstance();
 	
@@ -2060,22 +2124,22 @@ float UJoyShockLibrary::JslGetTouchY(int32 deviceId, bool secondTouch)
 }
 
 // analog parameters have different resolutions depending on device
-float UJoyShockLibrary::JSL4UGetStickStep(int32 DeviceId)
+float UJoyShockLibrary::JSL4UGetStickResolutionStep(int32 DeviceId)
 {
 	return JslGetStickStep(DeviceId);
 }
 
-float UJoyShockLibrary::JSL4UGetTriggerStep(int32 DeviceId)
+float UJoyShockLibrary::JSL4UGetTriggerResolutionStep(int32 DeviceId)
 {
 	return JslGetTriggerStep(DeviceId);
 }
 
-float UJoyShockLibrary::JSL4UGetPollRate(int32 DeviceId)
+float UJoyShockLibrary::JSL4UGetPollInterval(int32 DeviceId)
 {
 	return JslGetPollRate(DeviceId);
 }
 
-float UJoyShockLibrary::JSL4UGetTimeSinceLastUpdate(int32 DeviceId)
+float UJoyShockLibrary::JSL4UGetSecondsSinceLastReport(int32 DeviceId)
 {
 	return JslGetTimeSinceLastUpdate(DeviceId);
 }
@@ -2144,7 +2208,7 @@ float UJoyShockLibrary::JslGetTimeSinceLastUpdate(int32 deviceId)
 // calibration
 // --- Gyro calibration (JSL4U) ---------------------------------------------------------------------------
 
-// The gyro axis convention JSL4U exposes everywhere else (see JSL4UGetIMUState / JSL4UGetAndFlushAccumulatedGyro):
+// The gyro axis convention JSL4U exposes everywhere else (see JSL4UGetIMUState / JSL4UGetAndClearAccumulatedGyro):
 //   Unreal = (-jslZ, jslX, -jslY)
 // The calibration offset lives in the same space as the raw gyro readings, so it is converted the same way
 // -- otherwise an offset read back would not line up with the gyro values it is subtracted from.
@@ -2164,16 +2228,16 @@ static void JSL4UGyroFromUnreal(const FVector& InVector, float& OutJslX, float& 
 void UJoyShockLibrary::JSL4USetGyroCalibrationMode(int32 DeviceId, EJSL4UGyroCalibrationMode Mode)
 {
 	// Automatic is the library's SensorFusion+Stillness pair: it decides for itself when the controller is
-	// being held still. Manual leaves it entirely to JSL4UStartGyroCalibration / JSL4UStopGyroCalibration.
+	// being held still. Manual leaves it entirely to JSL4UStartManualGyroCalibration / JSL4UStopManualGyroCalibration.
 	JslSetAutomaticCalibration(DeviceId, Mode == EJSL4UGyroCalibrationMode::Automatic);
 }
 
-void UJoyShockLibrary::JSL4UStartGyroCalibration(int32 DeviceId)
+void UJoyShockLibrary::JSL4UStartManualGyroCalibration(int32 DeviceId)
 {
 	JslStartContinuousCalibration(DeviceId);
 }
 
-void UJoyShockLibrary::JSL4UStopGyroCalibration(int32 DeviceId)
+void UJoyShockLibrary::JSL4UStopManualGyroCalibration(int32 DeviceId)
 {
 	JslPauseContinuousCalibration(DeviceId);
 }
@@ -2316,7 +2380,7 @@ FJSLAutoCalibration UJoyShockLibrary::JslGetAutoCalibrationStatus(int32 deviceId
 	return {};
 }
 
-FJSL4UControllerInfo UJoyShockLibrary::JSL4UGetControllerInfoAndSettings(int32 DeviceId)
+FJSL4UControllerInfo UJoyShockLibrary::JSL4UGetControllerInfo(int32 DeviceId)
 {
 	FJoyShockLibrary4UnrealModule& JSL4UModule = FJoyShockLibrary4UnrealModule::GetInstance();
 	FJoyShockInterface* Interface = JSL4UModule.GetActiveInterface();
@@ -2433,7 +2497,7 @@ void UJoyShockLibrary::JslSetLightColor(int32 InDeviceId, FColor InColor)
 	JSL4USetLightColor(InDeviceId, InColor);
 }
 
-// Shared by JSL4USetRumble and the legacy JslSetRumble. Every controller family now works the same way:
+// Shared by JSL4USetControllerRumble and the legacy JslSetRumble. Every controller family now works the same way:
 // store the requested intensities and let that device's polling thread do the writing. What the poll thread
 // then does with them differs (Switch 1 re-sends to fight the actuator's decay, Switch 2 retriggers its
 // one-shot preset, DualShock 4 / DualSense send once per change), but no HID write happens on this thread.
@@ -2480,7 +2544,7 @@ void UJoyShockLibrary::SetForceFeedbackRumble(int32 DeviceId, int32 SmallRumble,
 	jc->modifying_lock.Unlock();
 }
 
-void UJoyShockLibrary::JSL4USetRumble(int32 DeviceId, float SmallRumble, float BigRumble)
+void UJoyShockLibrary::JSL4USetControllerRumble(int32 DeviceId, float SmallRumble, float BigRumble)
 {
 	// Normalised 0..1 to match Unreal's force-feedback convention, rather than the raw 0-255 the HID reports
 	// carry.
@@ -2516,9 +2580,14 @@ void UJoyShockLibrary::JSL4USetHomeLight(int32 DeviceId, float Brightness)
 		static_cast<unsigned char>(FMath::RoundToInt(FMath::Clamp(Brightness, 0.f, 1.f) * 15.f));
 	jc->wanted_home_light.store(Intensity);
 	jc->home_light_owned_by_game.store(true);
+	// Published last, and after the intensity, so the polling thread cannot observe a new generation
+	// alongside the previous value. Bumping it unconditionally is the point: this call must reach the
+	// controller even when the intensity is the one the plugin already believes it set, because the firmware
+	// can have turned the light on since.
+	jc->home_light_generation.fetch_add(1);
 }
 
-void UJoyShockLibrary::JSL4USetPlayerNumber(int32 DeviceId, int32 Number)
+void UJoyShockLibrary::JSL4USetPlayerIndicator(int32 DeviceId, int32 Number)
 {
 	FJoyShockLibrary4UnrealModule& JSL4UModule = FJoyShockLibrary4UnrealModule::GetInstance();
 
@@ -2551,5 +2620,5 @@ void UJoyShockLibrary::JSL4UGetSwitchPlayerLedPattern(int32 PlayerNumber,
 // set controller player number indicator (not all controllers have a number indicator which can be set, but that just means nothing will be done when this is called -- no harm)
 void UJoyShockLibrary::JslSetPlayerNumber(int32 deviceId, int32 number)
 {
-	JSL4USetPlayerNumber(deviceId, number);
+	JSL4USetPlayerIndicator(deviceId, number);
 }

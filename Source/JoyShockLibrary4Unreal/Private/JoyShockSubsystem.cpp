@@ -24,7 +24,7 @@ void UJoyShockSubsystem::Initialize(FSubsystemCollectionBase& Collection)
 	// Weak lambdas so a GC'd subsystem can never be broadcast into, even if Deinitialize is skipped.
 	ConnectedHandle = JSL4UModule.GetOnDeviceConnected().AddWeakLambda(this, [this](int32 DeviceId)
 	{
-		const FJSL4UControllerInfo Info = UJoyShockLibrary::JSL4UGetControllerInfoAndSettings(DeviceId);
+		const FJSL4UControllerInfo Info = UJoyShockLibrary::JSL4UGetControllerInfo(DeviceId);
 		LastControllerInfoByDeviceId.Add(DeviceId, Info);
 		OnControllerConnected.Broadcast(Info);
 	});
@@ -49,9 +49,9 @@ void UJoyShockSubsystem::Initialize(FSubsystemCollectionBase& Collection)
 		[this](int32 LeftDeviceId, int32 RightDeviceId, bool bJoined)
 		{
 			const FJSL4UControllerInfo LeftInfo =
-				UJoyShockLibrary::JSL4UGetControllerInfoAndSettings(LeftDeviceId);
+				UJoyShockLibrary::JSL4UGetControllerInfo(LeftDeviceId);
 			const FJSL4UControllerInfo RightInfo =
-				UJoyShockLibrary::JSL4UGetControllerInfoAndSettings(RightDeviceId);
+				UJoyShockLibrary::JSL4UGetControllerInfo(RightDeviceId);
 			LastControllerInfoByDeviceId.Add(LeftDeviceId, LeftInfo);
 			LastControllerInfoByDeviceId.Add(RightDeviceId, RightInfo);
 
@@ -68,7 +68,7 @@ void UJoyShockSubsystem::Initialize(FSubsystemCollectionBase& Collection)
 	FunctionBlockedHandle = JSL4UModule.GetOnDeviceFunctionBlocked().AddWeakLambda(this,
 		[this](int32 DeviceId, EJSL4UControllerFunction Function)
 		{
-			const FJSL4UControllerInfo Info = UJoyShockLibrary::JSL4UGetControllerInfoAndSettings(DeviceId);
+			const FJSL4UControllerInfo Info = UJoyShockLibrary::JSL4UGetControllerInfo(DeviceId);
 			OnControllerFunctionBlocked.Broadcast(Info, Function);
 		});
 
@@ -83,7 +83,7 @@ void UJoyShockSubsystem::Initialize(FSubsystemCollectionBase& Collection)
 		ExistingControllers.Num());
 }
 
-void UJoyShockSubsystem::ListenForControllerInfo(FJSL4UControllerInfoConnectedSignature Event)
+void UJoyShockSubsystem::ListenForControllers(FJSL4UControllerInfoConnectedSignature Event)
 {
 	if (!Event.IsBound())
 	{
@@ -108,7 +108,7 @@ void UJoyShockSubsystem::ListenForControllerChanges(FJSL4UControllerInfoConnecte
 
 	// Reuse the atomic bind-and-replay implementation so a connection cannot fall into a gap between
 	// enumerating existing devices and subscribing for future ones.
-	ListenForControllerInfo(OnConnected);
+	ListenForControllers(OnConnected);
 }
 
 void UJoyShockSubsystem::ListenForJoyConPairingChanges(FJSL4UJoyConsPairingSignature OnJoined,
@@ -126,7 +126,7 @@ void UJoyShockSubsystem::ListenForJoyConPairingChanges(FJSL4UJoyConsPairingSigna
 
 APlayerController* UJoyShockSubsystem::FindLocalPlayerForController(int32 DeviceId) const
 {
-	const FJSL4UControllerInfo Info = UJoyShockLibrary::JSL4UGetControllerInfoAndSettings(DeviceId);
+	const FJSL4UControllerInfo Info = UJoyShockLibrary::JSL4UGetControllerInfo(DeviceId);
 	const UGameInstance* GameInstance = GetGameInstance();
 	if (!Info.bIsConnected || Info.PlatformUserId < 0 || GameInstance == nullptr)
 	{
@@ -151,7 +151,7 @@ bool UJoyShockSubsystem::EnsureLocalPlayerForController(int32 DeviceId, bool bCr
 	LocalPlayerIndex = INDEX_NONE;
 	bWasCreated = false;
 
-	const FJSL4UControllerInfo Info = UJoyShockLibrary::JSL4UGetControllerInfoAndSettings(DeviceId);
+	const FJSL4UControllerInfo Info = UJoyShockLibrary::JSL4UGetControllerInfo(DeviceId);
 	UGameInstance* GameInstance = GetGameInstance();
 	if (!Info.bIsConnected || Info.PlatformUserId < 0 || GameInstance == nullptr)
 	{
@@ -202,13 +202,13 @@ bool UJoyShockSubsystem::EnsureLocalPlayerForController(int32 DeviceId, bool bCr
 	return PlayerController != nullptr;
 }
 
-void UJoyShockSubsystem::StopAllRumble()
+void UJoyShockSubsystem::StopAllControllerRumble()
 {
 	// Setting the values is enough: the polling thread is the sole writer and sends one stop packet when it
 	// sees them change to zero.
 	for (const FJSL4UControllerInfo& Info : UJoyShockLibrary::JSL4UGetConnectedControllers())
 	{
-		UJoyShockLibrary::JSL4USetRumble(Info.DeviceId, 0.0f, 0.0f);
+		UJoyShockLibrary::JSL4USetControllerRumble(Info.DeviceId, 0.0f, 0.0f);
 	}
 }
 
@@ -229,7 +229,7 @@ void UJoyShockSubsystem::Deinitialize()
 		// it back to zero, and nothing would. (This can't be left to the game: it may well be stopping
 		// *because* it crashed.) Stopping in PIE is what makes this urgent; a packaged game exiting tears
 		// the module down with it.
-		StopAllRumble();
+		StopAllControllerRumble();
 	}
 
 	ConnectedHandle.Reset();

@@ -171,6 +171,18 @@ JoyShock::JoyShock(struct hid_device_info* dev, hid_device* inHandle, int unique
 
 	// initialise continuous calibration windows
 	reset_continuous_calibration();
+
+	// Automatic gyro drift calibration, on from the moment the controller exists.
+	//
+	// GamepadMotion itself starts in Manual, which is right for a generic library: it leaves the policy to
+	// whoever integrates it. This plugin is that integration layer, so leaving the default untouched meant
+	// every controller arrived with calibration off, and a game that did not know to call
+	// JSL4USetGyroCalibrationMode got a gyro that drifts -- the exact problem calibration exists to solve,
+	// reintroduced by a default. The two mistakes are not symmetrical: this way, a game that never thinks
+	// about calibration behaves correctly, while a game that wants to own it already has the call to switch
+	// back to Manual.
+	motion.SetCalibrationMode(GamepadMotionHelpers::CalibrationMode::SensorFusion
+		| GamepadMotionHelpers::CalibrationMode::Stillness);
 }
 
 JoyShock::~JoyShock() {

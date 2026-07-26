@@ -229,6 +229,13 @@ private:
 	void ProcessAnalogInputs(const FJoyShockState& SimpleState, const FJoyShockState& PreviousSimpleState,
 		bool bJoyConLeft, bool bJoyConRight, bool bDualShock4, bool bHorizontal, bool bWasHorizontal,
 		FPlatformUserId PlatformUser, FInputDeviceId InputDevice);
+	// Dispatches this device's neutral state -- releases for every held button, zeroes for every off-centre
+	// axis and trigger, ends for every active touch, and zeroed motion -- then clears its cached state.
+	// Called when the device disconnects, because the engine latches the last value it was given and a
+	// vanished controller would otherwise leave its input held down for the rest of the session. Must run on
+	// the game thread, with ControllerContainerLock held and the device still mapped to its platform user.
+	void ReleaseAllInput(FControllerState& State);
+
 	void UpdateJoyConGripTransitions(TArray<FJoyConPairingChange>& OutPairingChanges);
 	FJoyConPairingChange MakeJoyConPairingChange(int32 HandleA, int32 HandleB, bool bJoined) const;
 	static void BroadcastJoyConPairingChanges(const TArray<FJoyConPairingChange>& PairingChanges);

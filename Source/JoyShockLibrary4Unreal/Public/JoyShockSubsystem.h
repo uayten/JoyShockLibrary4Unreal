@@ -88,7 +88,7 @@ public:
 	 */
 	UFUNCTION(BlueprintCallable, Category = "JoyShock Library|Events",
 		meta = (DisplayName = "Listen For Controllers", ToolTip = "Atomically binds Event, immediately calls it once for every connected controller, then calls it for future connections. Use this instead of combining an event binding with Get Connected Controllers."))
-	void ListenForControllerInfo(FJSL4UControllerInfoConnectedSignature Event);
+	void ListenForControllers(FJSL4UControllerInfoConnectedSignature Event);
 
 	/**
 	 * Atomically subscribes to the complete controller lifecycle. Existing controllers are replayed to
@@ -130,7 +130,7 @@ public:
 	// own. Also useful on its own (pausing, a cutscene, losing focus).
 	UFUNCTION(BlueprintCallable, Category = "JoyShock Library|Output",
 		meta = (DisplayName = "Stop All Controller Rumble", ToolTip = "Stops direct and sustained rumble on every connected JoyShock controller. This also runs automatically when the Game Instance shuts down."))
-	void StopAllRumble();
+	void StopAllControllerRumble();
 
 private:
 	FDelegateHandle ConnectedHandle;

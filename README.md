@@ -276,9 +276,9 @@ preference in a game that aims with gyro.
 
 A gyroscope reports a small non-zero rotation even when perfectly still, so a controller left alone slowly drifts. Calibrating measures that offset while the controller is still and subtracts it. Nodes live under **JoyShock Library | Gyro Calibration**.
 
-**Most games need exactly one of them:** set **JSL4U Set Gyro Calibration Mode** to *Automatic* once per
-controller and never touch the rest. Automatic works out for itself when the controller is being held
-still and keeps the offset current.
+**Most games need none of them.** Every controller starts in *Automatic*, which works out for itself when
+the controller is being held still and keeps the offset current. Calibration is handled unless you decide
+otherwise, and **JSL4U Set Gyro Calibration Mode** exists to opt out with *Manual*.
 
 The rest exist for games that want an explicit calibration screen:
 
