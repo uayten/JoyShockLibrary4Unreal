@@ -39,7 +39,7 @@ known to be broken. "Untested" means no unit has been available.
 
 | Controller | Current validation |
 | --- | --- |
-| Joy-Con (L/R) | Gameplay input, solo-horizontal and joined presentation, motion, pairing/separation, player LEDs, battery and multiple simultaneous controllers tested. |
+| Nintendo Switch Joy-Con | Gameplay input, solo-horizontal and joined presentation, motion, pairing/separation, player LEDs, battery and multiple simultaneous controllers tested. |
 | Nintendo Switch 2 Joy-Con | Not implemented and untested. |
 | Nintendo Switch Pro Controller | USB/Bluetooth input, motion, player LEDs and HD rumble are implemented, but untested since the overhaul. |
 | Nintendo Switch 2 Pro Controller | USB gameplay input, calibrated sticks, motion, player LEDs and fixed-amplitude rumble tested. Bluetooth is not supported yet. |
