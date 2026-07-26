@@ -446,7 +446,6 @@ No official Sony or Nintendo libraries were used in the development or testing o
 ### Plugin
 - **Bluetooth (BLE) support for the Switch 2 Pro Controller.** It currently works over USB only
 - Amplitude-accurate rumble on the Switch 2 Pro Controller, so force feedback effects that fade in or out don't come out as a flat buzz on it. Needs its amplitude channel reverse-engineering over USB
-- Check whether tracked controllers are released when a play session ends. `JslDisconnectAndDisposeAll` exists but may not be wired to the end of PIE, which would leave devices tracked between runs
 
 ### Hardware still to be tested
 These are implemented but unverified, purely because no unit has been available. Reports from anyone who
