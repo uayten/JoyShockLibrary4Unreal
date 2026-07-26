@@ -55,7 +55,7 @@ known to be broken. "Untested" means no unit has been available.
 ## Demo level
 
 There's a demo level called LV_JoyShockDemo in the Content folder! You can find it in your Content Browser, as long as you enable showing Plugin Content in your Content Browser settings:
-![Accessing Test Level](https://github.com/user-attachments/assets/920f87a8-6de6-4efd-a3bd-b8787ea1a9d4)
+![Accessing Test Level](Images/ShowPluginContent.png)
 
 Connect one or more controllers and press Play. The level is a small local-multiplayer example: every detected controller gets a native Unreal `LocalPlayer`, `PlayerController` and possessed Character. Move each Character with its controller's left stick. Both Standalone and the PIE viewport are supported.
 
@@ -70,6 +70,10 @@ The example deliberately uses standard engine responsibilities:
 - `BP_JoyShockGameMode` owns only the `DefaultPawnClass` and `PlayerControllerClass`; its old manual player-management graph was removed. The level contains separate `PlayerStart` actors.
 - `BP_JoyShockPlayerController` is intentionally empty. It demonstrates that controller routing, possession and Enhanced Input do not require a second input implementation in the controller Blueprint.
 - `BP_JoyShockCharacter` contains only gameplay input and a one-tick-delayed **Set Focus to Game Viewport** after possession, which also makes newly created Slate users work in the PIE viewport.
+
+![Demo Level Working](Images/DemoLevel1.png)
+
+![Demo Level Working](Images/DemoLevel2.png)
 
 The sensor diagnostics remain available as a companion to the multiplayer example. `BP_JoyShockControllerMirror` is a digital representation of the physical controller: it follows the controller's measured orientation so motion and coordinate conventions can be checked visually. `WBP_JoyShockHUD` and its supporting widgets display numeric motion/controller state and expose calibration controls. They consume the direct-device `JSL4U*` API because those measurements have no Xbox/Enhanced Input equivalent; they are not a replacement input path for buttons, sticks or gameplay.
 
@@ -154,7 +158,8 @@ For a playable PIE viewport, call Unreal's standard **Set Focus to Game Viewport
 For inputs that have an XInput equivalent (e.g. face buttons, triggers and sticks), simply adding JoyShockLibrary4Unreal to your project and enabling it will make Unreal recognize those inputs automatically for any compatible controller, with no code changes required.
 
 For buttons that are exclusive to JoyShock inputs, new input events have been added:
-![JoyShock inputs](https://github.com/user-attachments/assets/3ce0e091-e703-4781-823f-33e1aa615997)
+
+![JoyShock inputs](Images/JoyShockExclusiveButtons.png)
 
 The Switch 2 Pro Controller's exclusive buttons also have their own input events: **JoyShock C Button (Switch 2)**, **JoyShock Grip Left GL (Switch 2)** and **JoyShock Grip Right GR (Switch 2)**.
 
@@ -170,6 +175,7 @@ Every connection is registered with Unreal's `FInputDeviceRegistry`, and the plu
 The identifier describes the model; `InputDeviceId` describes one physical connection. Do not parse the display name to identify hardware, and do not persist `InputDeviceId` or `ConnectionId` between game runs.
 
 ## Reacting to controllers
+![Controllers Events](Images/ControllerWaitNode.png)
 
 Controllers finish enumerating on a background thread, at a moment nothing in the game controls: in the
 editor they are usually ready before the level loads, in a packaged game they usually are not, and a
@@ -240,18 +246,20 @@ Switch convention globally:
 
 Pairing nodes are under **JoyShock Library | Joy-Con Pairing**:
 
+![Controllers Events](Images/Joy-ConPairing.png)
+
+- **JSL4U Get Joy-Con Pair** — given either half, returns whether it is a pair plus both halves' identities. `Primary` names the same half no matter which one was asked, which is what lets an actor act  on a pair   without first working out which half it is attached to.
+- **JSL4U Get Joy-Con Partner** — whether this half is joined right now, and to which Device Id.
 - **JSL4U Is Controller Type Joinable** — whether a controller type can be joined into a pair (currently the left and right Joy-Cons). `JSL4U Join Joy-Cons` validates with this same function.
+- **JSL4U Is Joy-Con Primary** — whether this device is the one representing its logical controller. True
+  for any standalone controller of any type, and for exactly one half of a joined pair.
 - **JSL4U Join Joy-Cons (A, B)** — joins a left and a right Joy-Con so they feed a single player and sets both vertical (left half = left stick and its buttons, right half = right stick and its buttons).
-- **JSL4U Unjoin Joy-Con / JSL4U Unjoin All Joy-Cons** — dissolve joins and return each half to horizontal presentation.
 - **JSL4U Set Joy-Con Grip Mode** — explicit per-device override. Standalone defaults to Horizontal; set
   Vertical for exceptional games that intentionally use one upright half, such as Just Dance. Setting
   Horizontal on a joined half separates the pair.
-- **JSL4U Get Joy-Con Partner** — whether this half is joined right now, and to which Device Id.
-- **JSL4U Is Joy-Con Primary** — whether this device is the one representing its logical controller. True
-  for any standalone controller of any type, and for exactly one half of a joined pair.
-- **JSL4U Get Joy-Con Pair** — given either half, returns whether it is a pair plus both halves'
-  identities. `Primary` names the same half no matter which one was asked, which is what lets an actor act
-  on a pair without first working out which half it is attached to.
+ - **JSL4U Unjoin Joy-Con / JSL4U Unjoin All Joy-Cons** — dissolve joins and return each half to horizontal presentation.
+
+
 
 `Primary` identifies a *device*, not a *side*: which half leads depends on connection order, so a pair's
 primary may be the right Joy-Con. Read `Controller Type` on the returned infos when something has to land
@@ -330,6 +338,8 @@ for decisions. `Unknown` means the controller does not report charge (the Switch
 never a low battery.
 
 ## Lights and player indicators
+
+![Controllers Events](Images/NintendoPlayerLed.png)
 
 **Player indicators follow Unreal assignment automatically.** Joy-Cons, Switch Pro and Switch 2 Pro
 Controllers use Nintendo's distinct player patterns (including combination patterns for players 5-8),
