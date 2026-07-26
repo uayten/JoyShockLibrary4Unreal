@@ -413,12 +413,25 @@ struct JOYSHOCKLIBRARY4UNREAL_API FJSL4UGyroCalibrationStatus
 	GENERATED_BODY()
 
 	// How sure the automatic calibration is of its current offset, 0 to 1. Meaningless in Manual mode.
-	UPROPERTY(BlueprintReadOnly)
+	// Note that this only ever climbs: it is a high-water mark, not a live reading, so 100% means "this
+	// controller was measured well at some point", not "it is being measured well right now".
+	UPROPERTY(BlueprintReadOnly, meta = (DisplayName = "Auto Calibration Confidence"))
 	float Confidence = 0.f;
 
-	// Whether the controller currently reads as being held still. In a manual calibration screen this is
-	// the cue for "hold still" versus "keep holding".
-	UPROPERTY(BlueprintReadOnly)
+	/**
+	 * Whether the automatic calibrator is currently accepting this controller as still enough to sample
+	 * from. It is the calibrator's own gate, not a general "is the controller moving" reading, and the
+	 * difference bites: the stillness test compares against a noise floor that only ever ratchets DOWN and
+	 * stops adapting once Confidence reaches 1, with barely any headroom. A controller lying untouched on
+	 * a desk can therefore read false indefinitely -- it merely rests slightly noisier than the quietest
+	 * moment ever measured -- while Confidence stays pinned at 100%, since Confidence never decays either.
+	 * Reset Gyro Calibration clears both and lets it settle again.
+	 *
+	 * So this is a useful cue inside a calibration flow ("keep holding" versus "sampling"), and the wrong
+	 * thing to label "controller is still" on a HUD. For that, compare the length of the gyro vector from
+	 * Get IMU State against a small threshold -- that is a genuine reading of the present moment.
+	 */
+	UPROPERTY(BlueprintReadOnly, meta = (DisplayName = "Auto Calibration Sampling Now"))
 	bool bIsSteady = false;
 
 	// The mode this controller is in (see JSL4USetGyroCalibrationMode).
@@ -426,8 +439,9 @@ struct JOYSHOCKLIBRARY4UNREAL_API FJSL4UGyroCalibrationStatus
 	EJSL4UGyroCalibrationMode Mode = EJSL4UGyroCalibrationMode::Manual;
 
 	// Whether a manual calibration is currently gathering samples, i.e. JSL4UStartGyroCalibration was
-	// called and JSL4UStopGyroCalibration has not been.
-	UPROPERTY(BlueprintReadOnly)
+	// called and JSL4UStopGyroCalibration has not been. The automatic counterpart is the flag above; the
+	// two never run at once, since automatic sampling is suspended while a manual calibration is active.
+	UPROPERTY(BlueprintReadOnly, meta = (DisplayName = "Manual Calibration Running"))
 	bool bIsCalibrating = false;
 };
 
