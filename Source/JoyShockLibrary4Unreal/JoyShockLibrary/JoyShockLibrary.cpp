@@ -16,6 +16,9 @@
 #include "JoyShockInterface.h"
 #include "GameFramework/PlayerController.h"
 #include "GenericPlatform/GenericPlatformInputDeviceMapper.h"
+#include "Engine/Engine.h"
+#include "Engine/GameViewportClient.h"
+#include "Engine/World.h"
 
 DEFINE_LOG_CATEGORY(LogJoyShockLibrary)
 
@@ -24,7 +27,10 @@ TMap<int32, JoyShock*> _joyshocks;
 TMap<FString, JoyShock*> _byPath;
 
 FCriticalSection _pathHandleLock;
-TMap<FString, int32> _pathHandle;
+
+// Which device id each known controller identity currently holds. The identity is the controller's MAC
+// where one can be read and its HID path otherwise -- see GetUniqueHandle. Guarded by _pathHandleLock.
+TMap<FString, int32> _handleByIdentity;
 
 // How many times in a row a device on this path has been opened, tracked, and then dropped without ever
 // delivering an input report. Guarded by _pathHandleLock.
@@ -38,10 +44,15 @@ TMap<FString, int32> _phantomAttemptsByPath;
 // mid-reconnect to start streaming, not to poll dead hardware indefinitely.
 static constexpr int32 PhantomRescanBudget = 3;
 
-static int32 GetUniqueHandle(const FString &path)
+// Reserves this controller's device id. `identity` must be the controller's MAC where one could be read and
+// its HID path otherwise: keying on the MAC is what lets a controller that was switched off and back on --
+// or unpaired and paired again, which is when Windows hands the same controller a brand new HID path -- come
+// back as the device id it had before, instead of as a stranger. Whatever key is used here must be the one
+// passed to ReleaseUniqueHandle; devices carry it in JoyShock::handle_identity for exactly that reason.
+static int32 GetUniqueHandle(const FString &identity)
 {
 	_pathHandleLock.Lock();
-	int32* iter = _pathHandle.Find(path);
+	int32* iter = _handleByIdentity.Find(identity);
 
 	if (iter != nullptr)
 	{
@@ -49,16 +60,15 @@ static int32 GetUniqueHandle(const FString &path)
 		return *iter;
 	}
 
-	// Assign the lowest handle not currently in use, so a controller that reconnects (or is re-paired,
-	// getting a new device path) reuses a freed slot -- e.g. players 0 and 1 -- instead of ever-increasing
-	// ids (2, 3, ...). Handles are freed when a device is removed (see the poll-thread disconnect cleanup).
-	// This handle is also what the input-device mapper uses as the player
-	// index, so keeping it dense keeps player numbers stable across reconnects.
+	// Assign the lowest handle not currently in use, so a controller that reconnects reuses a freed slot --
+	// e.g. players 0 and 1 -- instead of ever-increasing ids (2, 3, ...). Handles are freed when a device is
+	// removed (see the poll-thread disconnect cleanup). This handle is also what the input-device mapper
+	// uses as the player index, so keeping it dense keeps player numbers stable across reconnects.
 	int32 handle = 0;
 	for (bool bInUse = true; bInUse; )
 	{
 		bInUse = false;
-		for (const TTuple<FString, int32>& pair : _pathHandle)
+		for (const TTuple<FString, int32>& pair : _handleByIdentity)
 		{
 			if (pair.Value == handle)
 			{
@@ -69,10 +79,41 @@ static int32 GetUniqueHandle(const FString &path)
 		}
 	}
 
-	_pathHandle.Emplace(path, handle);
+	_handleByIdentity.Emplace(identity, handle);
 	_pathHandleLock.Unlock();
 
 	return handle;
+}
+
+// Re-asserts a reservation that GetUniqueHandle already granted. Needed because a device only becomes real
+// at the end of enumeration, and the previous holder of its identity can finish disappearing -- releasing
+// the very entry we were handed -- in between. Without this the id would look free to the next arrival.
+static void ReserveUniqueHandle(const FString& identity, int32 handle)
+{
+	if (identity.IsEmpty())
+	{
+		return;
+	}
+
+	_pathHandleLock.Lock();
+	_handleByIdentity.Emplace(identity, handle);
+	_pathHandleLock.Unlock();
+}
+
+// Returns a device id to the pool. Every path that destroys a JoyShock has to come through here, including
+// the ones that throw away a device before it was ever tracked -- a reservation that is never released is a
+// device id that can never be handed out again, and that is what makes ids creep upward over a session of
+// unplugging and replugging the same controller.
+static void ReleaseUniqueHandle(const FString& identity)
+{
+	if (identity.IsEmpty())
+	{
+		return;
+	}
+
+	_pathHandleLock.Lock();
+	_handleByIdentity.Remove(identity);
+	_pathHandleLock.Unlock();
 }
 
 // https://stackoverflow.com/questions/25144887/map-unordered-map-prefer-find-and-then-at-or-try-at-catch-out-of-range
@@ -768,9 +809,7 @@ void pollIndividualLoop(JoyShock *jc) {
 		}
 
 		// Free this device's handle so it can be reused by a future connection (keeps player numbers dense).
-		_pathHandleLock.Lock();
-		_pathHandle.Remove(jc->path);
-		_pathHandleLock.Unlock();
+		ReleaseUniqueHandle(jc->handle_identity);
 	}
 
 	const int32 intHandle = jc->intHandle;
@@ -943,6 +982,9 @@ int32 UJoyShockLibrary::JslConnectDevices()
 	struct FTransportUpgrade { FString Mac; FString Path; };
 	TArray<FTransportUpgrade> TransportUpgrades;
 	TArray<JoyShock*> NewDevices;
+	// MACs already claimed by a device created in THIS pass, so one controller reachable two ways cannot be
+	// built twice before either path is tracked. See its use below.
+	TSet<FString> NewMacsThisPass;
 
 	devs = hid_enumerate(0x0, 0x0);
 	cur_dev = devs;
@@ -1016,14 +1058,36 @@ int32 UJoyShockLibrary::JslConnectDevices()
 				// Either way this pass does not own the handle: the polling thread opens the path itself.
 				hid_close(handle);
 			}
+			else if (!DeviceMac.IsEmpty() && NewMacsThisPass.Contains(DeviceMac))
+			{
+				// Two untracked paths for one physical controller in a single pass -- the first scan of a
+				// session where a controller is both paired over Bluetooth and sitting on its cable. The
+				// MAC check above only catches duplicates of an ALREADY tracked device, and since device ids
+				// are keyed by MAC now, letting this build a second JoyShock would hand two live devices the
+				// same id and lose one of them inside _joyshocks. The first path wins; the next enumeration
+				// sees this one as a duplicate of a tracked device and routes it through the transport
+				// upgrade above, which is where the Bluetooth/cable choice actually belongs.
+				UE_LOG(LogJoyShockLibrary, Log,
+					TEXT("\tdevice at %s is the same physical controller (MAC %s) as another path found in this scan; ignoring it for now\n"),
+					*path, *DeviceMac);
+				hid_close(handle);
+			}
 			else
 			{
 				// The constructor runs its transport probe (blocking feature-report I/O on PlayStation
 				// controllers) -- another reason this phase must be lock-free.
 				UE_LOG(LogJoyShockLibrary, Log, TEXT("\tcreating new JoyShock\n"));
-				JoyShock* jc = new JoyShock(cur_dev, handle, GetUniqueHandle(path), path);
+				// Prefer the MAC as the id key so a controller that is switched off and back on, or
+				// re-paired onto a fresh HID path, comes back as the device id it had before.
+				const FString Identity = DeviceMac.IsEmpty() ? path : DeviceMac;
+				JoyShock* jc = new JoyShock(cur_dev, handle, GetUniqueHandle(Identity), path);
 				jc->mac_address = DeviceMac;
+				jc->handle_identity = Identity;
 				NewDevices.Add(jc);
+				if (!DeviceMac.IsEmpty())
+				{
+					NewMacsThisPass.Add(DeviceMac);
+				}
 			}
 		}
 
@@ -1061,11 +1125,36 @@ int32 UJoyShockLibrary::JslConnectDevices()
 	{
 		// The path may have been claimed while phase 2 ran (a transport switch, or a concurrent caller of
 		// this function). The live device wins over our fresh handle.
-		if (_byPath.Contains(jc->path))
+		//
+		// So may the device id. Ids are keyed by controller identity, so a device that finished
+		// disappearing between phase 1 and phase 2 hands its id straight back to the controller behind it,
+		// which is the whole point -- but if it has NOT finished, that id is still in use and this device
+		// cannot have it. Better to drop this one and pick the controller up on the next scan, which the
+		// departing device asks for anyway, than to overwrite a live entry in _joyshocks.
+		if (_byPath.Contains(jc->path) || _joyshocks.Contains(jc->intHandle))
 		{
+			// Give back the device id phase 2 reserved for it. Dropping it here without releasing it is
+			// what used to burn an id per lost race, permanently, so a session of reconnects walked the
+			// numbers upward with nothing ever occupying the ones it skipped.
+			//
+			// Only when nothing live holds that id, though. Whoever won the race is very often the same
+			// physical controller (a transport switch, or another scan that got there first), and since ids
+			// are keyed by identity our reservation is then literally the winner's own -- releasing it would
+			// leave a connected controller's id unclaimed and free to be handed to the next one along.
+			// (Safe to take the handle lock under _connectedLock: nothing takes them the other way round.)
+			const FString Identity = jc->handle_identity;
+			const int32 DiscardedHandle = jc->intHandle;
 			delete jc;
+			if (!_joyshocks.Contains(DiscardedHandle))
+			{
+				ReleaseUniqueHandle(Identity);
+			}
 			continue;
 		}
+		// The previous holder of this identity may have released the reservation on its way out after phase 2
+		// read it, so put it back before the device goes live -- otherwise the id reads as free and the next
+		// controller to arrive is given the one this device is already using.
+		ReserveUniqueHandle(jc->handle_identity, jc->intHandle);
 		_joyshocks.Emplace(jc->intHandle, jc);
 		_byPath.Emplace(jc->path, jc);
 	}
@@ -1267,6 +1356,9 @@ static FJSL4UControllerInfo JSL4UMakeControllerInfo(int32 DeviceId, const FJSLSe
 	const uint8 Blue = RGBColor & 0xff;
 
 	FJSL4UControllerInfo Info;
+	// Everything built here is, by definition, a controller this plugin drives. The flag exists for the one
+	// node that also reports controllers it does not -- see FJSL4UControllerInfo::bIsJoyShockController.
+	Info.bIsJoyShockController = true;
 	Info.DeviceId = DeviceId;
 	Info.ControllerType = JSL4UControllerTypeFromLegacy(JslSettings.controllerType);
 	Info.PlayerLedNumber = JslSettings.playerNumber;
@@ -1295,8 +1387,12 @@ static FJSL4UControllerInfo JSL4UMakeControllerInfo(int32 DeviceId, const FJSLSe
 		|| Info.ControllerType == EJSL4UControllerType::ProController
 		|| Info.ControllerType == EJSL4UControllerType::ProController2
 		|| Info.ControllerType == EJSL4UControllerType::DualSense;
-	Info.GyroSpace = JslSettings.gyroSpace;
-	Info.SplitType = JslSettings.splitType;
+	// JSL stores the gyro space as a raw int. Anything outside the three JSL4U knows about reads as Local
+	// Space rather than as a garbage enumerator, so a value the library grows later cannot make a Blueprint
+	// switch fall through a branch that does not exist.
+	Info.GyroSpace = JslSettings.gyroSpace >= 0 && JslSettings.gyroSpace <= static_cast<int32>(EJSL4UGyroSpace::PlayerSpace)
+		? static_cast<EJSL4UGyroSpace>(JslSettings.gyroSpace)
+		: EJSL4UGyroSpace::LocalSpace;
 	Info.bIsCalibrating = JslSettings.isCalibrating;
 	Info.bAutoCalibrationEnabled = JslSettings.autoCalibrationEnabled;
 	Info.bIsConnected = JslSettings.isConnected;
@@ -1448,6 +1544,44 @@ bool UJoyShockLibrary::JSL4UGetJoyConPair(int32 DeviceId, FJSL4UControllerInfo& 
 		PrimaryController = OtherInfo;
 	}
 	return true;
+}
+
+// The game viewport owning the world this Blueprint is running in, or null outside a game world.
+static UGameViewportClient* JSL4UGetGameViewport(const UObject* WorldContextObject)
+{
+	const UWorld* World = GEngine != nullptr
+		? GEngine->GetWorldFromContextObject(WorldContextObject, EGetWorldErrorMode::ReturnNull)
+		: nullptr;
+	return World != nullptr ? World->GetGameViewport() : nullptr;
+}
+
+bool UJoyShockLibrary::JSL4USetMaxLocalPlayers(const UObject* WorldContextObject, int32 MaxLocalPlayers)
+{
+	if (MaxLocalPlayers < 1)
+	{
+		UE_LOG(LogJoyShockLibrary, Warning,
+			TEXT("JSL4USetMaxLocalPlayers: %d is not a usable number of players; ignoring."), MaxLocalPlayers);
+		return false;
+	}
+
+	UGameViewportClient* Viewport = JSL4UGetGameViewport(WorldContextObject);
+	if (Viewport == nullptr)
+	{
+		UE_LOG(LogJoyShockLibrary, Warning,
+			TEXT("JSL4USetMaxLocalPlayers: no game viewport in this context, so the limit was not changed."));
+		return false;
+	}
+
+	// Unreal's own name for this is MaxSplitscreenPlayers, but it is the ceiling UGameInstance::CreateLocalPlayer
+	// checks whatever the screen is doing -- see the note on the declaration.
+	Viewport->MaxSplitscreenPlayers = MaxLocalPlayers;
+	return true;
+}
+
+int32 UJoyShockLibrary::JSL4UGetMaxLocalPlayers(const UObject* WorldContextObject)
+{
+	const UGameViewportClient* Viewport = JSL4UGetGameViewport(WorldContextObject);
+	return Viewport != nullptr ? Viewport->MaxSplitscreenPlayers : INDEX_NONE;
 }
 
 int32 UJoyShockLibrary::JSL4UGetAssignedPlayerIndex(int32 DeviceId)

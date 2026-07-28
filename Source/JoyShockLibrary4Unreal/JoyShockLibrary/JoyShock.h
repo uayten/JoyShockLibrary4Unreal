@@ -71,6 +71,12 @@ public:
 	// with its own path, which the plugin would otherwise treat as a second controller. See JslConnectDevices.
 	FString mac_address;
 
+	// The key this device's intHandle was reserved under: its MAC when one could be read, otherwise the HID
+	// path it was found on. Stored rather than recomputed because both of those can change while the device
+	// lives -- a transport switch replaces `path` -- and the handle has to be released under the same key it
+	// was taken with, or it is never reusable again and device ids climb for the rest of the session.
+	FString handle_identity;
+
 	// Transport switching. A controller reachable two ways at once (paired over Bluetooth, then plugged
 	// in) should be read over the cable -- lower latency, no packet loss -- and fall back to the radio the
 	// moment the cable is pulled, with the game seeing neither transition. This mirrors what a PS4/PS5

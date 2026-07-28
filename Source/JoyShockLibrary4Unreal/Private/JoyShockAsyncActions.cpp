@@ -4,6 +4,7 @@
 
 #include "JoyShockLibrary4Unreal/JoyShockLibrary/JoyShockLibrary.h"
 #include "Engine/GameInstance.h"
+#include "GameFramework/InputDeviceSubsystem.h"
 
 namespace
 {
@@ -67,6 +68,127 @@ void UJSL4UWaitForControllerChanges::HandleConnected(FJSL4UControllerInfo Contro
 void UJSL4UWaitForControllerChanges::HandleDisconnected(FJSL4UControllerInfo Controller, bool bTimedOut)
 {
 	OnDisconnected.Broadcast(Controller, bTimedOut);
+}
+
+// --- Wait For Any Controller Changes -----------------------------------------------------------------
+
+UJSL4UWaitForAnyControllerChanges* UJSL4UWaitForAnyControllerChanges::WaitForAnyControllerChanges(UObject* WorldContextObject)
+{
+	UJSL4UWaitForAnyControllerChanges* Action = NewObject<UJSL4UWaitForAnyControllerChanges>();
+	Action->RegisterWithGameInstance(WorldContextObject);
+	return Action;
+}
+
+FJSL4UControllerInfo UJSL4UWaitForAnyControllerChanges::DescribeDevice(FPlatformUserId PlatformUser,
+	FInputDeviceId InputDevice)
+{
+	const int32 UnrealDeviceId = InputDevice.GetId();
+
+	// "Is this one of ours" is answered by Unreal's own device id, which the plugin allocated for this
+	// controller when it connected and reports back in FJSL4UControllerInfo. Matching on that rather than
+	// on the hardware name means a controller family the plugin gains later needs no change here. When it
+	// is ours, the plugin's own description is already the complete answer and is returned as-is.
+	for (const FJSL4UControllerInfo& JoyShockInfo : UJoyShockLibrary::JSL4UGetConnectedControllers())
+	{
+		if (JoyShockInfo.InputDeviceId == UnrealDeviceId)
+		{
+			return JoyShockInfo;
+		}
+	}
+
+	// Not ours. Fill in what Unreal knows about any input device and leave the rest at its defaults, which
+	// is what bIsJoyShockController staying false tells a Blueprint to expect. Device Id is explicitly -1
+	// rather than the field's default of 0, so a controller this plugin cannot address can never be
+	// mistaken for its device 0.
+	FJSL4UControllerInfo Info;
+	Info.bIsJoyShockController = false;
+	Info.DeviceId = INDEX_NONE;
+	Info.InputDeviceId = UnrealDeviceId;
+	Info.PlatformUserId = PlatformUser.GetInternalId();
+	Info.PlayerIndex = IPlatformInputDeviceMapper::Get().GetUserIndexForPlatformUser(PlatformUser);
+	Info.ControllerType = EJSL4UControllerType::XInputController;
+	Info.bIsConnected = true;
+
+	if (const UInputDeviceSubsystem* InputDevices = UInputDeviceSubsystem::Get())
+	{
+		Info.HardwareDeviceIdentifier =
+			InputDevices->GetInputDeviceHardwareIdentifier(InputDevice).HardwareDeviceIdentifier;
+	}
+
+	return Info;
+}
+
+void UJSL4UWaitForAnyControllerChanges::Activate()
+{
+	IPlatformInputDeviceMapper& DeviceMapper = IPlatformInputDeviceMapper::Get();
+
+	// Bind before replaying, for the same reason Wait For Controller Changes does: a controller arriving
+	// mid-activation must not fall into the gap between the two. Re-announcements are filtered below, so
+	// overlapping with the replay costs nothing.
+	ConnectionChangeHandle = DeviceMapper.GetOnInputDeviceConnectionChange().AddUObject(
+		this, &UJSL4UWaitForAnyControllerChanges::HandleConnectionChange);
+
+	TArray<FInputDeviceId> ConnectedDevices;
+	DeviceMapper.GetAllConnectedInputDevices(ConnectedDevices);
+	for (const FInputDeviceId& InputDevice : ConnectedDevices)
+	{
+		HandleConnectionChange(EInputDeviceConnectionState::Connected,
+			DeviceMapper.GetUserForInputDevice(InputDevice), InputDevice);
+	}
+}
+
+void UJSL4UWaitForAnyControllerChanges::SetReadyToDestroy()
+{
+	// The delegate is a static that outlives every game instance, so leaving this bound would keep calling
+	// into a cancelled action for the rest of the session.
+	if (ConnectionChangeHandle.IsValid())
+	{
+		IPlatformInputDeviceMapper::Get().GetOnInputDeviceConnectionChange().Remove(ConnectionChangeHandle);
+		ConnectionChangeHandle.Reset();
+	}
+	KnownByInputDeviceId.Reset();
+	Super::SetReadyToDestroy();
+}
+
+void UJSL4UWaitForAnyControllerChanges::HandleConnectionChange(EInputDeviceConnectionState NewState,
+	FPlatformUserId PlatformUser, FInputDeviceId InputDevice)
+{
+	// The keyboard and mouse share one device that is connected from the first frame of every game.
+	// Reporting it as a controller joining would spawn a player for it before anyone had touched anything,
+	// and a game that wants a keyboard player knows it has one without being told.
+	if (InputDevice == IPlatformInputDeviceMapper::Get().GetDefaultInputDevice())
+	{
+		return;
+	}
+
+	const int32 DeviceKey = InputDevice.GetId();
+
+	if (NewState == EInputDeviceConnectionState::Connected)
+	{
+		const FJSL4UControllerInfo Info = DescribeDevice(PlatformUser, InputDevice);
+
+		// Unreal re-announces a device whenever its user mapping is re-asserted, which this plugin does on
+		// every player-slot refresh -- so a second controller connecting would otherwise re-report the
+		// first. Only the first announcement fires; later ones just refresh what is remembered, which is
+		// what On Disconnected will report and is how a slot change is picked up.
+		const bool bAlreadyKnown = KnownByInputDeviceId.Contains(DeviceKey);
+		KnownByInputDeviceId.Add(DeviceKey, Info);
+		if (!bAlreadyKnown)
+		{
+			OnConnected.Broadcast(Info);
+		}
+	}
+	else if (NewState == EInputDeviceConnectionState::Disconnected)
+	{
+		// Describing it now would find nothing: a JSL4U controller is gone from the plugin's own list
+		// before this fires. Fall back to describing it only for a device that was never seen connected.
+		const FJSL4UControllerInfo* Known = KnownByInputDeviceId.Find(DeviceKey);
+		FJSL4UControllerInfo Info = Known != nullptr ? *Known : DescribeDevice(PlatformUser, InputDevice);
+		// It is gone, whatever it was when last seen.
+		Info.bIsConnected = false;
+		KnownByInputDeviceId.Remove(DeviceKey);
+		OnDisconnected.Broadcast(Info);
+	}
 }
 
 // --- Wait For Joy-Con Pairing Changes ----------------------------------------------------------------

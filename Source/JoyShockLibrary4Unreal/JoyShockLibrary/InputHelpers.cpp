@@ -570,6 +570,14 @@ bool handle_input(JoyShock* jc, uint8_t* packet, int32 len, bool &hasIMU) {
 				stick_y2,
 				jc->stick_cal_x_r,
 				jc->stick_cal_y_r);
+			// Nintendo reports the right stick's Y axis with the opposite sign from the left stick's --
+			// the same quirk the Switch 2 Pro Controller has, and the same one the right Joy-Con is
+			// corrected for in FJoyShockInterface. This is the only place it was missing, which made the
+			// Switch 1 Pro Controller the one family whose right stick pushed "up" as a negative value
+			// while every other controller pushed it positive. Only this branch (left_right == 3, a whole
+			// controller) needs it: a right Joy-Con fills stickR from the branch above and is normalised
+			// once, in the interface -- doing it here as well would cancel out.
+			jc->simple_state.stickRY = -jc->simple_state.stickRY;
 		}
 
 		// Byte 2 of the standard report carries the charge in bits 5-7 and the charging flag in bit 4.

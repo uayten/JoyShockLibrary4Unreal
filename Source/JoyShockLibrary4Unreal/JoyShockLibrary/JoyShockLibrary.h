@@ -340,16 +340,36 @@ struct JOYSHOCKLIBRARY4UNREAL_API FJSLAutoCalibration // typedef struct JSL_AUTO
 	bool isSteady = false;
 }; // JSL_AUTO_CALIBRATION;
 
+/**
+ * Which model a controller is. Ordered by family rather than by history, so a Switch node reads the way a
+ * controller-select screen does; the numbers behind the names are not meaningful and nothing outside this
+ * enum depends on them.
+ */
 UENUM(BlueprintType)
 enum class EJSL4UControllerType : uint8
 {
 	Undefined = 0 UMETA(DisplayName = "Undefined"),
-	JoyConLeft = 1 UMETA(DisplayName = "JoyCon (L)"),
-	JoyConRight = 2 UMETA(DisplayName = "JoyCon (R)"),
-	ProController = 3 UMETA(DisplayName = "Pro Controller"),
-	DualShock4 = 4 UMETA(DisplayName = "DualShock 4"),
-	DualSense = 5 UMETA(DisplayName = "DualSense"),
-	ProController2 = 6 UMETA(DisplayName = "Pro Controller 2")
+	// Any controller Unreal accepts that this plugin does not drive. On Windows that means XInput, which is
+	// Xbox pads and the very many third-party controllers presenting as one. Named after the API rather
+	// than the brand because the API is the part that is actually true: a controller arriving this way is
+	// certainly XInput, and only probably an Xbox. (Strictly the value means "not ours", so a device from
+	// some other input plugin would land here too -- put a friendlier label on it in your UI if you want
+	// one, rather than making the enum claim more than it knows.) Only Wait For Any Controller Changes ever
+	// reports it; the JSL4U-specific nodes never do. Distinct from Undefined, which means a controller this
+	// plugin IS driving but could not identify.
+	XInputController = 1 UMETA(DisplayName = "XInput Controller"),
+	DualShock4 = 2 UMETA(DisplayName = "DualShock 4"),
+	DualSense = 3 UMETA(DisplayName = "DualSense"),
+	ProController = 4 UMETA(DisplayName = "Pro Controller"),
+	ProController2 = 5 UMETA(DisplayName = "Pro Controller 2"),
+	JoyConLeft = 6 UMETA(DisplayName = "Joy-Con (L)"),
+	JoyConRight = 7 UMETA(DisplayName = "Joy-Con (R)"),
+	// Reserved, and NOT reported yet: the plugin does not enumerate Switch 2 Joy-Cons at all -- their USB
+	// product ids are not in JslConnectDevices and there is no parser for their reports. A Blueprint branch
+	// on this will not run until that support lands.
+	JoyCon2Left = 8 UMETA(DisplayName = "Joy-Con 2 (L)"),
+	// Reserved, and NOT reported yet -- see Joy-Con 2 (L) above.
+	JoyCon2Right = 9 UMETA(DisplayName = "Joy-Con 2 (R)")
 };
 
 /**
@@ -453,7 +473,23 @@ struct JOYSHOCKLIBRARY4UNREAL_API FJSL4UControllerInfo // typedef struct JSL_SET
 {
 	GENERATED_BODY()
 
-	// Runtime device handle (0, 1, 2, ...). This is what the controller-specific JSL4U nodes take.
+	/**
+	 * True when this plugin is the one driving the controller, and so when everything below the identity
+	 * block means anything.
+	 *
+	 * Every JSL4U node that returns controllers returns only ours, so this is true throughout -- except
+	 * from Wait For Any Controller Changes, which reports every controller Unreal accepts so that "has a
+	 * player joined" can be answered once for all of them. A controller that is not ours fills in only what
+	 * Unreal knows about any device -- Player Index, Input Device Id, Hardware Device Identifier -- carries
+	 * Device Id -1, and reports every capability below as false, because those flags say what THIS PLUGIN
+	 * can do with the controller and the answer there is nothing. Its rumble, if it has any, belongs to
+	 * Unreal's own force feedback.
+	 */
+	UPROPERTY(BlueprintReadOnly)
+	bool bIsJoyShockController = false;
+
+	// Runtime device handle (0, 1, 2, ...), or -1 for a controller this plugin does not drive. This is what
+	// the controller-specific JSL4U nodes take.
 	UPROPERTY(BlueprintReadOnly)
 	int32 DeviceId = 0;
 
@@ -534,11 +570,13 @@ struct JOYSHOCKLIBRARY4UNREAL_API FJSL4UControllerInfo // typedef struct JSL_SET
 	UPROPERTY(BlueprintReadOnly)
 	bool bHasRumble = false;
 
+	// The space this controller's gyro is currently reported in, as set by JSL4USetGyroSpace.
 	UPROPERTY(BlueprintReadOnly)
-	int32 GyroSpace = 0;
+	EJSL4UGyroSpace GyroSpace = EJSL4UGyroSpace::LocalSpace;
 
-	UPROPERTY(BlueprintReadOnly)
-	int32 SplitType = 0;
+	// (JSL's raw SplitType used to sit here. It said nothing ControllerType does not already say --
+	// left half, right half or whole controller -- as an unlabelled integer, so it was dropped rather
+	// than promoted to an enum that would have duplicated EJSL4UControllerType.)
 
 	UPROPERTY(BlueprintReadOnly)
 	bool bIsCalibrating = false;
@@ -674,6 +712,36 @@ public:
 		meta = (DisplayName = "JSL4U Get Joy-Con Pair", ToolTip = "Given either half, returns whether it is a joined pair plus both controller infos (Primary leads, Partner is the other half). A standalone controller returns itself as Primary, an unset Partner and false. Reads live state, so it works for controllers that were already connected at start-up."))
 	static bool JSL4UGetJoyConPair(int32 DeviceId, FJSL4UControllerInfo& PrimaryController,
 		FJSL4UControllerInfo& PartnerController);
+
+	/**
+	 * How many local players this game may create -- i.e. the ceiling on Create Player, and so on how many
+	 * characters a game can spawn for the controllers this plugin reports.
+	 *
+	 * Unreal keeps this number on the game viewport under the name MaxSplitscreenPlayers, which is a
+	 * misnomer worth knowing about: it caps Create Player whether or not the screen is ever split, and it
+	 * is still enforced with Force Disable Split Screen on. It defaults to 4, which is why a fifth
+	 * controller can connect, be reported here, be given player slot 4 -- and still get no character.
+	 * Splitscreen layouts stop at 4 because four is as many views as fit on a television; that is a
+	 * rendering limit and has nothing to do with how many people are playing, which is the only thing this
+	 * number really means.
+	 *
+	 * The alternative is an entry in DefaultEngine.ini under [/Script/Engine.GameViewportClient], which
+	 * puts a decision belonging to your game in a config file, under the wrong name, where nobody looking
+	 * at your player-spawning code will find it. Prefer setting it here, from wherever you decide how many
+	 * players your game supports.
+	 *
+	 * This does not spawn or remove anything by itself, and lowering it does not evict players who already
+	 * exist. Set it before you create players -- Begin Play is the natural place.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "JoyShock Library|Controller Assignment",
+		meta = (WorldContext = "WorldContextObject", DisplayName = "JSL4U Set Max Local Players", ToolTip = "Sets how many local players this game may create, overriding the engine's default of 4. Call it before creating players."))
+	static bool JSL4USetMaxLocalPlayers(const UObject* WorldContextObject, int32 MaxLocalPlayers);
+
+	// The current ceiling on Create Player -- see JSL4USetMaxLocalPlayers. Returns -1 when there is no game
+	// viewport to ask (a Blueprint running outside a game world).
+	UFUNCTION(BlueprintPure, Category = "JoyShock Library|Controller Assignment",
+		meta = (WorldContext = "WorldContextObject", DisplayName = "JSL4U Get Max Local Players", ToolTip = "Returns how many local players this game may create, or -1 when there is no game viewport."))
+	static int32 JSL4UGetMaxLocalPlayers(const UObject* WorldContextObject);
 
 	// Returns the player slot (0, 1, 2, ...) the given controller's input is delivered to, or -1 if it
 	// isn't connected. Both halves of a joined Joy-Con pair return the same slot. Useful for UI.

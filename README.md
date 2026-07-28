@@ -45,7 +45,7 @@ known to be broken. "Untested" means no unit has been available.
 | Nintendo Switch 2 Pro Controller | USB gameplay input, calibrated sticks, motion, player LEDs and fixed-amplitude rumble tested. Bluetooth is not supported yet. |
 | DualShock 4 | Bluetooth and USB gameplay input, stick conventions, motion, battery reporting and cable/Bluetooth transport switching tested. Battery percentages were checked against DS4Windows. Rumble could not be validated because the available controller's rumble hardware is broken. |
 | DualSense / DualSense Edge | USB/Bluetooth input, motion, touchpad, light, player indicators and rumble are implemented, but need a regression test after the overhaul. Battery report offsets are unverified. |
-| Xbox / other XInput pads | Handled entirely by Unreal, not by this plugin. The plugin only takes their player slots into account, so a JoyShock controller lands where a second Xbox pad would. That slot-sharing behaviour still needs a test with both kinds connected at once. |
+| Xbox / other XInput pads | Handled entirely by Unreal, not by this plugin. The plugin takes their player slots into account so a JoyShock controller lands where a second Xbox pad would, and **Wait For Any Controller Changes** reports them alongside ours. Mixing them works; player numbering when a *wireless* Xbox pad is in the mix is still under investigation (see below). |
 
 ## Installation
 - Download or clone the JoyShockLibrary4Unreal repo from this GitHub page and add it to your game's Plugins folder. The path to the Content folder should look like this: `<project>/Plugins/JoyShockLibrary4Unreal/Content`.
@@ -163,6 +163,33 @@ For buttons that are exclusive to JoyShock inputs, new input events have been ad
 
 The Switch 2 Pro Controller's exclusive buttons also have their own input events: **JoyShock C Button (Switch 2)**, **JoyShock Grip Left GL (Switch 2)** and **JoyShock Grip Right GR (Switch 2)**.
 
+### Touchpad
+
+The DualShock 4 and DualSense touchpad is exposed as **gamepad axes**, not as screen touches, so Enhanced
+Input binds it exactly like a thumbstick:
+
+| Key | Type |
+| --- | --- |
+| **JoyShock TouchPad 1 2D-Axis** | Axis2D — one finger's position in a single Vector2D |
+| **JoyShock TouchPad 1 X-Axis** / **Y-Axis** | the components, if you want them separately |
+| **JoyShock TouchPad 1 Touched** | button — down while a finger is on the pad |
+| **JoyShock TouchPad 2 …** | the same four for the second finger |
+| **JoyShock Capture / TouchPad Click** | the physical click, which is a separate button on the hardware |
+
+Values are centred like a stick: `(0, 0)` is the middle of the pad, X runs left to right and Y runs bottom
+to top, matching the sticks so a shared mapping (**To World Space** included) behaves the same on both. A
+finger that is not down reads `(0, 0)`, which is why **Touched** exists — a corner-relative `0..1` range
+could not tell "no finger" from "finger at the top-left corner".
+
+Unreal's built-in **Touch 1 … Touch 10** keys are *not* the ones to use here, even though they are the
+first place most people look. Those are touchscreen keys, fed by Slate's pointer pipeline, and a
+controller touchpad has no screen position to give them; worse, a synthesised pointer press moves that
+player's Slate focus to whatever widget it lands on, which takes their controller's input away from the
+game viewport entirely. A touchpad belongs to one player's gamepad, so it is registered as one.
+
+For games that genuinely want the pad driving Slate touch, `JoyShock.Touchpad.EmulateScreenTouch 1`
+restores that behaviour. It is off by default, for the reason above.
+
 ### Native input-device metadata
 
 Every connection is registered with Unreal's `FInputDeviceRegistry`, and the plugin supplies the same `Config/Input.ini` hardware metadata pattern used by the engine's XInput and WinDualShock plugins. `UInputDeviceSubsystem` therefore sees these as standard **Gamepad** devices with stable identifiers:
@@ -188,6 +215,14 @@ payload as ordinary data pins — no Create Event, no Bind Event, no matching cu
 - **Wait For Controller Changes** — `On Connected` fires immediately for every controller already
   connected and then for each new one, so there is no window in which a controller can be missed;
   `On Disconnected` reports the last known identity and whether reports simply stopped.
+- **Wait For Any Controller Changes** — the same two pins, but for **every controller Unreal accepts**,
+  including Xbox pads and everything else arriving through XInput. Use this one to decide when a *player*
+  joins or leaves, and the JSL4U-only node above when you specifically need gyro, touchpad, lights or HD
+  rumble. Both report the same `FJSL4UControllerInfo`; `bIsJoyShockController` says which kind arrived, and
+  a controller the plugin does not drive carries `DeviceId` -1 with every capability flag false, since
+  those flags describe what *this plugin* can do with it. Keyboard and mouse are not reported: they share
+  one device that is connected from the first frame, so announcing it would spawn a player before anyone
+  touched anything.
 - **Wait For Joy-Con Pairing Changes** — `On Joined` / `On Separated`, with both halves' identities
   already carrying their new grip mode, join partner and player assignment. Pairing actions are not
   replayed, because they are actions rather than persistent state; read **JSL4U Get Connected Controllers**
@@ -223,8 +258,23 @@ Slots otherwise follow the order controllers were switched on, and a controller 
 
 **Slots may be shared, and that is how any set of controllers drives one player.** Assign two, three or four controllers to the same slot and they all drive that player — a joined Joy-Con pair is simply the case the plugin performs for you, complete with the vertical stick/button split. Nothing is limited to Joy-Cons: a DualSense and a Pro Controller on one slot both move the same Pawn.
 
+### More than four players
+
+Unreal caps the number of local players at **4** by default, and a fifth controller silently gets no
+player: it connects, it is reported here, it is given player slot 4, and `Create Player` refuses it. The
+number lives on the game viewport under the name `MaxSplitscreenPlayers`, which is a misnomer worth
+knowing about — it caps `Create Player` whether or not the screen is ever split, and it is still enforced
+with **Set Force Disable Splitscreen** on. Splitscreen stops at four because four is as many views as fit
+on a television; that is a rendering limit and says nothing about how many people are playing.
+
+Call **JSL4U Set Max Local Players** from `BeginPlay`, before creating any player, to raise it. Doing it
+there keeps a decision that belongs to your game in your game, rather than in a `DefaultEngine.ini` entry
+under the wrong name where nobody reading your player-spawning code will find it. **JSL4U Get Max Local
+Players** reads it back.
+
 Assignment nodes are under **JoyShock Library | Controller Assignment**:
 
+- **JSL4U Set Max Local Players / JSL4U Get Max Local Players** — the ceiling on `Create Player`, above.
 - **JSL4U Get Assigned Player Index** — the player slot a controller's input is delivered to.
 - **JSL4U Assign Controller To Player Index (Device Id, Player Index)** — puts a controller on a chosen player slot. Pass -1 to hand it back to automatic assignment.
 - **JSL4U Assign Controller To Player (Device Id, Player Controller)** — the same thing addressed by **PlayerController** instead of slot number.
@@ -401,7 +451,7 @@ Current nodes are grouped by responsibility:
 - **Controllers** — discovery, connection checks and complete controller identity.
 - **Controller Assignment** and **Local Multiplayer** — controller-to-player routing and native Local Player creation.
 - **Joy-Con Pairing** — joining and separating Joy-Cons, and resolving a pair from either half.
-- **Input State**, **Motion** and **Touchpad** — direct state queries for features not already better handled by Enhanced Input.
+- **Input State**, **Motion** and **Touchpad** — direct state queries for features not already better handled by Enhanced Input. The touchpad is bindable in Enhanced Input too — see [Touchpad](#touchpad).
 - **Gyro Calibration** — calibration mode, manual calibration, status and persistent offsets.
 - **Output** — light color, player indicator, HOME light and direct-device rumble.
 - **Diagnostics** — hardware resolution, poll interval and time since the last input report.
@@ -418,6 +468,13 @@ The temporary per-button dispatch and Slate-routing measurements used while deve
 multiplayer example are not part of normal plugin output. For low-level HID troubleshooting,
 `JoyShock.Debug.InputStalls 1` warns if a connected controller stops delivering reports for more than one
 second and reports when delivery resumes. Set it back to `0` to disable it.
+
+**Player numbers that skip.** A slot already held by a controller this plugin does not own is stepped
+over, by design — that is what makes a JoyShock controller land where a second Xbox pad would. Verbose
+logging (`Log LogJoyShockLibrary Verbose`) names the input device holding each slot that gets skipped,
+which is what distinguishes "an XInput pad is legitimately on player 1" from "something claimed a slot and
+never released it". **Wait For Any Controller Changes** answers the same question in-game: it reports every
+controller Unreal knows about with the player index it landed on.
 
 A single `Enabling IMU data...` line is expected while a controller is first initialized.
 
@@ -461,10 +518,11 @@ No official Sony or Nintendo libraries were used in the development or testing o
 These are implemented but unverified, purely because no unit has been available. Reports from anyone who
 owns one are very welcome.
 
-- **Nintendo Switch 2 Joy-Con** — untested
-- **Nintendo Switch Pro Controller (Switch 1)** — untested since the Unreal Engine 5.8 overhaul
-- **Xbox and other XInput pads** — Unreal handles them directly, but the plugin skips player slots they already occupy so a JoyShock controller lands where a second Xbox pad would. That interaction needs a test with both kinds of controller connected at once
+- **Nintendo Switch 2 Joy-Con** — not implemented. `EJSL4UControllerType` reserves `Joy-Con 2 (L)` and `Joy-Con 2 (R)`, but nothing produces them yet: their product ids are not enumerated and there is no parser for their reports
+- **Nintendo Switch Pro Controller (Switch 1)** — untested since the Unreal Engine 5.8 overhaul. Its right stick's Y axis was the one family never sign-normalised, which is now fixed in the parser and wants confirming on hardware
+- **Xbox and other XInput pads** — mixing them with JoyShock controllers works, but a *wireless* Xbox pad appears to consume more than one player slot, so the next JoyShock controller lands a number further out than expected. A pad connected by cable does not do this. Unconfirmed; Verbose logging now names whatever is holding each skipped slot
 - **DualSense battery reporting** — the report offsets come from public reverse-engineering rather than measurement, and are marked as unverified in the code. The DualShock 4 equivalents were checked against DS4Windows
+- **DualSense touchpad Y range** — the DualSense normalises its touch coordinates with the DualShock 4's pad height, which the two do not share. If that is wrong, a finger at the bottom edge reads past 1.0 instead of reaching it. Easy to check with the demo's touchpad readout
 
 ### Demo level
 - **Controller models still missing from the on-screen mirror.** Only the Joy-Con pair, the Joy-Con grip, the DualShock 4 and the DualSense are modelled; everything else falls back to whatever the mirror is given. Needed: Nintendo Switch 2 Joy-Con, Nintendo Switch Pro Controller, Nintendo Switch 2 Pro Controller, and an Xbox pad for the controllers Unreal handles directly
@@ -473,4 +531,5 @@ owns one are very welcome.
 - A massive thanks to JibbSmart for creating the original JoyShockLibrary plug-in, and for answering the questions I sent to his Twitter DMs. For the full credits of the original JoyShockLibrary, check out his [JoyShockLibrary](https://github.com/JibbSmart/JoyShockLibrary) repo.
 - microdee for the [HIDUE](https://github.com/microdee/HIDUE) Unreal plug-in, which JSL4U relies on for both USB and Bluetooth connections.
 - Bundled DualSense 3D model created by [Saleem Akhtar](https://www.artstation.com/marketplace/p/zBM9R/ps5-duelsense-controller-3d-model-fbx).
+- The Joy-Con, Joy-Con grip and DualShock 4 models used by the demo's controller mirror were modelled by [uayten](https://github.com/uayten) for this plugin.
 - [uayten](https://github.com/uayten) for the 07/2026 overhaul: Unreal Engine 5.8 native input and local multiplayer; stable controller discovery, identity and player routing; Joy-Con horizontal play, joining/separation and player LEDs; total implementation of the Nintendo Switch 2 Pro Controller; battery reporting; cable/Bluetooth transport switching; the per-controller mirror, sensor HUD and demo workflow; consistent engine-facing stick axes; and the controller connection, freeze and shutdown-crash fixes.

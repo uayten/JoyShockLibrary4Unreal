@@ -5,6 +5,7 @@
 #include "CoreMinimal.h"
 #include "Containers/Ticker.h"
 #include "Engine/CancellableAsyncAction.h"
+#include "GenericPlatform/GenericPlatformInputDeviceMapper.h"
 #include "JoyShockSubsystem.h"
 #include "JoyShockAsyncActions.generated.h"
 
@@ -97,6 +98,66 @@ private:
 	void HandleSeparated(FJSL4UControllerInfo LeftJoyCon, FJSL4UControllerInfo RightJoyCon);
 
 	TWeakObjectPtr<UJoyShockSubsystem> Subsystem;
+};
+
+// One controller, connected or gone. Shared by both pins of Wait For Any Controller Changes: a controller
+// leaving carries no extra information worth a second signature, and a controller Unreal does not own has
+// no notion of the timeout the JSL4U-specific disconnect pin reports.
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FJSL4UControllerInfoDelegate,
+	FJSL4UControllerInfo, Controller);
+
+UCLASS()
+class JOYSHOCKLIBRARY4UNREAL_API UJSL4UWaitForAnyControllerChanges : public UCancellableAsyncAction
+{
+	GENERATED_BODY()
+
+public:
+	// Fires once for every controller already connected when the node activates, then for every later
+	// connection. Same bind-then-replay as Wait For Controller Changes, so nothing arriving mid-activation
+	// is missed, and a controller only ever reports once however many times Unreal re-announces it.
+	UPROPERTY(BlueprintAssignable, meta = (DisplayName = "On Connected"))
+	FJSL4UControllerInfoDelegate OnConnected;
+
+	// Fires with the controller's last known description, since by the time a disconnect is reported there
+	// is nothing left to ask about it.
+	UPROPERTY(BlueprintAssignable, meta = (DisplayName = "On Disconnected"))
+	FJSL4UControllerInfoDelegate OnDisconnected;
+
+	/**
+	 * Waits for ANY controller Unreal accepts to connect or disconnect -- including Xbox controllers and
+	 * everything else that arrives through XInput, which the JSL4U-only Wait For Controller Changes does
+	 * not report. Use this to decide when a player joins or leaves; use Wait For Controller Changes when
+	 * you specifically need a JSL4U controller's gyro, touchpad, lights or HD rumble.
+	 *
+	 * This plugin does not implement XInput and does not need to: Unreal already supports those pads
+	 * natively and JSL4U shares player slots with them. This node simply reports both sources through one
+	 * pin, and Is Joy Shock Controller on the payload says which one each came from -- check it before
+	 * feeding Device Id to any of the controller-specific JSL4U nodes.
+	 *
+	 * The keyboard and mouse are not reported. They share a single device that is connected from the first
+	 * frame of every game, so announcing it as a controller joining would spawn a player for it before
+	 * anyone had touched anything.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "JoyShock Library|Events",
+		meta = (BlueprintInternalUseOnly = "true", WorldContext = "WorldContextObject",
+			DisplayName = "Wait For Any Controller Changes",
+			Keywords = "JSL4U xinput xbox gamepad any controller connect disconnect player join joyshock"))
+	static UJSL4UWaitForAnyControllerChanges* WaitForAnyControllerChanges(UObject* WorldContextObject);
+
+	virtual void Activate() override;
+	virtual void SetReadyToDestroy() override;
+
+private:
+	void HandleConnectionChange(EInputDeviceConnectionState NewState, FPlatformUserId PlatformUser,
+		FInputDeviceId InputDevice);
+	static FJSL4UControllerInfo DescribeDevice(FPlatformUserId PlatformUser, FInputDeviceId InputDevice);
+
+	// The last description of every controller seen connected, keyed by Unreal's input device id. A
+	// disconnect has to be answered from here: by the time it is reported the device is already gone from
+	// everything that could describe it, ours included.
+	TMap<int32, FJSL4UControllerInfo> KnownByInputDeviceId;
+
+	FDelegateHandle ConnectionChangeHandle;
 };
 
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FJSL4ULowBatteryDelegate,

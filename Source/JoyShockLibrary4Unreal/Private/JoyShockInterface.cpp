@@ -21,6 +21,37 @@ static TAutoConsoleVariable<int32> CVarJoyShockDebugInputStalls(
 	TEXT("JoyShock.Debug.InputStalls"), 0,
 	TEXT("Warns when a connected controller stops delivering HID reports for over one second. 0=off, 1=on."));
 
+static TAutoConsoleVariable<int32> CVarJoyShockEmulateScreenTouch(
+	TEXT("JoyShock.Touchpad.EmulateScreenTouch"), 0,
+	TEXT("Reports a DualShock 4 / DualSense touchpad to Slate as a screen touch. Off by default: a Slate\n")
+	TEXT("pointer press moves that player's focus to whatever widget it lands on, which takes the\n")
+	TEXT("controller's focus off the game viewport. Read the pad with JSL4UGetTouchState instead.\n")
+	TEXT("0=off, 1=on."));
+
+// Size in pixels to stretch a normalised touchpad coordinate over when the emulation above is enabled.
+// Rebuilding the display metrics walks the monitor list, so it is refreshed at most once a second rather
+// than once per touch report; changing displays costs at most a second of slightly wrong coordinates.
+static FVector2D GetEmulatedTouchScreenSize()
+{
+	static FVector2D CachedSize(1920.0, 1080.0);
+	static double LastRefreshTime = 0.0;
+
+	const double Now = FPlatformTime::Seconds();
+	if (Now - LastRefreshTime > 1.0)
+	{
+		LastRefreshTime = Now;
+
+		FDisplayMetrics Metrics;
+		FDisplayMetrics::RebuildDisplayMetrics(Metrics);
+		if (Metrics.PrimaryDisplayWidth > 0 && Metrics.PrimaryDisplayHeight > 0)
+		{
+			CachedSize = FVector2D(Metrics.PrimaryDisplayWidth, Metrics.PrimaryDisplayHeight);
+		}
+	}
+
+	return CachedSize;
+}
+
 TSharedRef<FJoyShockInterface> FJoyShockInterface::Create(const TSharedRef<FGenericApplicationMessageHandler>& InMessageHandler)
 {
 	return MakeShareable(new FJoyShockInterface(InMessageHandler));
@@ -153,6 +184,20 @@ void FJoyShockInterface::InitializeAdditionalKeys()
 	EKeys::AddKey(FKeyDetails(CButtonKey, LOCTEXT("JoyShock_Switch_C", "JoyShock C Button (Switch 2)"), FKeyDetails::GamepadKey, JoyShockControllerName));
 	EKeys::AddKey(FKeyDetails(GripLeftButtonKey, LOCTEXT("JoyShock_Grip_Left", "JoyShock Grip Left GL (Switch 2)"), FKeyDetails::GamepadKey, JoyShockControllerName));
 	EKeys::AddKey(FKeyDetails(GripRightButtonKey, LOCTEXT("JoyShock_Grip_Right", "JoyShock Grip Right GR (Switch 2)"), FKeyDetails::GamepadKey, JoyShockControllerName));
+
+	// DualShock 4 / DualSense touchpad, registered as thumbstick-shaped gamepad axes rather than as screen
+	// touches -- see the note on TouchPad1XKeyName for why Unreal's Touch1..Touch10 are the wrong keys for
+	// a controller touchpad. The 2D pairing is what makes each pad bindable to a single Vector2D Input
+	// Action, exactly like Gamepad Left/Right Thumbstick 2D-Axis.
+	EKeys::AddKey(FKeyDetails(TouchPad1XKey, LOCTEXT("JoyShock_TouchPad1_X", "JoyShock TouchPad 1 X-Axis"), FKeyDetails::GamepadKey | FKeyDetails::Axis1D, JoyShockControllerName));
+	EKeys::AddKey(FKeyDetails(TouchPad1YKey, LOCTEXT("JoyShock_TouchPad1_Y", "JoyShock TouchPad 1 Y-Axis"), FKeyDetails::GamepadKey | FKeyDetails::Axis1D, JoyShockControllerName));
+	EKeys::AddPairedKey(FKeyDetails(TouchPad1Key, LOCTEXT("JoyShock_TouchPad1", "JoyShock TouchPad 1 2D-Axis"), FKeyDetails::GamepadKey | FKeyDetails::Axis2D, JoyShockControllerName), TouchPad1XKey, TouchPad1YKey);
+	EKeys::AddKey(FKeyDetails(TouchPad1TouchedKey, LOCTEXT("JoyShock_TouchPad1_Touched", "JoyShock TouchPad 1 Touched"), FKeyDetails::GamepadKey, JoyShockControllerName));
+
+	EKeys::AddKey(FKeyDetails(TouchPad2XKey, LOCTEXT("JoyShock_TouchPad2_X", "JoyShock TouchPad 2 X-Axis"), FKeyDetails::GamepadKey | FKeyDetails::Axis1D, JoyShockControllerName));
+	EKeys::AddKey(FKeyDetails(TouchPad2YKey, LOCTEXT("JoyShock_TouchPad2_Y", "JoyShock TouchPad 2 Y-Axis"), FKeyDetails::GamepadKey | FKeyDetails::Axis1D, JoyShockControllerName));
+	EKeys::AddPairedKey(FKeyDetails(TouchPad2Key, LOCTEXT("JoyShock_TouchPad2", "JoyShock TouchPad 2 2D-Axis"), FKeyDetails::GamepadKey | FKeyDetails::Axis2D, JoyShockControllerName), TouchPad2XKey, TouchPad2YKey);
+	EKeys::AddKey(FKeyDetails(TouchPad2TouchedKey, LOCTEXT("JoyShock_TouchPad2_Touched", "JoyShock TouchPad 2 Touched"), FKeyDetails::GamepadKey, JoyShockControllerName));
 }
 
 FString FJoyShockInterface::GetDeviceName(int32 InControllerId)
@@ -354,11 +399,13 @@ void FJoyShockInterface::SendControllerEvents()
 		// when we fire, and the containers must already be consistent.
 		TArray<TPair<int32, bool>> DisconnectedThisTick;
 		TArray<int32> ConnectedThisTick;
+		// Separations caused by one half of a joined pair going away (see OnDisconnectCallback).
+		TArray<FJoyConPairingChange> DisconnectPairingChanges;
 
 		TPair<int32, bool> PendingDisconnect;
 		while (PendingDisconnects.Dequeue(PendingDisconnect))
 		{
-			if (OnDisconnectCallback(PendingDisconnect.Key, PendingDisconnect.Value))
+			if (OnDisconnectCallback(PendingDisconnect.Key, PendingDisconnect.Value, DisconnectPairingChanges))
 			{
 				DisconnectedThisTick.Add(PendingDisconnect);
 			}
@@ -383,6 +430,13 @@ void FJoyShockInterface::SendControllerEvents()
 					Disconnected.Key, Disconnected.Value ? 1 : 0, JSL4UModule.GetOnDeviceDisconnected().IsBound() ? 1 : 0);
 				JSL4UModule.GetOnDeviceDisconnected().Broadcast(Disconnected.Key, Disconnected.Value);
 			}
+
+			// After the disconnects, so a listener that removes the departed controller's visuals has
+			// already done so by the time it is told the pair it belonged to has separated -- and before the
+			// connects, so a controller that comes straight back is never announced into a pair that is
+			// still, as far as listeners know, intact.
+			BroadcastJoyConPairingChanges(DisconnectPairingChanges);
+
 			for (int32 ConnectedDeviceId : ConnectedThisTick)
 			{
 				UE_LOG(LogJoyShockLibrary, Verbose, TEXT("Broadcasting connect of device %d, %d listener(s)."),
@@ -480,6 +534,7 @@ void FJoyShockInterface::SendControllerEvents()
 				
 				{
 					FScopeLock Lock(&TouchStateLock);
+					ProcessTouchpadInputs(ControllerState.TouchState, ControllerState.PreviousTouchState, PlatformUser, InputDevice);
 					ProcessTouchState(ControllerState.TouchState, ControllerState.PreviousTouchState, PlatformUser, InputDevice);
 				}
 
@@ -844,6 +899,51 @@ void FJoyShockInterface::OnPollCallback(int32 DeviceHandle, const FJoyShockState
 	}*/
 }
 
+void FJoyShockInterface::ProcessSingleTouchpadInput(bool bTouchDown, float TouchX, float TouchY,
+	bool bPreviousTouchDown, float PreviousTouchX, float PreviousTouchY,
+	const FName& XKey, const FName& YKey, const FName& TouchedKey,
+	FPlatformUserId PlatformUser, FInputDeviceId InputDevice) const
+{
+	// JSL reports the finger 0..1 from the top-left of the pad. Centre it to -1..1 and flip Y so up is
+	// positive, which is the convention every other axis this interface reports already uses. A finger that
+	// is not down reports dead centre rather than its last position, so releasing looks like letting go of a
+	// stick -- and so the two axes cannot be read as a position without Touched saying there is one.
+	auto ToCentred = [](bool bDown, float Value, float Sign)
+	{
+		return bDown ? Sign * (Value * 2.0f - 1.0f) : 0.0f;
+	};
+
+	OnControllerAnalog(PlatformUser, InputDevice, XKey,
+		ToCentred(bTouchDown, TouchX, 1.0f), ToCentred(bPreviousTouchDown, PreviousTouchX, 1.0f));
+	OnControllerAnalog(PlatformUser, InputDevice, YKey,
+		ToCentred(bTouchDown, TouchY, -1.0f), ToCentred(bPreviousTouchDown, PreviousTouchY, -1.0f));
+
+	// Touched is a plain press/release edge. No auto-repeat: a finger resting on the pad is a held state,
+	// not a key someone is leaning on, and repeats would make "on touch" fire continuously.
+	if (bTouchDown && !bPreviousTouchDown)
+	{
+		MessageHandler->OnControllerButtonPressed(TouchedKey, PlatformUser, InputDevice, false);
+	}
+	else if (!bTouchDown && bPreviousTouchDown)
+	{
+		MessageHandler->OnControllerButtonReleased(TouchedKey, PlatformUser, InputDevice, false);
+	}
+}
+
+void FJoyShockInterface::ProcessTouchpadInputs(const FTouchState& InTouchState, const FTouchState& InPreviousTouchState,
+	FPlatformUserId PlatformUser, FInputDeviceId InputDevice) const
+{
+	ProcessSingleTouchpadInput(
+		InTouchState.t0Down, InTouchState.t0X, InTouchState.t0Y,
+		InPreviousTouchState.t0Down, InPreviousTouchState.t0X, InPreviousTouchState.t0Y,
+		TouchPad1XKeyName, TouchPad1YKeyName, TouchPad1TouchedKeyName, PlatformUser, InputDevice);
+
+	ProcessSingleTouchpadInput(
+		InTouchState.t1Down, InTouchState.t1X, InTouchState.t1Y,
+		InPreviousTouchState.t1Down, InPreviousTouchState.t1X, InPreviousTouchState.t1Y,
+		TouchPad2XKeyName, TouchPad2YKeyName, TouchPad2TouchedKeyName, PlatformUser, InputDevice);
+}
+
 void FJoyShockInterface::ProcessSingleTouchState(bool bTouchDown, int32 TouchID, const FVector2D& TouchLocation, bool bPreviousTouchDown, int32 PreviousTouchID, const FVector2D& PreviousTouchLocation, FPlatformUserId PlatformUser, FInputDeviceId InputDevice) const
 {
 	if (bTouchDown && !bPreviousTouchDown)
@@ -868,13 +968,41 @@ void FJoyShockInterface::ProcessSingleTouchState(bool bTouchDown, int32 TouchID,
 
 void FJoyShockInterface::ProcessTouchState(const FTouchState& InTouchState, const FTouchState& InPreviousTouchState, FPlatformUserId PlatformUser, FInputDeviceId InputDevice) const
 {
-	FVector2D CurrentTouch0Location(InTouchState.t0X, InTouchState.t0Y);
-	FVector2D PreviousTouch0Location(InPreviousTouchState.t0X, InPreviousTouchState.t0Y);
-	ProcessSingleTouchState(InTouchState.t0Down, /*InTouchState.t0Id*/ 0, CurrentTouch0Location, InPreviousTouchState.t0Down, InPreviousTouchState.t0Id, PreviousTouch0Location, PlatformUser, InputDevice);
-    
-	FVector2D CurrentTouch1Location(InTouchState.t1X, InTouchState.t1Y);
-	FVector2D PreviousTouch1Location(InPreviousTouchState.t1X, InPreviousTouchState.t1Y);
-	ProcessSingleTouchState(InTouchState.t1Down, /*InTouchState.t1Id*/ 1, CurrentTouch1Location, InPreviousTouchState.t1Down, InPreviousTouchState.t1Id, PreviousTouch1Location, PlatformUser, InputDevice);
+	// A controller touchpad is not a touchscreen, and Unreal has no input concept for one. The only thing
+	// the message handler offers is OnTouchStarted/Moved/Ended, which is a *screen* touch, and feeding a
+	// touchpad into it was wrong twice over. JSL reports the finger normalised 0..1 while Slate reads those
+	// numbers as absolute desktop pixels, so every touch landed within a pixel of the desktop's top-left
+	// corner -- in the editor, whatever panel happens to be there, which is why tapping the pad highlighted
+	// random editor UI. Worse, a Slate pointer press moves that Slate user's focus onto whatever it lands
+	// on, so the touch quietly took the controller's focus off the game viewport and every button pressed
+	// afterwards went to an editor widget instead of to the game. That is the "tapping the touchpad freezes
+	// the DualShock's buttons" report, and nothing in the game could recover from it: from the game's side
+	// that controller simply stopped existing.
+	//
+	// So it is off by default. The touchpad itself is not lost -- finger positions and per-touch down/up
+	// are in JSL4UGetTouchState, and the click is the Capture / TouchPad Click key -- which is what a game
+	// binds anyway. JoyShock.Touchpad.EmulateScreenTouch 1 restores the old behaviour for a game that
+	// really does want the pad driving Slate; coordinates are then stretched over the primary display so
+	// they at least land on screen, but the focus cost is inherent to synthesising a pointer press and
+	// stays. Touches already in flight are still ended when the emulation is switched off, so Slate is
+	// never left holding a capture that nothing will ever release.
+	const bool bEmulateScreenTouch = CVarJoyShockEmulateScreenTouch.GetValueOnGameThread() != 0;
+	if (!bEmulateScreenTouch && !InPreviousTouchState.t0Down && !InPreviousTouchState.t1Down)
+	{
+		return;
+	}
+
+	const FVector2D ScreenSize = GetEmulatedTouchScreenSize();
+	static const FTouchState NeutralTouchState;
+	const FTouchState& CurrentState = bEmulateScreenTouch ? InTouchState : NeutralTouchState;
+
+	FVector2D CurrentTouch0Location = FVector2D(CurrentState.t0X, CurrentState.t0Y) * ScreenSize;
+	FVector2D PreviousTouch0Location = FVector2D(InPreviousTouchState.t0X, InPreviousTouchState.t0Y) * ScreenSize;
+	ProcessSingleTouchState(CurrentState.t0Down, /*InTouchState.t0Id*/ 0, CurrentTouch0Location, InPreviousTouchState.t0Down, InPreviousTouchState.t0Id, PreviousTouch0Location, PlatformUser, InputDevice);
+
+	FVector2D CurrentTouch1Location = FVector2D(CurrentState.t1X, CurrentState.t1Y) * ScreenSize;
+	FVector2D PreviousTouch1Location = FVector2D(InPreviousTouchState.t1X, InPreviousTouchState.t1Y) * ScreenSize;
+	ProcessSingleTouchState(CurrentState.t1Down, /*InTouchState.t1Id*/ 1, CurrentTouch1Location, InPreviousTouchState.t1Down, InPreviousTouchState.t1Id, PreviousTouch1Location, PlatformUser, InputDevice);
 }
 
 void FJoyShockInterface::OnTouchCallback(int32 DeviceHandle, const FTouchState& TouchState, const FTouchState& PreviousTouchState, float DeltaTime)
@@ -1027,6 +1155,7 @@ void FJoyShockInterface::ReleaseAllInput(FControllerState& State)
 	{
 		FScopeLock StateLock(&TouchStateLock);
 		const FTouchState NeutralTouchState = {};
+		ProcessTouchpadInputs(NeutralTouchState, State.TouchState, PlatformUser, InputDevice);
 		ProcessTouchState(NeutralTouchState, State.TouchState, PlatformUser, InputDevice);
 		State.TouchState = NeutralTouchState;
 		State.PreviousTouchState = NeutralTouchState;
@@ -1040,7 +1169,8 @@ void FJoyShockInterface::ReleaseAllInput(FControllerState& State)
 		FVector::ZeroVector, PlatformUser, InputDevice);
 }
 
-bool FJoyShockInterface::OnDisconnectCallback(int32 InDeviceHandle, bool bInHasTimedOut)
+bool FJoyShockInterface::OnDisconnectCallback(int32 InDeviceHandle, bool bInHasTimedOut,
+	TArray<FJoyConPairingChange>& OutPairingChanges)
 {
 	// UE_LOG(LogJoyShockLibrary, Log, TEXT(">>>>>OnDisconnectCallback %d"), InDeviceHandle);
 	FScopeLock ContainerLock(&ControllerContainerLock);
@@ -1072,6 +1202,25 @@ bool FJoyShockInterface::OnDisconnectCallback(int32 InDeviceHandle, bool bInHasT
 	FInputDeviceRegistry::RemoveDevice(ControllerState.InputDevice);
 
 	// Dissolve any join this device was part of, then re-assign remaining players.
+	//
+	// A pair losing a half is a separation like any other, and has to be finished like any other: the half
+	// that is left goes back to being a standalone horizontal Joy-Con, and listeners are told. Doing only
+	// the JoinPartner erase (as this used to) left the survivor stuck in the vertical mapping it had as
+	// part of a pair -- its stick un-rotated, its SL/SR still reading as a joined pair's -- and left every
+	// Blueprint that draws pairs from Wait For Joy-Con Pairing Changes still drawing the pair, so a
+	// Joy-Con switched off with its sync button stayed on screen as a ghost half of a couple that no
+	// longer existed. Both other separation paths (the SL+SR chord and JSL4UUnjoinJoyCon) already do this;
+	// only the disconnect path did not.
+	if (const int32* PartnerPtr = JoinPartner.Find(InDeviceHandle))
+	{
+		const int32 Partner = *PartnerPtr;
+		OutPairingChanges.Add(MakeJoyConPairingChange(InDeviceHandle, Partner, false));
+		if (FControllerState* PartnerState = ControllerStateByDeviceHandle.Find(Partner))
+		{
+			PartnerState->bJoyConHorizontal = true;
+		}
+		JoinPartner.Remove(Partner);
+	}
 	JoinPartner.Remove(InDeviceHandle);
 	for (auto It = JoinPartner.CreateIterator(); It; ++It)
 	{
@@ -1125,6 +1274,14 @@ bool FJoyShockInterface::IsPlayerSlotClaimedByAnotherDevice(int32 Slot) const
 		{
 			continue;
 		}
+
+		// Says which foreign device is holding the slot we are stepping over. Player numbers that skip are
+		// almost always this and nothing else, and without the device id there is no way to tell "an XInput
+		// pad is legitimately on player 1" from "something claimed player 1 and never let go" -- which is
+		// what a wireless pad that flaps once while pairing can leave behind.
+		UE_LOG(LogJoyShockLibrary, Verbose,
+			TEXT("Player slot %d is already held by input device %d, which this plugin does not own; skipping it."),
+			Slot, Device.GetId());
 		return true;
 	}
 

@@ -243,6 +243,15 @@ private:
 	// Callbacks
 	void OnPollCallback(int32 DeviceHandle, const FJoyShockState& SimpleState, const FJoyShockState& PreviousSimpleState, const FIMUState& IMUState, const FIMUState& PreviousIMUState, float DeltaTime);
 
+	// Reports the touchpad as gamepad axes and a Touched button -- the route Enhanced Input should use for
+	// it. Independent of ProcessTouchState, which is the (off by default) screen-touch emulation.
+	void ProcessTouchpadInputs(const FTouchState& InTouchState, const FTouchState& InPreviousTouchState,
+		FPlatformUserId PlatformUser, FInputDeviceId InputDevice) const;
+	void ProcessSingleTouchpadInput(bool bTouchDown, float TouchX, float TouchY,
+		bool bPreviousTouchDown, float PreviousTouchX, float PreviousTouchY,
+		const FName& XKey, const FName& YKey, const FName& TouchedKey,
+		FPlatformUserId PlatformUser, FInputDeviceId InputDevice) const;
+
 	void ProcessSingleTouchState(bool bTouchDown, int32 TouchID, const FVector2D& TouchLocation, bool bPreviousTouchDown, int32 PreviousTouchID, const FVector2D& PreviousTouchLocation, FPlatformUserId PlatformUser, FInputDeviceId InputDevice) const;
 	void ProcessTouchState(const FTouchState& InTouchState, const FTouchState& InPreviousTouchState, FPlatformUserId PlatformUser, FInputDeviceId InputDevice) const;
 	void OnTouchCallback(int32 DeviceHandle, const FTouchState& TouchState, const FTouchState& PreviousTouchState, float DeltaTime);
@@ -252,7 +261,10 @@ private:
 
 	bool OnConnectCallback(int32 InDeviceHandle);
 
-	bool OnDisconnectCallback(int32 InDeviceHandle, bool bInHasTimedOut);
+	// Losing one half of a joined pair separates it, exactly as SL+SR or JSL4UUnjoinJoyCon would, so the
+	// separation has to be reported like any other. The change is handed back rather than broadcast here
+	// because this runs inside the drain, under ControllerContainerLock.
+	bool OnDisconnectCallback(int32 InDeviceHandle, bool bInHasTimedOut, TArray<FJoyConPairingChange>& OutPairingChanges);
 
 	// Additional input names.
 	// JSL aliases one bit per pair of equivalent buttons across controller families, so each of these is a
@@ -289,7 +301,44 @@ private:
 
 	const FGamepadKeyNames::Type GripRightButtonKeyName = "GripRight";
 	const FKey GripRightButtonKey = "GripRight";
-	
+
+	/**
+	 * DualShock 4 / DualSense touchpad, as ordinary gamepad axes.
+	 *
+	 * Unreal's Touch1..Touch10 keys are the wrong place to look for these, which is what everyone tries
+	 * first. Those are TOUCHSCREEN keys: they are fed by Slate's pointer pipeline, so binding a controller
+	 * touchpad to them means synthesising a screen touch at a screen position, for a surface that has no
+	 * screen position -- and a Slate pointer press moves that player's focus to whatever widget it lands
+	 * on, which is how tapping the pad used to kill the controller's buttons (see ProcessTouchState).
+	 *
+	 * A controller touchpad is not a touchscreen; it is part of one player's gamepad, exactly like that
+	 * player's right stick. So it is registered like one. Enhanced Input binds JoyShock TouchPad 1 as a 2D
+	 * axis the same way it binds a thumbstick, routed to the player who owns the controller, with no
+	 * pointer, no focus and no window coordinates involved.
+	 *
+	 * Both fingers the hardware reports get a pad. Each is centred like a stick -- (0, 0) is the middle of
+	 * the surface, X runs left to right and Y runs bottom to top, matching the sticks so a shared Enhanced
+	 * Input mapping (To World Space included) behaves the same on both. Not touching reads as (0, 0), which
+	 * a corner-relative 0..1 range could not express: there, "no finger" and "finger at the top-left corner"
+	 * would be the same value. Touched says which it is.
+	 */
+	const FGamepadKeyNames::Type TouchPad1XKeyName = "TouchPad1_X";
+	const FKey TouchPad1XKey = "TouchPad1_X";
+	const FGamepadKeyNames::Type TouchPad1YKeyName = "TouchPad1_Y";
+	const FKey TouchPad1YKey = "TouchPad1_Y";
+	const FKey TouchPad1Key = "TouchPad1";
+	const FGamepadKeyNames::Type TouchPad1TouchedKeyName = "TouchPad1Touched";
+	const FKey TouchPad1TouchedKey = "TouchPad1Touched";
+
+	const FGamepadKeyNames::Type TouchPad2XKeyName = "TouchPad2_X";
+	const FKey TouchPad2XKey = "TouchPad2_X";
+	const FGamepadKeyNames::Type TouchPad2YKeyName = "TouchPad2_Y";
+	const FKey TouchPad2YKey = "TouchPad2_Y";
+	const FKey TouchPad2Key = "TouchPad2";
+	const FGamepadKeyNames::Type TouchPad2TouchedKeyName = "TouchPad2Touched";
+	const FKey TouchPad2TouchedKey = "TouchPad2Touched";
+
+
 	
 	const TArray<TTuple<int32, FName>> JoyShockMaskMappings = {
 		{JSMASK_UP, FGamepadKeyNames::DPadUp},
