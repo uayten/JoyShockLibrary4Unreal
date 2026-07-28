@@ -21,6 +21,12 @@ static TAutoConsoleVariable<int32> CVarJoyShockDebugInputStalls(
 	TEXT("JoyShock.Debug.InputStalls"), 0,
 	TEXT("Warns when a connected controller stops delivering HID reports for over one second. 0=off, 1=on."));
 
+static TAutoConsoleVariable<int32> CVarJoyShockDebugTouchpad(
+	TEXT("JoyShock.Debug.Touchpad"), 0,
+	TEXT("Logs the touchpad state of both fingers whenever it changes, exactly as the axis dispatch sees\n")
+	TEXT("it. The one way to tell a touch the hardware never reported from one that was reported and lost\n")
+	TEXT("on the way to Enhanced Input. 0=off, 1=on."));
+
 static TAutoConsoleVariable<int32> CVarJoyShockEmulateScreenTouch(
 	TEXT("JoyShock.Touchpad.EmulateScreenTouch"), 0,
 	TEXT("Reports a DualShock 4 / DualSense touchpad to Slate as a screen touch. Off by default: a Slate\n")
@@ -933,6 +939,25 @@ void FJoyShockInterface::ProcessSingleTouchpadInput(bool bTouchDown, float Touch
 void FJoyShockInterface::ProcessTouchpadInputs(const FTouchState& InTouchState, const FTouchState& InPreviousTouchState,
 	FPlatformUserId PlatformUser, FInputDeviceId InputDevice) const
 {
+	// Logged here rather than in the parser because this is the last point at which the touch is still the
+	// controller's own reading: whatever these numbers say is exactly what the axes below are given. That
+	// makes it the line that separates "the hardware never reported this finger" from "it reported it and
+	// something between here and Enhanced Input dropped it" -- two problems with no symptom in common but
+	// which look identical from a Blueprint.
+	if (CVarJoyShockDebugTouchpad.GetValueOnGameThread() != 0
+		&& (InTouchState.t0Down != InPreviousTouchState.t0Down
+			|| InTouchState.t1Down != InPreviousTouchState.t1Down
+			|| InTouchState.t0X != InPreviousTouchState.t0X
+			|| InTouchState.t0Y != InPreviousTouchState.t0Y
+			|| InTouchState.t1X != InPreviousTouchState.t1X
+			|| InTouchState.t1Y != InPreviousTouchState.t1Y))
+	{
+		UE_LOG(LogJoyShockLibrary, Log,
+			TEXT("Touchpad: finger 1 down=%d id=%d (%.4f, %.4f) | finger 2 down=%d id=%d (%.4f, %.4f)"),
+			InTouchState.t0Down ? 1 : 0, InTouchState.t0Id, InTouchState.t0X, InTouchState.t0Y,
+			InTouchState.t1Down ? 1 : 0, InTouchState.t1Id, InTouchState.t1X, InTouchState.t1Y);
+	}
+
 	ProcessSingleTouchpadInput(
 		InTouchState.t0Down, InTouchState.t0X, InTouchState.t0Y,
 		InPreviousTouchState.t0Down, InPreviousTouchState.t0X, InPreviousTouchState.t0Y,

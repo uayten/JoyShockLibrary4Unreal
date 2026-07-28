@@ -150,7 +150,30 @@ public:
 private:
 	void HandleConnectionChange(EInputDeviceConnectionState NewState, FPlatformUserId PlatformUser,
 		FInputDeviceId InputDevice);
+	bool DrainPending(float DeltaTime);
 	static FJSL4UControllerInfo DescribeDevice(FPlatformUserId PlatformUser, FInputDeviceId InputDevice);
+
+	// A change as the device mapper reported it, before anything was asked about the device.
+	struct FPendingChange
+	{
+		FPlatformUserId PlatformUser;
+		FInputDeviceId InputDevice;
+		bool bConnected = false;
+	};
+
+	/**
+	 * Changes waiting to be reported, and the ticker that reports them.
+	 *
+	 * The mapper's delegate fires from deep inside this plugin's own connect handling -- it is
+	 * RefreshPlayerAssignments mapping the device to its player that raises it -- which means it arrives on
+	 * the game thread but with the interface's container lock held and its assignment only half applied.
+	 * Broadcasting straight from there hands that state to a Blueprint that will happily call Create Player
+	 * and Spawn Actor inside it, re-entering the plugin mid-update. The rest of the plugin is careful never
+	 * to do this: connects, disconnects and pairing changes are all queued and broadcast once the locks are
+	 * released. This queue is how this node keeps the same promise.
+	 */
+	TArray<FPendingChange> PendingChanges;
+	FTSTicker::FDelegateHandle TickerHandle;
 
 	// The last description of every controller seen connected, keyed by Unreal's input device id. A
 	// disconnect has to be answered from here: by the time it is reported the device is already gone from

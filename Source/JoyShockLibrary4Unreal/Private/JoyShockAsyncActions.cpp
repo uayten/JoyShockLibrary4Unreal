@@ -123,8 +123,8 @@ void UJSL4UWaitForAnyControllerChanges::Activate()
 	IPlatformInputDeviceMapper& DeviceMapper = IPlatformInputDeviceMapper::Get();
 
 	// Bind before replaying, for the same reason Wait For Controller Changes does: a controller arriving
-	// mid-activation must not fall into the gap between the two. Re-announcements are filtered below, so
-	// overlapping with the replay costs nothing.
+	// mid-activation must not fall into the gap between the two. Re-announcements are filtered on the way
+	// out, so overlapping with the replay costs nothing.
 	ConnectionChangeHandle = DeviceMapper.GetOnInputDeviceConnectionChange().AddUObject(
 		this, &UJSL4UWaitForAnyControllerChanges::HandleConnectionChange);
 
@@ -135,6 +135,9 @@ void UJSL4UWaitForAnyControllerChanges::Activate()
 		HandleConnectionChange(EInputDeviceConnectionState::Connected,
 			DeviceMapper.GetUserForInputDevice(InputDevice), InputDevice);
 	}
+
+	TickerHandle = FTSTicker::GetCoreTicker().AddTicker(
+		FTickerDelegate::CreateUObject(this, &UJSL4UWaitForAnyControllerChanges::DrainPending));
 }
 
 void UJSL4UWaitForAnyControllerChanges::SetReadyToDestroy()
@@ -146,6 +149,12 @@ void UJSL4UWaitForAnyControllerChanges::SetReadyToDestroy()
 		IPlatformInputDeviceMapper::Get().GetOnInputDeviceConnectionChange().Remove(ConnectionChangeHandle);
 		ConnectionChangeHandle.Reset();
 	}
+	if (TickerHandle.IsValid())
+	{
+		FTSTicker::GetCoreTicker().RemoveTicker(TickerHandle);
+		TickerHandle.Reset();
+	}
+	PendingChanges.Reset();
 	KnownByInputDeviceId.Reset();
 	Super::SetReadyToDestroy();
 }
@@ -161,34 +170,64 @@ void UJSL4UWaitForAnyControllerChanges::HandleConnectionChange(EInputDeviceConne
 		return;
 	}
 
-	const int32 DeviceKey = InputDevice.GetId();
-
-	if (NewState == EInputDeviceConnectionState::Connected)
+	if (NewState != EInputDeviceConnectionState::Connected
+		&& NewState != EInputDeviceConnectionState::Disconnected)
 	{
-		const FJSL4UControllerInfo Info = DescribeDevice(PlatformUser, InputDevice);
+		return;
+	}
 
-		// Unreal re-announces a device whenever its user mapping is re-asserted, which this plugin does on
-		// every player-slot refresh -- so a second controller connecting would otherwise re-report the
-		// first. Only the first announcement fires; later ones just refresh what is remembered, which is
-		// what On Disconnected will report and is how a slot change is picked up.
-		const bool bAlreadyKnown = KnownByInputDeviceId.Contains(DeviceKey);
-		KnownByInputDeviceId.Add(DeviceKey, Info);
-		if (!bAlreadyKnown)
+	// Recorded and nothing more. Describing the device here would call back into the plugin that is, right
+	// now, part-way through the assignment that raised this delegate -- see PendingChanges.
+	PendingChanges.Add({ PlatformUser, InputDevice, NewState == EInputDeviceConnectionState::Connected });
+}
+
+bool UJSL4UWaitForAnyControllerChanges::DrainPending(float DeltaTime)
+{
+	if (PendingChanges.IsEmpty())
+	{
+		return true;
+	}
+
+	// Swapped out before reporting: a listener is free to connect or remove players, which produces more
+	// changes, and those belong to the next drain rather than to a queue being walked.
+	TArray<FPendingChange> Changes;
+	Swap(Changes, PendingChanges);
+
+	for (const FPendingChange& Change : Changes)
+	{
+		const int32 DeviceKey = Change.InputDevice.GetId();
+
+		if (Change.bConnected)
 		{
-			OnConnected.Broadcast(Info);
+			const FJSL4UControllerInfo Info = DescribeDevice(Change.PlatformUser, Change.InputDevice);
+
+			// Unreal re-announces a device whenever its user mapping is re-asserted, which this plugin does
+			// on every player-slot refresh -- so a second controller connecting would otherwise re-report
+			// the first. Only the first announcement fires; later ones just refresh what is remembered,
+			// which is what On Disconnected will report and is how a slot change is picked up.
+			const bool bAlreadyKnown = KnownByInputDeviceId.Contains(DeviceKey);
+			KnownByInputDeviceId.Add(DeviceKey, Info);
+			if (!bAlreadyKnown)
+			{
+				OnConnected.Broadcast(Info);
+			}
+		}
+		else
+		{
+			// Describing it now would find nothing: a JSL4U controller is gone from the plugin's own list
+			// before this fires. Fall back to describing it only for a device never seen connected.
+			const FJSL4UControllerInfo* Known = KnownByInputDeviceId.Find(DeviceKey);
+			FJSL4UControllerInfo Info = Known != nullptr
+				? *Known
+				: DescribeDevice(Change.PlatformUser, Change.InputDevice);
+			// It is gone, whatever it was when last seen.
+			Info.bIsConnected = false;
+			KnownByInputDeviceId.Remove(DeviceKey);
+			OnDisconnected.Broadcast(Info);
 		}
 	}
-	else if (NewState == EInputDeviceConnectionState::Disconnected)
-	{
-		// Describing it now would find nothing: a JSL4U controller is gone from the plugin's own list
-		// before this fires. Fall back to describing it only for a device that was never seen connected.
-		const FJSL4UControllerInfo* Known = KnownByInputDeviceId.Find(DeviceKey);
-		FJSL4UControllerInfo Info = Known != nullptr ? *Known : DescribeDevice(PlatformUser, InputDevice);
-		// It is gone, whatever it was when last seen.
-		Info.bIsConnected = false;
-		KnownByInputDeviceId.Remove(DeviceKey);
-		OnDisconnected.Broadcast(Info);
-	}
+
+	return true;
 }
 
 // --- Wait For Joy-Con Pairing Changes ----------------------------------------------------------------
