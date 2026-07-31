@@ -124,9 +124,14 @@ void UJoyShockSubsystem::ListenForJoyConPairingChanges(FJSL4UJoyConsPairingSigna
 	}
 }
 
-APlayerController* UJoyShockSubsystem::FindLocalPlayerForController(int32 DeviceId) const
+APlayerController* UJoyShockSubsystem::FindLocalPlayerForController(const FJSL4UControllerInfo& Controller) const
 {
-	const FJSL4UControllerInfo Info = UJoyShockLibrary::JSL4UGetControllerInfo(DeviceId);
+	// Same freshness rule as EnsureLocalPlayerForController: re-read one of ours, trust the payload for a
+	// controller we do not drive, because for that one the payload is the only description there is.
+	const FJSL4UControllerInfo Info = Controller.DeviceId >= 0
+		? UJoyShockLibrary::JSL4UGetControllerInfo(Controller.DeviceId)
+		: Controller;
+
 	const UGameInstance* GameInstance = GetGameInstance();
 	if (!Info.bIsConnected || Info.PlatformUserId < 0 || GameInstance == nullptr)
 	{
@@ -144,14 +149,21 @@ APlayerController* UJoyShockSubsystem::FindLocalPlayerForController(int32 Device
 	return nullptr;
 }
 
-bool UJoyShockSubsystem::EnsureLocalPlayerForController(int32 DeviceId, bool bCreateIfMissing,
-	APlayerController*& PlayerController, int32& LocalPlayerIndex, bool& bWasCreated)
+bool UJoyShockSubsystem::EnsureLocalPlayerForController(const FJSL4UControllerInfo& Controller,
+	bool bCreateIfMissing, APlayerController*& PlayerController, int32& LocalPlayerIndex, bool& bWasCreated)
 {
 	PlayerController = nullptr;
 	LocalPlayerIndex = INDEX_NONE;
 	bWasCreated = false;
 
-	const FJSL4UControllerInfo Info = UJoyShockLibrary::JSL4UGetControllerInfo(DeviceId);
+	// For one of ours, re-read the live description instead of trusting what was handed in: a caller can
+	// be holding an info from an earlier event, and the platform user is exactly the field that moves
+	// underneath it. For a controller we do not drive there is nothing to re-read -- the payload from
+	// Wait For Any Controller Changes is the only description of it that exists.
+	const FJSL4UControllerInfo Info = Controller.DeviceId >= 0
+		? UJoyShockLibrary::JSL4UGetControllerInfo(Controller.DeviceId)
+		: Controller;
+
 	UGameInstance* GameInstance = GetGameInstance();
 	if (!Info.bIsConnected || Info.PlatformUserId < 0 || GameInstance == nullptr)
 	{
@@ -179,7 +191,7 @@ bool UJoyShockSubsystem::EnsureLocalPlayerForController(int32 DeviceId, bool bCr
 		{
 			UE_LOG(LogJoyShockLibrary, Warning,
 				TEXT("EnsureLocalPlayerForController failed for device %d / platform user %d: %s"),
-				DeviceId, Info.PlatformUserId, *Error);
+				Info.DeviceId, Info.PlatformUserId, *Error);
 			return false;
 		}
 		bWasCreated = true;
@@ -193,7 +205,14 @@ bool UJoyShockSubsystem::EnsureLocalPlayerForController(int32 DeviceId, bool bCr
 
 	// CreateLocalPlayer can remap an existing FInputDeviceId while synthesising its legacy controller id.
 	// Assigning through the interface immediately reconciles every JoyShock device with the mapper again.
-	if (!UJoyShockLibrary::JSL4UAssignControllerToPlayerIndex(DeviceId, LocalPlayerIndex))
+	//
+	// Only ours needs this, and only ours may have it done to it. The local player above was found BY the
+	// controller's platform user, so a controller we do not drive is already sitting on exactly the user
+	// this would map it to -- and LocalPlayerIndex is an index into the local-player array, which is not
+	// the same number as a platform user index the moment those two lists diverge. Re-mapping a foreign
+	// device from that number is a no-op at best and moves it off its own player at worst. Skipping here
+	// rather than at the call site is what lets one Blueprint path seat every controller.
+	if (Info.DeviceId >= 0 && !UJoyShockLibrary::JSL4UAssignControllerToPlayerIndex(Info, LocalPlayerIndex))
 	{
 		return false;
 	}

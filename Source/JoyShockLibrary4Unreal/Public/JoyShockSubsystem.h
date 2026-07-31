@@ -110,19 +110,28 @@ public:
 	void ListenForJoyConPairingChanges(FJSL4UJoyConsPairingSignature OnJoined,
 		FJSL4UJoyConsPairingSignature OnSeparated);
 
-	// Finds the local player whose native platform user owns this JoyShock controller.
+	// Finds the local player whose native platform user owns this controller. Takes the whole description
+	// for the same reason its Ensure counterpart does: the answer comes from the Platform User, which every
+	// controller Unreal accepts has, so this reads an Xbox pad as readily as a DualSense.
 	UFUNCTION(BlueprintPure, Category = "JoyShock Library|Local Multiplayer",
-		meta = (ToolTip = "Returns the Player Controller whose Local Player owns this controller's native Platform User, or None when no matching Local Player exists."))
-	APlayerController* FindLocalPlayerForController(int32 DeviceId) const;
+		meta = (ToolTip = "Returns the Player Controller whose Local Player owns this controller's native Platform User, or None when no matching Local Player exists. Works for every controller Unreal accepts."))
+	APlayerController* FindLocalPlayerForController(const FJSL4UControllerInfo& Controller) const;
 
 	/**
 	 * Finds that local player, or creates it with Unreal's FPlatformUserId overload when requested. The
 	 * controller is then assigned back to the resulting local-player index, repairing mapper changes made
 	 * by Create Local Player. This does not spawn or possess a Pawn and does not add mapping contexts.
+	 *
+	 * Takes the whole controller description rather than a Device Id, and that is the point: a player is
+	 * found by Platform User, which every controller Unreal accepts has, while only the ones this plugin
+	 * drives have a Device Id. Feeding this the payload from Wait For Any Controller Changes therefore
+	 * seats an Xbox pad and a DualSense through the same node, with no branch on which kind arrived -- the
+	 * assignment step that only means something for ours is skipped from in here, where the caller cannot
+	 * forget it. Passing a Device Id was what made a game write one path per controller family.
 	 */
 	UFUNCTION(BlueprintCallable, Category = "JoyShock Library|Local Multiplayer",
-		meta = (ExpandBoolAsExecs = "ReturnValue", CPP_Default_bCreateIfMissing = "true", ToolTip = "Finds the Local Player for this controller's Platform User, optionally creates it, then reconciles controller assignment. It does not spawn a Pawn or add an Input Mapping Context."))
-	bool EnsureLocalPlayerForController(int32 DeviceId, bool bCreateIfMissing,
+		meta = (ExpandBoolAsExecs = "ReturnValue", CPP_Default_bCreateIfMissing = "true", ToolTip = "Finds the Local Player for this controller's Platform User, optionally creates it, then reconciles controller assignment. Works for every controller Unreal accepts, including XInput pads this plugin does not drive. It does not spawn a Pawn or add an Input Mapping Context."))
+	bool EnsureLocalPlayerForController(const FJSL4UControllerInfo& Controller, bool bCreateIfMissing,
 		APlayerController*& PlayerController, int32& LocalPlayerIndex, bool& bWasCreated);
 
 	// Stops rumble on every connected controller. Called automatically when the game shuts down -- rumble

@@ -637,6 +637,34 @@ public:
 		meta = (DisplayName = "JSL4U Get Connected Controllers", ToolTip = "Returns every connected JoyShock controller with its plugin and Unreal device identities, model, assignment and current settings."))
 	static TArray<FJSL4UControllerInfo> JSL4UGetConnectedControllers();
 
+	/**
+	 * Returns every controller Unreal accepts, ours and everyone else's, as one list.
+	 *
+	 * The polling counterpart to Wait For Any Controller Changes, and it exists because that node used to
+	 * be the only way to see a controller this plugin does not drive. A game that wanted the current roster
+	 * at any other moment -- opening a pause menu, rebuilding a player-select screen -- got a list with the
+	 * Xbox pads missing and had to keep its own tally from the event to fill the gap. This is that tally,
+	 * asked for directly.
+	 *
+	 * Ours come first, sorted by device id, so the JSL4U block of the list matches Get Connected
+	 * Controllers exactly; the rest follow in the order Unreal reports them. The keyboard and mouse are
+	 * left out, for the same reason the event node leaves them out: they are connected from the first frame
+	 * and are not a player joining.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "JoyShock Library|Controllers",
+		meta = (DisplayName = "JSL4U Get All Connected Controllers", Keywords = "xinput xbox any every gamepad roster list joyshock", ToolTip = "Returns every controller Unreal accepts -- this plugin's and the XInput pads it does not drive -- in one list. Check Device Id (-1 means this plugin cannot address it) or the capability flags before using controller-specific nodes."))
+	static TArray<FJSL4UControllerInfo> JSL4UGetAllConnectedControllers();
+
+	/**
+	 * Describes a controller this plugin does not drive, from what Unreal knows about any input device.
+	 *
+	 * C++ only: FInputDeviceId and FPlatformUserId are not Blueprint types, which is the whole reason the
+	 * identities in FJSL4UControllerInfo are integers. Shared so the polling query and the event node
+	 * cannot drift into describing the same pad two different ways.
+	 */
+	static FJSL4UControllerInfo JSL4UDescribeUndrivenDevice(FPlatformUserId PlatformUser,
+		FInputDeviceId InputDevice);
+
 	// True for controller types that can be joined into a pair -- currently the left and right Joy-Cons.
 	// This is the single source of truth for "can this be joined": JSL4UJoinJoyCons validates with it too.
 	UFUNCTION(BlueprintPure, Category = "JoyShock Library|Joy-Con Pairing",
@@ -770,22 +798,28 @@ public:
 	 * pair. The assignment lasts as long as the controller stays connected -- on reconnect it is a new
 	 * controller and gets a slot automatically again.
 	 *
-	 * @param DeviceId     The controller to assign (see JSL4UGetConnectedControllers).
+	 * Takes the whole controller description so it can move an XInput pad too: one this plugin drives goes
+	 * through the plugin's own slot table, one it does not is remapped through Unreal's input device
+	 * mapper. Both end up on the same slot, and a game does not need to know which kind it is holding.
+	 *
+	 * @param Controller   The controller to assign (from Get All Connected Controllers, or the payload of
+	 *                     any of the Wait For ... Changes nodes).
 	 * @param PlayerIndex  The player slot to put it on, counting from 0. Pass -1 to hand the controller
-	 *                     back to automatic assignment.
-	 * @return False if DeviceId is not a connected controller.
+	 *                     back to automatic assignment -- for a pad this plugin does not drive that is the
+	 *                     unpaired user, which is Unreal's own way of saying the same thing.
+	 * @return False if the controller is not connected.
 	 */
 	UFUNCTION(BlueprintCallable, Category = "JoyShock Library|Controller Assignment",
-		meta = (DisplayName = "JSL4U Assign Controller To Player Index", ToolTip = "Assigns this controller to a zero-based player slot. Pass -1 to restore automatic assignment. Joined Joy-Cons move together."))
-	static bool JSL4UAssignControllerToPlayerIndex(int32 DeviceId, int32 PlayerIndex);
+		meta = (DisplayName = "JSL4U Assign Controller To Player Index", ToolTip = "Assigns this controller to a zero-based player slot. Works for XInput pads too. Pass -1 to restore automatic assignment. Joined Joy-Cons move together."))
+	static bool JSL4UAssignControllerToPlayerIndex(const FJSL4UControllerInfo& Controller, int32 PlayerIndex);
 
 	// Assigns a controller to the player behind a PlayerController -- the setter counterpart of
 	// JSL4UGetControllersAssignedToPlayer, and the one-node answer to "make this controller drive this
 	// player". Same caveat as the getter: do NOT build this out of "Get Player Controller ID", which is the
 	// legacy controller id rather than the platform user index slots are assigned from.
 	UFUNCTION(BlueprintCallable, Category = "JoyShock Library|Controller Assignment",
-		meta = (DisplayName = "JSL4U Assign Controller To Player", DefaultToSelf = "PlayerController", ToolTip = "Assigns this controller to the Local Player owned by Player Controller. Defaults to Self in a PlayerController Blueprint."))
-	static bool JSL4UAssignControllerToPlayer(int32 DeviceId, APlayerController* PlayerController);
+		meta = (DisplayName = "JSL4U Assign Controller To Player", DefaultToSelf = "PlayerController", ToolTip = "Assigns this controller to the Local Player owned by Player Controller. Works for XInput pads too. Defaults to Self in a PlayerController Blueprint."))
+	static bool JSL4UAssignControllerToPlayer(const FJSL4UControllerInfo& Controller, APlayerController* PlayerController);
 
 	// The inverse of JSL4UGetAssignedPlayerIndex: every controller currently feeding a player slot. Two entries for
 	// a joined Joy-Con pair (rumble both to rumble "the player"), one for a standalone controller, none if

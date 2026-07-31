@@ -15,6 +15,7 @@
 #include "JoyShockLibrary4Unreal.h"
 #include "JoyShockInterface.h"
 #include "GameFramework/PlayerController.h"
+#include "GameFramework/InputDeviceSubsystem.h"
 #include "GenericPlatform/GenericPlatformInputDeviceMapper.h"
 #include "Engine/Engine.h"
 #include "Engine/GameViewportClient.h"
@@ -1376,8 +1377,15 @@ static FJSL4UControllerInfo JSL4UMakeControllerInfo(int32 DeviceId, const FJSLSe
 		Info.BatteryPercent = jc->battery_percent.load();
 	}
 	Info.Color = FColor(Red, Green, Blue);
-	Info.bHasMotionSensors = Info.ControllerType != EJSL4UControllerType::Undefined;
-	Info.bHasRumble = Info.ControllerType != EJSL4UControllerType::Undefined;
+	// Every family this plugin drives has both; Undefined means one it drives but could not identify, and
+	// there is nothing to promise about a controller we cannot name. XInputController is excluded
+	// explicitly even though nothing built here can be one: this builder is for controllers we drive, and
+	// the day something routes a foreign device through it, "not Undefined" would quietly have an Xbox pad
+	// claiming a gyroscope it does not have.
+	const bool bIsDrivenFamily = Info.ControllerType != EJSL4UControllerType::Undefined
+		&& Info.ControllerType != EJSL4UControllerType::XInputController;
+	Info.bHasMotionSensors = bIsDrivenFamily;
+	Info.bHasRumble = bIsDrivenFamily;
 	Info.bHasRgbLight = Info.ControllerType == EJSL4UControllerType::DualShock4
 		|| Info.ControllerType == EJSL4UControllerType::DualSense;
 	Info.bHasTouchpad = Info.ControllerType == EJSL4UControllerType::DualShock4
@@ -1438,6 +1446,93 @@ TArray<FJSL4UControllerInfo> UJoyShockLibrary::JSL4UGetConnectedControllers()
 	{
 		JSL4UFillPlayerFields(Info, Interface);
 	}
+	return Result;
+}
+
+FJSL4UControllerInfo UJoyShockLibrary::JSL4UDescribeUndrivenDevice(FPlatformUserId PlatformUser,
+	FInputDeviceId InputDevice)
+{
+	// Fill in what Unreal knows about any input device and leave the rest at its defaults, which is what
+	// bIsJoyShockController staying false tells a Blueprint to expect. Device Id is explicitly -1 rather
+	// than the field's default of 0, so a controller this plugin cannot address can never be mistaken for
+	// its device 0 -- and that -1 is the test for "can I call the controller-specific nodes on this".
+	FJSL4UControllerInfo Info;
+	Info.bIsJoyShockController = false;
+	Info.DeviceId = INDEX_NONE;
+	Info.InputDeviceId = InputDevice.GetId();
+
+	// Connection Id is the one identity here no JSL4U call consumes, so unlike Device Id it can carry a
+	// real value for a controller this plugin does not drive -- and it has to. Left at its default of 0,
+	// every XInput pad shared one key: a second one collided with the first in any map keyed by it, and a
+	// disconnect removed whichever entry sat on 0. The demo's controller mirror keys exactly this way.
+	//
+	// Negative, derived from Unreal's device id: the interface counts Connection Ids up from 1 (see
+	// NextConnectionId in JoyShockInterface), so the two sources share a map without ever colliding.
+	// Deriving beats counting because every caller then describes a pad identically -- a private counter
+	// would make a disconnect match a value some other caller invented. The cost is that Unreal reuses a
+	// device id once a pad leaves, so this is unique among connected controllers rather than unique
+	// forever: good for keying a live map, not for storing on disk.
+	Info.ConnectionId = -(static_cast<int64>(Info.InputDeviceId) + 1);
+
+	Info.PlatformUserId = PlatformUser.GetInternalId();
+	Info.PlayerIndex = IPlatformInputDeviceMapper::Get().GetUserIndexForPlatformUser(PlatformUser);
+	Info.ControllerType = EJSL4UControllerType::XInputController;
+	Info.bIsConnected = true;
+
+	// The capability flags describe the HARDWARE, not what this plugin can drive -- "can I drive it" is
+	// what Device Id -1 already says. An XInput pad has rumble motors and a game should offer the setting
+	// for it; that rumble is reached through Unreal's own force feedback, which drives our controllers and
+	// this one from the same authored effect. Reporting false here made a game hide its vibration options
+	// from the one pad every player owns. Motion, touchpad, lights and the player indicator stay false
+	// because the hardware genuinely lacks them.
+	Info.bHasRumble = true;
+
+	if (const UInputDeviceSubsystem* InputDevices = UInputDeviceSubsystem::Get())
+	{
+		Info.HardwareDeviceIdentifier =
+			InputDevices->GetInputDeviceHardwareIdentifier(InputDevice).HardwareDeviceIdentifier;
+	}
+
+	return Info;
+}
+
+TArray<FJSL4UControllerInfo> UJoyShockLibrary::JSL4UGetAllConnectedControllers()
+{
+	// Ours first and already sorted by device id, so the JSL4U block of this list is byte-for-byte the
+	// answer Get Connected Controllers gives. Anything a game did with that list keeps working when it
+	// switches to this one.
+	TArray<FJSL4UControllerInfo> Result = JSL4UGetConnectedControllers();
+
+	IPlatformInputDeviceMapper& DeviceMapper = IPlatformInputDeviceMapper::Get();
+	const FInputDeviceId DefaultDevice = DeviceMapper.GetDefaultInputDevice();
+
+	TArray<FInputDeviceId> ConnectedDevices;
+	DeviceMapper.GetAllConnectedInputDevices(ConnectedDevices);
+	for (const FInputDeviceId& InputDevice : ConnectedDevices)
+	{
+		// The keyboard and mouse share one device that is connected from the first frame of every game.
+		// Wait For Any Controller Changes leaves it out for that reason and this has to agree with it --
+		// a roster that disagrees with the event that built it is worse than either alone.
+		if (InputDevice == DefaultDevice)
+		{
+			continue;
+		}
+
+		// Ours are already in, described by the plugin itself. Matching on Unreal's device id rather than
+		// on the hardware name means a controller family the plugin gains later needs no change here.
+		const bool bAlreadyListed = Result.ContainsByPredicate(
+			[&InputDevice](const FJSL4UControllerInfo& Listed)
+			{
+				return Listed.InputDeviceId == InputDevice.GetId();
+			});
+		if (bAlreadyListed)
+		{
+			continue;
+		}
+
+		Result.Add(JSL4UDescribeUndrivenDevice(DeviceMapper.GetUserForInputDevice(InputDevice), InputDevice));
+	}
+
 	return Result;
 }
 
@@ -1590,8 +1685,49 @@ int32 UJoyShockLibrary::JSL4UGetAssignedPlayerIndex(int32 DeviceId)
 	return Interface != nullptr ? Interface->GetPlayerIndexForDevice(DeviceId) : INDEX_NONE;
 }
 
-bool UJoyShockLibrary::JSL4UAssignControllerToPlayerIndex(int32 DeviceId, int32 PlayerIndex)
+bool UJoyShockLibrary::JSL4UAssignControllerToPlayerIndex(const FJSL4UControllerInfo& Controller, int32 PlayerIndex)
 {
+	const int32 DeviceId = Controller.DeviceId;
+
+	// A controller this plugin does not drive has no slot in the plugin's table, and does not need one: the
+	// engine decides which player an input device feeds by which platform user it is mapped to, so moving
+	// it means remapping it there. Doing that here rather than making the caller find out which kind it is
+	// holding is the whole point of taking the description instead of a device id.
+	if (DeviceId < 0)
+	{
+		if (Controller.InputDeviceId < 0)
+		{
+			UE_LOG(LogJoyShockLibrary, Warning,
+				TEXT("JSL4UAssignControllerToPlayerIndex: this controller has neither a device id nor an Unreal ")
+				TEXT("input device id, so there is nothing to assign. Pass a controller from Get All Connected ")
+				TEXT("Controllers or from one of the Wait For ... Changes nodes."));
+			return false;
+		}
+
+		IPlatformInputDeviceMapper& DeviceMapper = IPlatformInputDeviceMapper::Get();
+		const FInputDeviceId InputDevice = FInputDeviceId::CreateFromInternalId(Controller.InputDeviceId);
+
+		// -1 means "back to automatic" for our devices. Unreal spells the same idea as the unpaired user,
+		// so the two halves of this function agree on what -1 does rather than one of them refusing it.
+		const FPlatformUserId TargetUser = PlayerIndex < 0
+			? DeviceMapper.GetUserForUnpairedInputDevices()
+			: DeviceMapper.GetPlatformUserForUserIndex(PlayerIndex);
+
+		if (!TargetUser.IsValid())
+		{
+			UE_LOG(LogJoyShockLibrary, Warning,
+				TEXT("JSL4UAssignControllerToPlayerIndex: player %d has no platform user, so input device %d ")
+				TEXT("was not assigned."), PlayerIndex, Controller.InputDeviceId);
+			return false;
+		}
+
+		DeviceMapper.Internal_MapInputDeviceToUser(InputDevice, TargetUser, EInputDeviceConnectionState::Connected);
+		UE_LOG(LogJoyShockLibrary, Verbose,
+			TEXT("Input device %d is not one of ours; mapped it to platform user %d for player %d."),
+			Controller.InputDeviceId, TargetUser.GetInternalId(), PlayerIndex);
+		return true;
+	}
+
 	FJoyShockInterface* Interface = FJoyShockLibrary4UnrealModule::GetInstance().GetActiveInterface();
 	if (Interface == nullptr)
 	{
@@ -1614,8 +1750,9 @@ bool UJoyShockLibrary::JSL4UAssignControllerToPlayerIndex(int32 DeviceId, int32 
 	return true;
 }
 
-bool UJoyShockLibrary::JSL4UAssignControllerToPlayer(int32 DeviceId, APlayerController* PlayerController)
+bool UJoyShockLibrary::JSL4UAssignControllerToPlayer(const FJSL4UControllerInfo& Controller, APlayerController* PlayerController)
 {
+	const int32 DeviceId = Controller.DeviceId;
 	if (PlayerController == nullptr)
 	{
 		UE_LOG(LogJoyShockLibrary, Warning,
@@ -1646,7 +1783,7 @@ bool UJoyShockLibrary::JSL4UAssignControllerToPlayer(int32 DeviceId, APlayerCont
 		return false;
 	}
 
-	return JSL4UAssignControllerToPlayerIndex(DeviceId, UserIndex);
+	return JSL4UAssignControllerToPlayerIndex(Controller, UserIndex);
 }
 
 TArray<FJSL4UControllerInfo> UJoyShockLibrary::JSL4UGetControllersAssignedToPlayerIndex(int32 PlayerIndex)
