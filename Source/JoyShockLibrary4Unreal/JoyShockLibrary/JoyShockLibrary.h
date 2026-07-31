@@ -480,10 +480,10 @@ struct JOYSHOCKLIBRARY4UNREAL_API FJSL4UControllerInfo // typedef struct JSL_SET
 	 * Every JSL4U node that returns controllers returns only ours, so this is true throughout -- except
 	 * from Wait For Any Controller Changes, which reports every controller Unreal accepts so that "has a
 	 * player joined" can be answered once for all of them. A controller that is not ours fills in only what
-	 * Unreal knows about any device -- Player Index, Input Device Id, Hardware Device Identifier -- carries
-	 * Device Id -1, and reports every capability below as false, because those flags say what THIS PLUGIN
-	 * can do with the controller and the answer there is nothing. Its rumble, if it has any, belongs to
-	 * Unreal's own force feedback.
+	 * Unreal knows about any device -- Player Index, Input Device Id, Hardware Device Identifier, and a
+	 * Connection Id it can be told apart by -- carries Device Id -1, and reports every capability below as
+	 * false, because those flags say what THIS PLUGIN can do with the controller and the answer there is
+	 * nothing. Its rumble, if it has any, belongs to Unreal's own force feedback.
 	 */
 	UPROPERTY(BlueprintReadOnly)
 	bool bIsJoyShockController = false;
@@ -495,6 +495,12 @@ struct JOYSHOCKLIBRARY4UNREAL_API FJSL4UControllerInfo // typedef struct JSL_SET
 
 	// Unique for this connection. Unlike DeviceId, this is never reused when a controller disconnects and
 	// another controller takes its JSL handle. Use this as the key of persistent assignment maps.
+	//
+	// Positive (from 1) for a controller this plugin drives. A controller it does not drive -- everything
+	// arriving through Wait For Any Controller Changes that is not ours -- gets a negative one instead, so
+	// the two sources can key the same map without ever colliding. Those negative ids are unique among
+	// connected controllers but are reused once the pad leaves, so they key a live map rather than survive
+	// a session on disk.
 	UPROPERTY(BlueprintReadOnly)
 	int64 ConnectionId = 0;
 

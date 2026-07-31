@@ -104,6 +104,19 @@ FJSL4UControllerInfo UJSL4UWaitForAnyControllerChanges::DescribeDevice(FPlatform
 	Info.bIsJoyShockController = false;
 	Info.DeviceId = INDEX_NONE;
 	Info.InputDeviceId = UnrealDeviceId;
+
+	// Connection Id is the one identity here no JSL4U call consumes, so unlike Device Id it can carry a
+	// real value for a controller this plugin does not drive -- and it has to. Left at its default of 0,
+	// every XInput pad shared one key: a second one collided with the first in any map keyed by it, and a
+	// disconnect removed whichever entry sat on 0. The demo's controller mirror keys exactly this way.
+	//
+	// Negative, derived from Unreal's device id: the interface counts Connection Ids up from 1 (see
+	// NextConnectionId in JoyShockInterface), so the two sources share a map without ever colliding.
+	// Deriving beats counting because every Wait For Any Controller Changes node then describes a pad
+	// identically -- a per-node counter would make the disconnect match a value another instance invented.
+	// The cost is that Unreal reuses a device id once a pad leaves, so this is unique among connected
+	// controllers rather than unique forever: good for keying a live map, not for storing on disk.
+	Info.ConnectionId = -(static_cast<int64>(UnrealDeviceId) + 1);
 	Info.PlatformUserId = PlatformUser.GetInternalId();
 	Info.PlayerIndex = IPlatformInputDeviceMapper::Get().GetUserIndexForPlatformUser(PlatformUser);
 	Info.ControllerType = EJSL4UControllerType::XInputController;
