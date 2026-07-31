@@ -808,7 +808,11 @@ void FJoyShockInterface::ProcessAnalogInputs(const FJoyShockState& SimpleState,
 				OutLeftX = 0.0f;
 				OutLeftY = 0.0f;
 				OutRightX = NormalizedStickX;
-				OutRightY = NormalizedStickY;
+				// Negated against NormalizedStickY rather than folded into it, because that vector is also
+				// what the horizontal grip above rotates into OutLeftX -- changing it there would send solo
+				// horizontal left/right backwards, which is the trap the note in that branch describes. See
+				// the convention note at the bottom of this lambda for why the sign moved.
+				OutRightY = -NormalizedStickY;
 			}
 			return;
 		}
@@ -817,11 +821,21 @@ void FJoyShockInterface::ProcessAnalogInputs(const FJoyShockState& SimpleState,
 		OutLeftY = State.stickLY;
 		OutRightX = State.stickRX;
 		// The low-level JSL state keeps Sony's normalized convention for direct getters. End-to-end
-		// measurement at the Enhanced Input action, however, shows the DualShock 4 right Y arriving with
-		// the opposite sign from the same physical motion on Unreal's standard Pro Controller path.
-		// Correct only the engine-facing presentation here so Gamepad_Right2D and To World Space have one
+		// measurement at the Enhanced Input action shows the DualShock 4 right Y arriving with the opposite
+		// sign from the same physical motion on a Pro Controller, so the two are still reconciled here.
+		// Correct only the engine-facing presentation so Gamepad_Right2D and To World Space have one
 		// convention across devices without changing JSL getters, motion data, or either left stick.
-		OutRightY = bDualShock4 ? -State.stickRY : State.stickRY;
+		//
+		// Which convention that is was, until now, whatever the Pro Controller happened to report: every
+		// other family was lined up against it. Measured against the engine instead, that was backwards.
+		// Unreal's XInput plugin publishes RightAnalogY straight from XINPUT_GAMEPAD::sThumbRY, which is
+		// positive upwards, so a standard gamepad reads +1 with the right stick pushed up -- and these
+		// controllers were reading -1 there, which is why an Xbox pad's right stick came out inverted
+		// against every controller this plugin drives. Both signs below are flipped from what they were;
+		// the relationship between the families is untouched, only the shared convention moved onto the
+		// engine's. A game that had inverted this axis to compensate should now drop that inversion, and it
+		// will hold for every pad instead of all but one.
+		OutRightY = bDualShock4 ? State.stickRY : -State.stickRY;
 	};
 
 	float LeftX, LeftY, RightX, RightY;
