@@ -72,9 +72,6 @@ public:
 	// joined half dissolves the pair. Vertical mode is available for exceptional games such as Just Dance.
 	bool SetJoyConHorizontal(int32 Handle, bool bHorizontal);
 	bool IsJoyConHorizontal(int32 Handle) const;
-	// Returns the player slot (0, 1, 2, ...) this device's input is delivered to, or INDEX_NONE if
-	// the device isn't connected.
-	int32 GetPlayerIndexForDevice(int32 Handle) const;
 	// Assigns this device's logical controller to a player slot, overriding the slot it was given on
 	// connection. Pass INDEX_NONE to hand it back to automatic assignment. Returns false if the handle is
 	// not a connected controller. Slots may be shared: assigning two controllers to one slot makes both

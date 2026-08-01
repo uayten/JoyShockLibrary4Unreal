@@ -275,10 +275,10 @@ Players** reads it back.
 Assignment nodes are under **JoyShock Library | Controller Assignment**:
 
 - **JSL4U Set Max Local Players / JSL4U Get Max Local Players** — the ceiling on `Create Player`, above.
-- **JSL4U Get Assigned Player Index** — the player slot a controller's input is delivered to.
-- **JSL4U Assign Controller To Player Index (Device Id, Player Index)** — puts a controller on a chosen player slot. Pass -1 to hand it back to automatic assignment.
-- **JSL4U Assign Controller To Player (Device Id, Player Controller)** — the same thing addressed by **PlayerController** instead of slot number.
-- **JSL4U Get Controllers Assigned To Player** — every controller feeding a player, taking the generic `Controller` type so a Pawn's `Possessed` event plugs straight in. Two entries for a joined pair.
+- Reading the slot back has no node of its own: every controller info already carries **Player Index**, so breaking the struct any node hands you — or **JSL4U Get Controller Info** — answers it, for XInput pads as readily as for ours.
+- **JSL4U Assign Controller To Player Index (Controller, Player Index)** — puts a controller on a chosen player slot. Pass -1 to hand it back to automatic assignment. Works for XInput pads too.
+- **JSL4U Assign Controller To Player (Controller, Player Controller)** — the same thing addressed by **PlayerController** instead of slot number.
+- **JSL4U Get Controllers Assigned To Player** — every controller feeding a player, XInput pads included, taking the generic `Controller` type so a Pawn's `Possessed` event plugs straight in. Two entries for a joined pair.
 - **Ensure Local Player For Controller** (on the JoyShock Subsystem) — the high-level local-multiplayer path: reuse or create the correct Local Player from the controller's native Platform User, return its PlayerController, and reconcile the engine device mapper.
 
 ## Combining Joy-Cons into one player

@@ -1626,18 +1626,6 @@ bool FJoyShockInterface::SetPlayerIndexForDevice(int32 Handle, int32 PlayerIndex
 	return true;
 }
 
-int32 FJoyShockInterface::GetPlayerIndexForDevice(int32 Handle) const
-{
-	FScopeLock ContainerLock(&ControllerContainerLock);
-	const FControllerState* State = ControllerStateByDeviceHandle.Find(Handle);
-	if (State == nullptr || !State->bIsConnected)
-	{
-		return INDEX_NONE;
-	}
-	const int32* Slot = PlayerSlotByPrimary.Find(GetGroupPrimary(Handle));
-	return Slot != nullptr ? *Slot : INDEX_NONE;
-}
-
 bool FJoyShockInterface::SetJoyConHorizontal(int32 Handle, bool bHorizontal)
 {
 	TArray<FJoyConPairingChange> PairingChanges;

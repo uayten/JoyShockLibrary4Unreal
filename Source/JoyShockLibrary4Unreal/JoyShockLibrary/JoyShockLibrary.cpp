@@ -1679,12 +1679,6 @@ int32 UJoyShockLibrary::JSL4UGetMaxLocalPlayers(const UObject* WorldContextObjec
 	return Viewport != nullptr ? Viewport->MaxSplitscreenPlayers : INDEX_NONE;
 }
 
-int32 UJoyShockLibrary::JSL4UGetAssignedPlayerIndex(int32 DeviceId)
-{
-	FJoyShockInterface* Interface = FJoyShockLibrary4UnrealModule::GetInstance().GetActiveInterface();
-	return Interface != nullptr ? Interface->GetPlayerIndexForDevice(DeviceId) : INDEX_NONE;
-}
-
 bool UJoyShockLibrary::JSL4UAssignControllerToPlayerIndex(const FJSL4UControllerInfo& Controller, int32 PlayerIndex)
 {
 	const int32 DeviceId = Controller.DeviceId;
@@ -1788,9 +1782,12 @@ bool UJoyShockLibrary::JSL4UAssignControllerToPlayer(const FJSL4UControllerInfo&
 
 TArray<FJSL4UControllerInfo> UJoyShockLibrary::JSL4UGetControllersAssignedToPlayerIndex(int32 PlayerIndex)
 {
-	// Filtering the full list keeps this on the single-pass path in JSL4UGetConnectedControllers rather
-	// than adding a second way to read the same state.
-	TArray<FJSL4UControllerInfo> Result = JSL4UGetConnectedControllers();
+	// Filtering a listing keeps this on an existing single-pass path rather than adding a second way to read
+	// the same state. It filters the WIDE listing on purpose: a player can be assigned an XInput pad (see
+	// JSL4UAssignControllerToPlayerIndex, which handles them through the device mapper), so answering from
+	// the narrow one made assignment writable but not readable -- the pad went to the player and this node
+	// then reported that player had no controller at all.
+	TArray<FJSL4UControllerInfo> Result = JSL4UGetAllConnectedControllers();
 	Result.RemoveAll([PlayerIndex](const FJSL4UControllerInfo& Info)
 	{
 		return Info.PlayerIndex != PlayerIndex;

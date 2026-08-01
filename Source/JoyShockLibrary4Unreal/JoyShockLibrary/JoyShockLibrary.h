@@ -777,12 +777,6 @@ public:
 		meta = (WorldContext = "WorldContextObject", DisplayName = "JSL4U Get Max Local Players", ToolTip = "Returns how many local players this game may create, or -1 when there is no game viewport."))
 	static int32 JSL4UGetMaxLocalPlayers(const UObject* WorldContextObject);
 
-	// Returns the player slot (0, 1, 2, ...) the given controller's input is delivered to, or -1 if it
-	// isn't connected. Both halves of a joined Joy-Con pair return the same slot. Useful for UI.
-	UFUNCTION(BlueprintPure, Category = "JoyShock Library|Controller Assignment",
-		meta = (DisplayName = "JSL4U Get Assigned Player Index", ToolTip = "Returns the zero-based player slot currently driven by this controller, or -1 when the controller is unavailable."))
-	static int32 JSL4UGetAssignedPlayerIndex(int32 DeviceId);
-
 	/**
 	 * Assigns a controller to a player slot, overriding the slot it was given when it connected.
 	 *
@@ -821,12 +815,16 @@ public:
 		meta = (DisplayName = "JSL4U Assign Controller To Player", DefaultToSelf = "PlayerController", ToolTip = "Assigns this controller to the Local Player owned by Player Controller. Works for XInput pads too. Defaults to Self in a PlayerController Blueprint."))
 	static bool JSL4UAssignControllerToPlayer(const FJSL4UControllerInfo& Controller, APlayerController* PlayerController);
 
-	// The inverse of JSL4UGetAssignedPlayerIndex: every controller currently feeding a player slot. Two entries for
-	// a joined Joy-Con pair (rumble both to rumble "the player"), one for a standalone controller, none if
-	// nothing is assigned to that slot. PlayerIndex is a platform user index -- if you have a
-	// PlayerController, prefer JSL4UGetControllersAssignedToPlayer, which converts it for you.
+	// The inverse of the PlayerIndex a controller reports in its FJSL4UControllerInfo: every controller
+	// currently feeding a player slot. Two entries for a joined Joy-Con pair (rumble both to rumble "the
+	// player"), one for a standalone controller, none if nothing is assigned to that slot. PlayerIndex is a
+	// platform user index -- if you have a PlayerController, prefer JSL4UGetControllersAssignedToPlayer,
+	// which converts it for you.
+	// Answers for every controller Unreal accepts, XInput pads included, so "does this player have a
+	// controller" is one question rather than one per controller family. Check Device Id or the capability
+	// flags on a result before calling a controller-specific node with it.
 	UFUNCTION(BlueprintPure, Category = "JoyShock Library|Controller Assignment",
-		meta = (DisplayName = "JSL4U Get Controllers Assigned To Player Index", ToolTip = "Returns every controller feeding this zero-based player slot. A joined Joy-Con pair returns both halves."))
+		meta = (DisplayName = "JSL4U Get Controllers Assigned To Player Index", ToolTip = "Returns every controller feeding this zero-based player slot, XInput pads included. A joined Joy-Con pair returns both halves."))
 	static TArray<FJSL4UControllerInfo> JSL4UGetControllersAssignedToPlayerIndex(int32 PlayerIndex);
 
 	// The controller(s) of the player behind a Controller -- i.e. of whoever issued the command you
@@ -840,7 +838,7 @@ public:
 	// a different number from the platform user index that player slots are assigned from -- this converts
 	// through the same IPlatformInputDeviceMapper the assignment uses.
 	UFUNCTION(BlueprintPure, Category = "JoyShock Library|Controller Assignment",
-		meta = (DefaultToSelf = "Controller", DisplayName = "JSL4U Get Controllers Assigned To Player", ToolTip = "Returns every controller feeding the Local Player behind this Controller. Accepts the Controller from a Pawn's Possessed event directly; AI controllers return an empty array. Defaults to Self in a Controller Blueprint."))
+		meta = (DefaultToSelf = "Controller", DisplayName = "JSL4U Get Controllers Assigned To Player", ToolTip = "Returns every controller feeding the Local Player behind this Controller, XInput pads included. Accepts the Controller from a Pawn's Possessed event directly; AI controllers return an empty array. Defaults to Self in a Controller Blueprint."))
 	static TArray<FJSL4UControllerInfo> JSL4UGetControllersAssignedToPlayer(AController* Controller);
 
 	/**
@@ -912,33 +910,33 @@ public:
 	static FJoyShockState JslGetSimpleState(int32 deviceId);
 
 	UFUNCTION(BlueprintPure, Category = "JoyShock Library|Input State",
-		meta = (DisplayName = "JSL4U Get Controller State", ToolTip = "Returns the controller's current buttons, sticks and triggers in Unreal-friendly types. Prefer Enhanced Input for gameplay bindings."))
+		meta = (DisplayName = "JSL4U Get Controller State", ToolTip = "Returns one controller's current buttons, sticks and triggers in Unreal-friendly types. Reads that device directly, so it answers before the controller belongs to any player -- which is what a controller-assignment screen needs (\"press a button on the pad you want to be player 2\"). For gameplay, bind Enhanced Input instead: it is per-player, and these same inputs already reach it."))
 	static FJSL4UJoyShockState JSL4UGetControllerState(int32 DeviceId);
 	
 	static FIMUState JslGetIMUState(int32 deviceId);
 
 	UFUNCTION(BlueprintPure, Category = "JoyShock Library|Motion",
-		meta = (DisplayName = "JSL4U Get IMU State", ToolTip = "Returns gyroscope and acceleration values in Unreal axes after applying the selected gyro space."))
+		meta = (DisplayName = "JSL4U Get IMU State", ToolTip = "Returns one controller's gyroscope and acceleration in Unreal axes, after applying the selected gyro space. Reads that device directly, so it answers before the controller belongs to any player -- for assignment screens, calibration UI and diagnostics. For gameplay, this plugin already reports motion to Unreal's motion input, so bind Tilt / Rotation Rate / Gravity / Acceleration in Enhanced Input instead. Returns zeroes for a controller without motion sensors -- check Has Motion Sensors on the controller info."))
 	static FJSL4UIMUState JSL4UGetIMUState(int32 DeviceId);
 
 	UFUNCTION(BlueprintPure, Category = "JoyShock Library|Motion",
-		meta = (DisplayName = "JSL4U Get Raw IMU State", ToolTip = "Returns untransformed gyroscope and acceleration values in Unreal axes, ignoring the selected gyro space."))
+		meta = (DisplayName = "JSL4U Get Raw IMU State", ToolTip = "Returns one controller's untransformed gyroscope and acceleration in Unreal axes, ignoring the selected gyro space. Use Get IMU State unless you specifically need the untransformed reading."))
 	static FJSL4UIMUState JSL4UGetRawIMUState(int32 DeviceId);
 	
 	static FMotionState JslGetMotionState(int32 deviceId);
 
 	UFUNCTION(BlueprintPure, Category = "JoyShock Library|Motion",
-		meta = (DisplayName = "JSL4U Get Motion State", ToolTip = "Returns processed orientation, acceleration and gravity in Unreal coordinates."))
+		meta = (DisplayName = "JSL4U Get Motion State", ToolTip = "Returns one controller's processed orientation, acceleration and gravity in Unreal coordinates. Reads that device directly, so it answers before the controller belongs to any player. For gameplay, bind Enhanced Input's motion inputs instead. Returns zeroes for a controller without motion sensors -- check Has Motion Sensors on the controller info."))
 	static FJSL4UMotionState JSL4UGetMotionState(int32 DeviceId);
 
 	UFUNCTION(BlueprintPure, Category = "JoyShock Library|Motion",
-		meta = (DisplayName = "JSL4U Get Raw Motion State", ToolTip = "Returns the motion processor's untransformed orientation, acceleration and gravity values."))
+		meta = (DisplayName = "JSL4U Get Raw Motion State", ToolTip = "Returns one controller's untransformed orientation, acceleration and gravity from the motion processor. Use Get Motion State unless you specifically need the untransformed reading."))
 	static FJSL4UMotionState JSL4UGetRawMotionState(int32 DeviceId);
 
 	static FTouchState JslGetTouchState(int32 deviceId, bool previous = false);
 
 	UFUNCTION(BlueprintPure, Category = "JoyShock Library|Touchpad",
-		meta = (DisplayName = "JSL4U Get Touch State", ToolTip = "Returns both touch contacts. Enable Previous to read the preceding report instead of the current report."))
+		meta = (DisplayName = "JSL4U Get Touch State", ToolTip = "Returns one controller's two touch contacts. Enable Previous to read the preceding report instead of the current one. Reads that device directly, so it answers before the controller belongs to any player. For gameplay, this plugin already reports the touchpad as gamepad axes, so bind TouchPad 1 / TouchPad 2 in Enhanced Input instead. Returns nothing touched for a controller without a touchpad -- check Has Touchpad on the controller info."))
 	static FJSL4UTouchState JSL4UGetTouchState(int32 DeviceId, bool bPrevious = false);
 
 	// The touchpad's size in its own units (1920 x 943 on the DualShock 4 and DualSense), or zero for a
@@ -955,7 +953,7 @@ public:
 	// get thumbsticks
 
 	UFUNCTION(BlueprintPure, Category = "JoyShock Library|Input State",
-		meta = (DisplayName = "JSL4U Get Left Stick", ToolTip = "Returns the current left-stick position from -1 to 1. Prefer Enhanced Input for gameplay bindings."))
+		meta = (DisplayName = "JSL4U Get Left Stick", ToolTip = "Returns one controller's current left-stick position, from -1 to 1. Reads that device directly, so it answers before the controller belongs to any player -- for assignment screens and diagnostics. For gameplay, bind Enhanced Input instead."))
 	static FVector2D JSL4UGetLeftStick(int32 DeviceId);
 	
 	static float JslGetLeftX(int32 deviceId);
@@ -963,7 +961,7 @@ public:
 	static float JslGetLeftY(int32 deviceId);
 
 	UFUNCTION(BlueprintPure, Category = "JoyShock Library|Input State",
-		meta = (DisplayName = "JSL4U Get Right Stick", ToolTip = "Returns the current right-stick position from -1 to 1. Prefer Enhanced Input for gameplay bindings."))
+		meta = (DisplayName = "JSL4U Get Right Stick", ToolTip = "Returns one controller's current right-stick position, from -1 to 1. Reads that device directly, so it answers before the controller belongs to any player -- for assignment screens and diagnostics. For gameplay, bind Enhanced Input instead."))
 	static FVector2D JSL4UGetRightStick(int32 DeviceId);
 
 	static float JslGetRightX(int32 deviceId);
@@ -1190,7 +1188,7 @@ public:
 	 * @param BigRumble    Low-frequency motor intensity, 0-1.
 	 */
 	UFUNCTION(BlueprintCallable, Category = "JoyShock Library|Output",
-		meta = (DisplayName = "JSL4U Set Controller Rumble", ToolTip = "Directly sets one controller's high-frequency and low-frequency rumble from 0 to 1. Prefer Unreal Force Feedback for player-based authored effects; call with both values at zero to stop."))
+		meta = (DisplayName = "JSL4U Set Controller Rumble", ToolTip = "Sets one controller's high-frequency and low-frequency rumble, from 0 to 1; call with both at zero to stop. Drives that device directly, so it works before the controller belongs to any player -- buzzing a pad on an assignment screen so the player can tell which one they are holding. For authored gameplay effects, use Unreal Force Feedback instead: it is per-player, and it drives this plugin's controllers and XInput pads from the same effect."))
 	static void JSL4USetControllerRumble(int32 DeviceId, float SmallRumble, float BigRumble);
 
 	// The channel Unreal's own force feedback writes to, kept separate from JSL4USetControllerRumble's so the two
