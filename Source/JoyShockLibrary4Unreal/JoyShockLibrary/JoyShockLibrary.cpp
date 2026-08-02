@@ -11,6 +11,7 @@
 #include <atomic>
 #include "GamepadMotion.hpp"
 #include "JoyShock.h"
+#include "Switch2Bluetooth.h"
 #include "InputHelpers.h"
 #include "JoyShockLibrary4Unreal.h"
 #include "JoyShockInterface.h"
@@ -211,10 +212,15 @@ static bool SwitchControllerTransport(JoyShock* jc, const FString& NewPath, bool
 void pollIndividualLoop(JoyShock *jc) {
 	FJoyShockLibrary4UnrealModule& JSL4UModule = FJoyShockLibrary4UnrealModule::GetInstance();
 
-	if (!jc->handle) { return; }
+	// A Bluetooth Switch 2 has no HID handle at all -- its reports arrive as GATT notifications, and
+	// read_input_report blocks on those instead. Only a device with neither transport has nothing to poll.
+	if (!jc->handle && !jc->is_ble()) { return; }
 
-	hid_set_nonblocking(jc->handle, 0);
-	//hid_set_nonblocking(jc->handle, 1); // temporary, to see if it helps. this means we'll have a crazy spin
+	if (jc->handle)
+	{
+		hid_set_nonblocking(jc->handle, 0);
+		//hid_set_nonblocking(jc->handle, 1); // temporary, to see if it helps. this means we'll have a crazy spin
+	}
 
 	int numTimeOuts = 0;
 	int consecutiveReportsWithoutIMU = 0;
@@ -240,12 +246,13 @@ void pollIndividualLoop(JoyShock *jc) {
 	bool bLoggedFirstRead = false;
 
 	// Rumble: this thread is the SOLE writer of rumble packets/commands (JSL4USetControllerRumble only stores the
-	// values). Switch 1 rumble decays shortly after a single 0x10 packet, and the Switch 2 only has a short
-	// one-shot preset, so while active the state is re-sent/retriggered continuously; a change to (0,0)
-	// sends one final stop.
+	// values). Switch 1 rumble decays shortly after a single 0x10 packet, and a Switch 2 packet only carries
+	// ~15ms of waveform, so while active the state is re-sent continuously; a change to (0,0) sends a short
+	// run of silent packets and then stops.
 	int rumbleRefreshCounter = 0;
 	unsigned char lastSentSmallRumble = 0;
 	unsigned char lastSentBigRumble = 0;
+	int32 sw2SilentPacketsSent = 0;
 	auto lastSw2RumbleTime = std::chrono::steady_clock::now();
 	auto lastSw2InitRetryTime = std::chrono::steady_clock::now();
 	// Which JSL4USetHomeLight call this thread has already acted on. Generation 0 is "no call yet", and the
@@ -299,6 +306,7 @@ void pollIndividualLoop(JoyShock *jc) {
 					// to a handle that is now closed.
 					lastSentSmallRumble = 0;
 					lastSentBigRumble = 0;
+					sw2SilentPacketsSent = 0;
 					lastSentPlayerNumber = -1;
 					bHomeLightCleared = false;
 					// Generation 0 means "nothing sent on this handle yet", so a game-owned light is
@@ -320,7 +328,7 @@ void pollIndividualLoop(JoyShock *jc) {
 
 		// 10 seconds of no signal means forget this controller
 		int reuseCounter = jc->reuse_counter;
-		int res = hid_read_timeout(jc->handle, buf, 64, 1000);
+		int res = jc->read_input_report(buf, 64, 1000);
 
 		if (res == -1)
 		{
@@ -354,6 +362,7 @@ void pollIndividualLoop(JoyShock *jc) {
 						jc->intHandle, *jc->name);
 					lastSentSmallRumble = 0;
 					lastSentBigRumble = 0;
+					sw2SilentPacketsSent = 0;
 					lastSentPlayerNumber = -1;
 					bHomeLightCleared = false;
 					lastSentHomeLightGeneration = 0;
@@ -437,7 +446,7 @@ void pollIndividualLoop(JoyShock *jc) {
 				if (std::chrono::duration_cast<std::chrono::milliseconds>(now - lastSw2InitRetryTime).count() >= 2000)
 				{
 					lastSw2InitRetryTime = now;
-					if (jc->init_switch2())
+					if (jc->is_ble() ? jc->init_switch2_bluetooth() : jc->init_switch2())
 					{
 						UE_LOG(LogJoyShockLibrary, Log,
 							TEXT("SW2: acquired the released command interface and completed calibrated init."));
@@ -560,12 +569,19 @@ void pollIndividualLoop(JoyShock *jc) {
 				}
 			}
 
-			// Switch 2 rumble: its vibration preset is a short one-shot, so to behave like the other
-			// controllers (vibrate until (0,0)) it is retriggered continuously while the requested values
-			// are non-zero. Time-based (not report-count) because the Switch 2 streams reports much faster
-			// than the Switch 1's 66Hz.
+			// Switch 2 rumble: each packet is three 5-byte frames, ~5ms of waveform each, so the controller
+			// runs out of rumble to play 15ms after one arrives. Sending on that cadence is what makes a
+			// held rumble continuous. Time-based (not report-count) because the Switch 2 streams reports
+			// much faster than the Switch 1's 66Hz.
+			//
+			// Going silent takes a few zero-amplitude packets -- enough to overwrite whatever the actuator
+			// still had queued -- and after those the wire is left alone entirely rather than carrying a
+			// steady stream of silence.
 			if (jc->is_switch2_pro)
 			{
+				constexpr int32 Sw2RumbleIntervalMs = 15;
+				constexpr int32 Sw2RumbleSilentPackets = 3;
+
 				jc->modifying_lock.Lock();
 				const unsigned char wantedSmallRumble = jc->get_wanted_small_rumble();
 				const unsigned char wantedBigRumble = jc->get_wanted_big_rumble();
@@ -573,14 +589,22 @@ void pollIndividualLoop(JoyShock *jc) {
 
 				const bool bRumbleActive = wantedSmallRumble != 0 || wantedBigRumble != 0;
 				const bool bRumbleChanged = wantedSmallRumble != lastSentSmallRumble || wantedBigRumble != lastSentBigRumble;
+				if (bRumbleChanged)
+				{
+					sw2SilentPacketsSent = 0;
+				}
+
+				const bool bKeepSending = bRumbleActive || sw2SilentPacketsSent < Sw2RumbleSilentPackets;
 				const auto now = std::chrono::steady_clock::now();
-				if (bRumbleChanged
-					|| (bRumbleActive && std::chrono::duration_cast<std::chrono::milliseconds>(now - lastSw2RumbleTime).count() >= 70))
+				if (bKeepSending
+					&& (bRumbleChanged
+						|| std::chrono::duration_cast<std::chrono::milliseconds>(now - lastSw2RumbleTime).count() >= Sw2RumbleIntervalMs))
 				{
 					jc->set_sw2_rumble(wantedSmallRumble, wantedBigRumble);
 					lastSentSmallRumble = wantedSmallRumble;
 					lastSentBigRumble = wantedBigRumble;
 					lastSw2RumbleTime = now;
+					sw2SilentPacketsSent = bRumbleActive ? 0 : sw2SilentPacketsSent + 1;
 				}
 
 				// HID input is visible to both the editor and its multi-process Standalone child, but
@@ -1096,6 +1120,76 @@ int32 UJoyShockLibrary::JslConnectDevices()
 	}
 	hid_free_enumeration(devs);
 
+	// Phase 2b: the Switch 2 controllers that are on the radio rather than on a cable. hid_enumerate cannot
+	// see them -- they have no Bluetooth HID profile, so Windows never makes them a HID device -- so they
+	// come from a BLE advertisement scan instead. Connecting is slow (it negotiates a link and reads the
+	// GATT table), which is exactly why this belongs here in the lock-free phase.
+	if (Switch2Ble::IsSupported())
+	{
+		// Scanning is what makes a controller appear when its SYNC button is held, so it runs from the
+		// first enumeration onward rather than being something a game has to ask for.
+		Switch2Ble::StartScan();
+
+		TArray<FSwitch2BleAdvertisement> Discovered;
+		Switch2Ble::DrainDiscovered(Discovered);
+
+		for (const FSwitch2BleAdvertisement& Advertisement : Discovered)
+		{
+			// Only the Pro Controller 2 for now. The Joy-Con 2 pair advertises the same service and would
+			// connect, but the Switch 2 report parser is written around the Pro's button layout, so taking
+			// one would produce a controller whose buttons are all wrong -- worse than not taking it.
+			if (Advertisement.ProductId != PRO_CONTROLLER_2)
+			{
+				UE_LOG(LogJoyShockLibrary, Log,
+					TEXT("\tignoring Bluetooth controller %012llx (product %04x): only the Pro Controller 2 is supported over Bluetooth\n"),
+					Advertisement.Address, Advertisement.ProductId);
+				continue;
+			}
+
+			const FString BlePath = FString::Printf(TEXT("ble://%012llx"), Advertisement.Address);
+			if (TrackedPaths.Contains(BlePath))
+			{
+				continue;
+			}
+
+			const FString DeviceMac = FString::Printf(TEXT("%012llx"), Advertisement.Address);
+			if (TrackedByMac.Contains(DeviceMac) || NewMacsThisPass.Contains(DeviceMac))
+			{
+				// The same physical controller is already here on its cable. The wired connection wins:
+				// it is lower latency, and taking the radio link as well would give one controller two
+				// device ids and two player slots.
+				continue;
+			}
+
+			FSwitch2BleConnection* Connection = Switch2Ble::Connect(Advertisement.Address);
+			if (Connection == nullptr)
+			{
+				continue;
+			}
+
+			UE_LOG(LogJoyShockLibrary, Log, TEXT("\tcreating new JoyShock for Bluetooth controller %s\n"), *BlePath);
+			JoyShock* jc = new JoyShock(Connection, Advertisement.ProductId, Advertisement.Address,
+				GetUniqueHandle(DeviceMac), BlePath);
+			jc->handle_identity = DeviceMac;
+
+			// Bond an unpaired controller to this PC so the player does not have to hold SYNC again next
+			// session -- a controller advertising with no host recorded is one that has just been put into
+			// pairing mode, and pairing it is what they asked for by doing that.
+			if (Advertisement.ReconnectMac == 0)
+			{
+				const uint64 HostAddress = Switch2Ble::GetHostAddress();
+				if (HostAddress != 0 && Switch2Ble::Bond(Connection, HostAddress))
+				{
+					UE_LOG(LogJoyShockLibrary, Log,
+						TEXT("\tpaired %s to this PC; it will reconnect on a button press from now on\n"), *BlePath);
+				}
+			}
+
+			NewDevices.Add(jc);
+			NewMacsThisPass.Add(DeviceMac);
+		}
+	}
+
 	// Phase 3: merge under the lock, re-validating every decision against the live maps.
 	JSL4UModule._connectedLock.lock();
 
@@ -1189,8 +1283,14 @@ int32 UJoyShockLibrary::JslConnectDevices()
 		}
 
 		if (jc->is_switch2_pro) {
-			// Send the Switch 2 USB init sequence (captured from Steam) that makes it start streaming.
-			jc->init_switch2();
+			// Send the Switch 2 init sequence that makes it start streaming: over the cable the one Steam
+			// uses, over the radio the same commands on the GATT command channel.
+			if (jc->is_ble()) {
+				jc->init_switch2_bluetooth();
+			}
+			else {
+				jc->init_switch2();
+			}
 		}
 		else if (jc->controller_type == ControllerType::s_ds4) {
 			if (!jc->is_usb) {

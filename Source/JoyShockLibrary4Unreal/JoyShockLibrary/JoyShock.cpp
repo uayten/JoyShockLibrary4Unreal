@@ -2,6 +2,7 @@
 
 #include "JoyShock.h"
 #include "JoyShockLibrary.h"
+#include "Switch2Bluetooth.h"
 #include "GamepadMotion.hpp"
 #include <bitset>
 #include "hidapi.h"
@@ -185,9 +186,77 @@ JoyShock::JoyShock(struct hid_device_info* dev, hid_device* inHandle, int unique
 		| GamepadMotionHelpers::CalibrationMode::Stillness);
 }
 
+JoyShock::JoyShock(FSwitch2BleConnection* inConnection, uint16 productId, uint64 address, int32 uniqueHandle,
+	const FString& inPath) {
+	this->handle = nullptr;
+	this->ble_connection = inConnection;
+	this->intHandle = uniqueHandle;
+	this->path = inPath;
+
+	// Bluetooth, so not on a cable -- but everything else about the Switch 2 protocol is the same either
+	// way, which is what lets the parser, the init sequence and rumble be shared with the USB path.
+	this->is_usb = false;
+	this->is_switch2_pro = true;
+	this->controller_type = ControllerType::n_switch;
+
+	switch (productId)
+	{
+	case SWITCH2_JOYCON_L:
+		this->name = TEXT("Joy-Con 2 (L)");
+		this->left_right = 1;
+		break;
+	case SWITCH2_JOYCON_R:
+		this->name = TEXT("Joy-Con 2 (R)");
+		this->left_right = 2;
+		break;
+	default:
+		this->name = TEXT("Pro Controller 2");
+		this->left_right = 3;
+		break;
+	}
+
+	// A BLE peripheral has no HID serial number string, but it does have an address, and that address is
+	// what identifies the physical controller here -- the same role the MAC read out of a HID device plays.
+	const FString AddressText = FString::Printf(TEXT("%012llx"), address);
+	this->serial = _wcsdup(*AddressText);
+	this->mac_address = AddressText;
+
+	reset_continuous_calibration();
+
+	motion.SetCalibrationMode(GamepadMotionHelpers::CalibrationMode::SensorFusion
+		| GamepadMotionHelpers::CalibrationMode::Stillness);
+}
+
+int32 JoyShock::read_input_report(unsigned char* buf, int32 bufLength, int32 timeoutMs) {
+	if (ble_connection != nullptr)
+	{
+		// A GATT notification carries the report body alone, while the same report over USB arrives behind
+		// a HID report-id byte -- every field in it sits one byte later. Restoring that byte here is what
+		// lets one parser read both transports, instead of a second set of offsets that could drift from
+		// the first.
+		if (bufLength < 2)
+		{
+			return 0;
+		}
+		const int32 length = Switch2Ble::ReadInputReport(ble_connection, buf + 1, bufLength - 1, timeoutMs);
+		if (length <= 0)
+		{
+			return length;
+		}
+		buf[0] = 0x05;
+		return length + 1;
+	}
+	return hid_read_timeout(this->handle, buf, bufLength, timeoutMs);
+}
+
 JoyShock::~JoyShock() {
 	if (handle != nullptr) {
 		hid_close(handle);
+	}
+
+	if (ble_connection != nullptr) {
+		Switch2Ble::Disconnect(ble_connection);
+		ble_connection = nullptr;
 	}
 
 #if PLATFORM_WINDOWS
@@ -1010,6 +1079,144 @@ void JoyShock::release_sw2_command_interface_if_idle() {
 #endif
 }
 
+bool JoyShock::read_sw2_ble_memory(uint32 address, int32 length, TArray<uint8>& outData) {
+	// Memory read, command 0x02 subcommand 0x04: [length][0x7e][0][0][address, little-endian]. The reply
+	// echoes both back before the data, which is worth checking -- a mismatched echo means this is the
+	// answer to some earlier read, and parsing it as calibration would centre the sticks somewhere wrong.
+	if (length <= 0 || length > 0x4F)
+	{
+		return false;
+	}
+
+	unsigned char payload[8];
+	memset(payload, 0, sizeof(payload));
+	payload[0] = static_cast<unsigned char>(length);
+	payload[1] = 0x7e;
+	payload[4] = address & 0xFF;
+	payload[5] = (address >> 8) & 0xFF;
+	payload[6] = (address >> 16) & 0xFF;
+	payload[7] = (address >> 24) & 0xFF;
+
+	TArray<uint8> Response;
+	if (!Switch2Ble::SendCommand(ble_connection, 0x02, 0x04, payload, sizeof(payload), &Response))
+	{
+		return false;
+	}
+	if (Response.Num() < 8 + length || Response[0] != static_cast<uint8>(length))
+	{
+		return false;
+	}
+
+	const uint32 EchoedAddress = Response[4] | (Response[5] << 8) | (Response[6] << 16) | (static_cast<uint32>(Response[7]) << 24);
+	if (EchoedAddress != address)
+	{
+		return false;
+	}
+
+	outData.Append(Response.GetData() + 8, length);
+	return true;
+}
+
+bool JoyShock::init_switch2_bluetooth() {
+	if (ble_connection == nullptr)
+	{
+		return false;
+	}
+
+	UE_LOG(LogJoyShockLibrary, Log, TEXT("Running Switch 2 (Bluetooth) init sequence on device %d...\n"), intHandle);
+
+	struct Sw2InitCmd { unsigned char cmd; unsigned char subcmd; int dataLen; unsigned char data[20]; };
+	const Sw2InitCmd cmds[] = {
+		{ 0x03, 0x0d, 8,  { 0x01, 0x00, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff } },
+		{ 0x07, 0x01, 0,  {} },
+		{ 0x16, 0x01, 0,  {} },
+		{ 0x15, 0x03, 1,  { 0x00 } },
+		// FEATSEL: motion (0x04), mouse (0x10) and magnetometer (0x80). Asking for every feature instead
+		// turns on report fields the parser does not expect, and the extra bits read as stuck triggers.
+		{ 0x0c, 0x02, 4,  { 0x94, 0x00, 0x00, 0x00 } },
+		{ 0x11, 0x03, 0,  {} },
+		{ 0x0a, 0x08, 20, { 0x01, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x35, 0x00, 0x46, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 } },
+		{ 0x0c, 0x04, 4,  { 0x94, 0x00, 0x00, 0x00 } },
+		{ 0x03, 0x0a, 4,  { 0x09, 0x00, 0x00, 0x00 } },
+		{ 0x10, 0x01, 0,  {} },
+		{ 0x01, 0x0c, 0,  {} },
+		{ 0x09, 0x07, 8,  { 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 } },
+	};
+
+	// A single command the controller does not like is normal -- the sequence covers several controller
+	// shapes and not all of them implement all of it. A run of them means the link is not really up, and
+	// carrying on would leave a device that never streams while looking connected.
+	int32 ConsecutiveFailures = 0;
+	for (const Sw2InitCmd& c : cmds)
+	{
+		if (Switch2Ble::SendCommand(ble_connection, c.cmd, c.subcmd, c.data, c.dataLen))
+		{
+			ConsecutiveFailures = 0;
+			continue;
+		}
+
+		UE_LOG(LogJoyShockLibrary, Log, TEXT("  SW2 BT cmd %02x:%02x was not acknowledged\n"), c.cmd, c.subcmd);
+		if (++ConsecutiveFailures >= 3)
+		{
+			UE_LOG(LogJoyShockLibrary, Warning,
+				TEXT("Switch 2 Bluetooth init abandoned after three commands in a row went unanswered.\n"));
+			return false;
+		}
+	}
+
+	// Factory data, same blocks the USB path reads over SPI. A controller whose calibration cannot be read
+	// still works -- the parser falls back to fixed centres -- so none of this fails the init.
+	TArray<uint8> Block;
+	if (read_sw2_ble_memory(0x013000, 0x40, Block) && Block.Num() >= 0x25)
+	{
+		body_colour = (Block[0x19] << 16) | (Block[0x1A] << 8) | Block[0x1B];
+		button_colour = (Block[0x1C] << 16) | (Block[0x1D] << 8) | Block[0x1E];
+		left_grip_colour = (Block[0x1F] << 16) | (Block[0x20] << 8) | Block[0x21];
+		right_grip_colour = (Block[0x22] << 16) | (Block[0x23] << 8) | Block[0x24];
+		UE_LOG(LogJoyShockLibrary, Log, TEXT("SW2 colours: body %06x, buttons %06x\n"), body_colour, button_colour);
+	}
+
+	// Three packed 12-bit pairs: the centre, then the distance to each end of travel. Same layout the USB
+	// path unpacks, read from the same addresses -- only the way of asking for them differs.
+	auto ReadStickCal = [this](uint32 address, uint16_t* calX, uint16_t* calY)
+	{
+		TArray<uint8> Cal;
+		if (!read_sw2_ble_memory(address, 9, Cal) || Cal.Num() < 9)
+		{
+			return false;
+		}
+
+		auto Unpack12 = [](const uint8* p, uint16_t& v0, uint16_t& v1)
+		{
+			v0 = static_cast<uint16_t>(p[0] | ((p[1] & 0x0F) << 8));
+			v1 = static_cast<uint16_t>((p[1] >> 4) | (p[2] << 4));
+		};
+
+		uint16_t cx, cy, rxa, rya, rxb, ryb;
+		Unpack12(Cal.GetData(), cx, cy);
+		Unpack12(Cal.GetData() + 3, rxa, rya);
+		Unpack12(Cal.GetData() + 6, rxb, ryb);
+		calX[1] = cx; calX[2] = cx + rxa; calX[0] = cx - rxb;
+		calY[1] = cy; calY[2] = cy + rya; calY[0] = cy - ryb;
+		return true;
+	};
+
+	if (ReadStickCal(0x0130A8, stick_cal_x_l, stick_cal_y_l))
+	{
+		UE_LOG(LogJoyShockLibrary, Log, TEXT("SW2 left stick cal: centre (%d, %d), min (%d, %d), max (%d, %d)\n"),
+			stick_cal_x_l[1], stick_cal_y_l[1], stick_cal_x_l[0], stick_cal_y_l[0], stick_cal_x_l[2], stick_cal_y_l[2]);
+	}
+	if (ReadStickCal(0x0130E8, stick_cal_x_r, stick_cal_y_r))
+	{
+		UE_LOG(LogJoyShockLibrary, Log, TEXT("SW2 right stick cal: centre (%d, %d), min (%d, %d), max (%d, %d)\n"),
+			stick_cal_x_r[1], stick_cal_y_r[1], stick_cal_x_r[0], stick_cal_y_r[0], stick_cal_x_r[2], stick_cal_y_r[2]);
+	}
+
+	sw2_init_succeeded = true;
+	initialised = true;
+	return true;
+}
+
 bool JoyShock::init_switch2() {
 	// Nintendo Switch 2 Pro Controller init, replicating what Steam does (confirmed with a USBPcap capture):
 	// commands go over the controller's WinUSB interface (MI_01) bulk OUT endpoint 0x02 -- NOT over HID
@@ -1197,8 +1404,109 @@ bool JoyShock::init_switch2() {
 #endif
 }
 
+void JoyShock::encode_sw2_rumble_frame(uint16_t lfFreq, uint16_t lfAmp, uint16_t hfFreq, uint16_t hfAmp,
+	unsigned char* outFrame)
+{
+	// Bit layout, least significant bit first: lf_freq:9, lf_en_tone:1, lf_amp:10, hf_freq:9,
+	// hf_en_tone:1, hf_amp:10 -- 40 bits, written out little-endian. The tone-enable bits stay clear:
+	// they switch the actuator to a pure tone, which is not what a rumble request means.
+	uint64_t value = 0;
+	value |= static_cast<uint64_t>(lfFreq & 0x1FF);
+	value |= static_cast<uint64_t>(lfAmp & 0x3FF) << 10;
+	value |= static_cast<uint64_t>(hfFreq & 0x1FF) << 20;
+	value |= static_cast<uint64_t>(hfAmp & 0x3FF) << 30;
+
+	for (int32 idx = 0; idx < 5; idx++)
+	{
+		outFrame[idx] = static_cast<unsigned char>((value >> (idx * 8)) & 0xFF);
+	}
+}
+
+void JoyShock::build_sw2_rumble_block(int smallRumble, int bigRumble, unsigned char* outBlock)
+{
+	// 0x0E1 / 0x1E1 are the controller's neutral low/high frequency pair -- the values its own firmware
+	// uses for a plain rumble with no tone shaping. Only the amplitudes carry the game's request.
+	constexpr uint16_t NeutralLowFrequency = 0x0E1;
+	constexpr uint16_t NeutralHighFrequency = 0x1E1;
+
+	// The two 10-bit amplitude fields each go to 1023, but the actuator can only be driven so hard: their
+	// sum has to stay within 511, or the frame is rejected/clipped. Scale both together when the request
+	// exceeds that, so asking for more of everything never changes the balance between the two motors.
+	constexpr int32 CombinedAmplitudeLimit = 511;
+
+	int32 highAmp = FMath::Clamp(smallRumble, 0, 255) * 1023 / 255;
+	int32 lowAmp = FMath::Clamp(bigRumble, 0, 255) * 1023 / 255;
+	const int32 total = highAmp + lowAmp;
+	if (total > CombinedAmplitudeLimit)
+	{
+		highAmp = highAmp * CombinedAmplitudeLimit / total;
+		lowAmp = lowAmp * CombinedAmplitudeLimit / total;
+	}
+
+	// The id lets the controller drop a packet it has already played; it must advance every send, or a
+	// sustained rumble looks like one repeated packet and the actuator falls silent after the first.
+	outBlock[0] = static_cast<unsigned char>(0x50 | (sw2_rumble_packet_id & 0x0F));
+	sw2_rumble_packet_id++;
+
+	for (int32 frame = 0; frame < 3; frame++)
+	{
+		encode_sw2_rumble_frame(NeutralLowFrequency, static_cast<uint16_t>(lowAmp),
+			NeutralHighFrequency, static_cast<uint16_t>(highAmp), outBlock + 1 + frame * 5);
+	}
+}
+
 void JoyShock::set_sw2_rumble(int smallRumble, int bigRumble) {
+	// One block per actuator, left then right. Both carry the same request: JSL's two rumble values are a
+	// high/low frequency pair, not a left/right one, so splitting them across the actuators would put all
+	// the low end on one side of the controller.
+	unsigned char motorBlock[16];
+	build_sw2_rumble_block(smallRumble, bigRumble, motorBlock);
+
+	if (ble_connection != nullptr)
+	{
+		// Over Bluetooth the frames go to their own characteristic rather than through the command channel,
+		// behind one leading zero byte. A Joy-Con drives a single actuator and takes one block; the Pro
+		// Controller has two and takes both.
+		unsigned char payload[1 + 16 + 16];
+		memset(payload, 0, sizeof(payload));
+		memcpy(payload + 1, motorBlock, sizeof(motorBlock));
+		memcpy(payload + 1 + sizeof(motorBlock), motorBlock, sizeof(motorBlock));
+
+		const int32 length = (left_right == 3) ? sizeof(payload) : (1 + sizeof(motorBlock));
+		note_output_result(OutputFunctionRumble, Switch2Ble::SendVibration(ble_connection, payload, length));
+		return;
+	}
+
 #if PLATFORM_WINDOWS
+
+	// HID output report 0x02: [report id][left block][right block], padded to the report's fixed 0x2A-byte
+	// body. This route needs nothing but the HID handle the poll thread already owns, so rumble survives
+	// another process holding the WinUSB interface -- but the command interface is the route this plugin
+	// has actually proven on hardware, so HID is only tried when there is no command interface to use.
+	// Once it does work for a device it is kept, since it costs less and conflicts with nothing.
+	if (sw2_hid_rumble_ok || sw2_winusb_handle == nullptr)
+	{
+		unsigned char hidReport[1 + 0x2A];
+		memset(hidReport, 0, sizeof(hidReport));
+		hidReport[0] = 0x02;
+		memcpy(hidReport + 1, motorBlock, sizeof(motorBlock));
+		memcpy(hidReport + 1 + sizeof(motorBlock), motorBlock, sizeof(motorBlock));
+
+		if (hid_write(this->handle, hidReport, sizeof(hidReport)) >= 0)
+		{
+			if (!sw2_hid_rumble_ok)
+			{
+				sw2_hid_rumble_ok = true;
+				UE_LOG(LogJoyShockLibrary, Log,
+					TEXT("SW2: HD rumble is going out over HID output report 0x02 on device %d.\n"), this->intHandle);
+			}
+			note_output_result(OutputFunctionRumble, true);
+			return;
+		}
+		// An HID interface that used to accept reports and stopped is a stalled pipe, not a wrong route:
+		// fall through to the command interface, and let the next call try HID again.
+	}
+
 	if (sw2_winusb_handle == nullptr)
 	{
 		// The command interface couldn't be opened at connect time (typically another application such as
@@ -1221,39 +1529,49 @@ void JoyShock::set_sw2_rumble(int smallRumble, int bigRumble) {
 		UE_LOG(LogJoyShockLibrary, Log, TEXT("SW2: command interface acquired on retry; rumble available.\n"));
 	}
 
-	// The Switch 2's amplitude-accurate rumble stream uses a dedicated channel that hasn't been mapped on
-	// USB yet, but its command channel supports playing/stopping a built-in vibration preset:
-	// command 0x0A, subcommand 0x02, data = preset id (u32; 1 = rumble, 0 = stop). The preset is a short
-	// one-shot, so every call with a non-zero value retriggers it; only redundant stops are skipped.
-	const bool bWantOn = smallRumble > 0 || bigRumble > 0;
-	if (!bWantOn && !sw2_rumble_on)
-	{
-		return;
-	}
-	sw2_rumble_on = bWantOn;
-
-	unsigned char cmdBuf[12];
+	// Command 0x0A, subcommand 0x08 -- "send vibration data" -- carries the same HD-rumble block over the
+	// command interface, wrapped in the usual eight-byte command header. The payload is a leading 0x01
+	// followed by one 16-byte motor block and three bytes of padding, for the declared length of 0x14.
+	// (A bare motor block written to this pipe is silently ignored: the header is what makes it a command.)
+	unsigned char cmdBuf[8 + 0x14];
 	memset(cmdBuf, 0, sizeof(cmdBuf));
 	cmdBuf[0] = 0x0A; // vibration command
 	cmdBuf[1] = 0x91;
 	cmdBuf[2] = 0x00; // USB transport flag
-	cmdBuf[3] = 0x02; // play preset
-	cmdBuf[5] = 0x04; // data length
-	cmdBuf[8] = bWantOn ? 0x01 : 0x00;
+	cmdBuf[3] = 0x08; // send vibration data
+	cmdBuf[5] = 0x14; // data length
+	cmdBuf[8] = 0x01;
+	memcpy(cmdBuf + 9, motorBlock, sizeof(motorBlock));
 
 	ULONG written = 0;
 	const bool bWritten = WinUsb_WritePipe(static_cast<WINUSB_INTERFACE_HANDLE>(sw2_winusb_handle), sw2_out_pipe, cmdBuf, sizeof(cmdBuf), &written, nullptr) != 0;
 	note_output_result(OutputFunctionRumble, bWritten);
+	if (bWritten && !sw2_rumble_route_logged)
+	{
+		sw2_rumble_route_logged = true;
+		UE_LOG(LogJoyShockLibrary, Log,
+			TEXT("SW2: HD rumble is going out over the WinUSB command interface on device %d.\n"), this->intHandle);
+	}
 
-	// Drain the ack so responses don't accumulate in the pipe's buffer.
-	unsigned char resp[64];
-	ULONG got = 0;
-	WinUsb_ReadPipe(static_cast<WINUSB_INTERFACE_HANDLE>(sw2_winusb_handle), sw2_in_pipe, resp, sizeof(resp), &got, nullptr);
+	// Deliberately no read back. Configuration commands are drained for their acknowledgement, but this one
+	// is sent on every rumble packet -- roughly every 15ms -- and the read pipe has a 200ms timeout, so a
+	// packet the controller chooses not to answer would stall the polling thread for that whole timeout and
+	// stall input with it. Vibration data is fire-and-forget on the wire.
 	sw2_last_command_time = std::chrono::steady_clock::now();
 #endif
 }
 
 bool JoyShock::set_sw2_player_lights(unsigned char playerLightMask) {
+	if (ble_connection != nullptr)
+	{
+		// Same command as over the cable, on the GATT command channel: an eight-byte payload whose first
+		// byte is the four-bit pattern.
+		unsigned char payload[8];
+		memset(payload, 0, sizeof(payload));
+		payload[0] = playerLightMask;
+		return Switch2Ble::SendCommand(ble_connection, 0x09, 0x07, payload, sizeof(payload));
+	}
+
 #if PLATFORM_WINDOWS
 	if (sw2_winusb_handle == nullptr)
 	{

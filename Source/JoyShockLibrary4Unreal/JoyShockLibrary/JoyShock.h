@@ -49,6 +49,10 @@ enum ControllerType { n_switch, s_ds4, s_ds };
 // newer input protocol than the Switch 1 controllers above, so this is recognised/created here but full
 // input parsing may still need protocol-specific work.
 #define PRO_CONTROLLER_2 0x2069
+// The Switch 2 Joy-Cons. They never appear over USB -- the console charges them through the rails, and a
+// cable to a PC gives nothing -- so these ids only ever come out of a Bluetooth advertisement.
+#define SWITCH2_JOYCON_R 0x2066
+#define SWITCH2_JOYCON_L 0x2067
 #define L_OR_R(lr) (lr == 1 ? 'L' : (lr == 2 ? 'R' : '?'))
 
 // Whether this Windows HID path belongs to a Bluetooth device. Used both to decide a controller's
@@ -60,6 +64,14 @@ class JoyShock {
 public:
 
 	hid_device * handle;
+
+	// Set instead of `handle` for a Switch 2 controller reached over Bluetooth. Those are BLE GATT
+	// peripherals rather than HID devices, so there is no hid_device to open -- reads and writes go through
+	// Switch2Ble instead. Exactly one of the two is ever set; read_input_report picks between them so the
+	// polling thread does not have to care which transport it is on.
+	class FSwitch2BleConnection* ble_connection = nullptr;
+	bool is_ble() const { return ble_connection != nullptr; }
+
 	int32 intHandle = 0;
 	FString path;
 
@@ -183,8 +195,14 @@ public:
 	void* sw2_winusb_handle = nullptr; // WINUSB_INTERFACE_HANDLE
 	unsigned char sw2_out_pipe = 0x02;
 	unsigned char sw2_in_pipe = 0x82;
-	bool sw2_rumble_on = false;
 	bool sw2_init_succeeded = false;
+
+	// Switch 2 HD rumble: the controller consumes a stream of amplitude/frequency frames, each packet
+	// carrying a rolling 4-bit id it uses to drop duplicates. Two routes can carry them (see
+	// set_sw2_rumble); once one is proven to work the other is not tried again.
+	unsigned char sw2_rumble_packet_id = 0;
+	bool sw2_rumble_route_logged = false;
+	bool sw2_hid_rumble_ok = false;
 	std::chrono::steady_clock::time_point sw2_last_open_attempt = {};
 	std::chrono::steady_clock::time_point sw2_last_command_time = {};
 	bool sw2_access_warning_logged = false;
@@ -333,6 +351,15 @@ public:
 
 	JoyShock(struct hid_device_info* dev, hid_device* inHandle, int32 uniqueHandle, const FString& inPath);
 
+	// Builds a Switch 2 controller reached over Bluetooth. There is no hid_device_info for one of these --
+	// everything the HID path reads out of the descriptor comes from the advertisement instead.
+	JoyShock(class FSwitch2BleConnection* inConnection, uint16 productId, uint64 address, int32 uniqueHandle,
+		const FString& inPath);
+
+	// Reads one input report from whichever transport this controller is on, with hid_read_timeout's
+	// contract: the report's length, 0 on timeout, negative once the device is gone.
+	int32 read_input_report(unsigned char* buf, int32 bufLength, int32 timeoutMs);
+
 	~JoyShock();
 
 	void push_cumulative_gyro(float gyroX, float gyroY, float gyroZ);
@@ -397,9 +424,26 @@ public:
 	// reads factory stick calibration/colours over SPI, and keeps the WinUSB command interface open.
 	bool init_switch2();
 
-	// Sends a rumble packet to a Switch 2 controller over its WinUSB command interface.
-	// smallRumble drives the high-frequency motor component, bigRumble the low-frequency one (0-255 each).
+	// The same for a controller reached over Bluetooth: the commands are the protocol's, not the cable's,
+	// so the sequence matches -- but they travel on the GATT command characteristic, and factory data is
+	// read with a different subcommand than the USB path's SPI read.
+	bool init_switch2_bluetooth();
+	bool read_sw2_ble_memory(uint32 address, int32 length, TArray<uint8>& outData);
+
+	// Sends an HD-rumble packet to a Switch 2 controller. smallRumble drives the high-frequency motor
+	// component, bigRumble the low-frequency one (0-255 each), and both are true amplitudes rather than
+	// the on/off preset this used to trigger.
 	void set_sw2_rumble(int smallRumble, int bigRumble);
+
+	// Packs one 5-byte Switch 2 HD-rumble frame: a 40-bit little-endian bitfield of
+	// lf_freq:9, lf_tone:1, lf_amp:10, hf_freq:9, hf_tone:1, hf_amp:10. Frequencies are the 9-bit
+	// encoded values (0x0E1 / 0x1E1 are the neutral pair), amplitudes are 0-1023.
+	static void encode_sw2_rumble_frame(uint16_t lfFreq, uint16_t lfAmp, uint16_t hfFreq, uint16_t hfAmp,
+		unsigned char* outFrame);
+
+	// Builds one 16-byte Switch 2 motor block: a packet-id byte followed by three identical 5-byte frames
+	// (the controller consumes ~5ms of waveform per frame, so one block is ~15ms of rumble).
+	void build_sw2_rumble_block(int smallRumble, int bigRumble, unsigned char* outBlock);
 
 	// Sets the Switch 2 player-indicator bit pattern over its WinUSB command interface.
 	bool set_sw2_player_lights(unsigned char playerLightMask);

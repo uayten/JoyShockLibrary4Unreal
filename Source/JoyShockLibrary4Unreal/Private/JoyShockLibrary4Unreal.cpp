@@ -3,6 +3,7 @@
 #include "JoyShockLibrary4Unreal.h"
 
 #include "JoyShockInterface.h"
+#include "JoyShockLibrary4Unreal/JoyShockLibrary/Switch2Bluetooth.h"
 #include "Interfaces/IPluginManager.h"
 #include "Async/Async.h"
 #include "HAL/PlatformProcess.h"
@@ -97,6 +98,26 @@ void FJoyShockLibrary4UnrealModule::StartupModule()
 	FString AbsPath = IPluginManager::Get().FindPlugin("JoyShockLibrary4Unreal")->GetBaseDir() / TEXT("ThirdParty/hidapi/x64");
 	hidapiDllHandle = FPlatformProcess::GetDllHandle(*(AbsPath / TEXT("hidapi.dll")));
 #endif
+
+	// Start listening for Switch 2 controllers on the radio. A controller advertising is the Bluetooth
+	// counterpart of a USB device being plugged in, and the message handler above never hears about it --
+	// WM_DEVICECHANGE is for devices Windows enumerates, and these are not among them. So the scan drives
+	// the same coalesced enumeration pass directly.
+	//
+	// On a background thread because querying the adapter blocks, and this runs during engine startup.
+	Async(EAsyncExecution::Thread, [this]()
+	{
+		if (bShuttingDown.load() || !Switch2Ble::IsSupported())
+		{
+			return;
+		}
+
+		Switch2Ble::SetDiscoveryCallback([]()
+		{
+			FJoyShockLibrary4UnrealModule::GetInstance().RequestConnectDevices();
+		});
+		Switch2Ble::StartScan();
+	});
 }
 
 void FJoyShockLibrary4UnrealModule::ShutdownModule()
@@ -108,6 +129,10 @@ void FJoyShockLibrary4UnrealModule::ShutdownModule()
 	{
 		FPlatformProcess::Sleep(0.001f);
 	}
+
+	// Stop the Bluetooth scan and drop any radio links. Unlike the HID devices, these hold WinRT objects
+	// whose callbacks fire on their own threads, so they have to be torn down before the module goes.
+	Switch2Ble::Shutdown();
 
 #if PLATFORM_WINDOWS
 	if (hidapiDllHandle)

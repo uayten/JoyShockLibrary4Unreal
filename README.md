@@ -40,9 +40,9 @@ known to be broken. "Untested" means no unit has been available.
 | Controller | Current validation |
 | --- | --- |
 | Nintendo Switch Joy-Con | Gameplay input, solo-horizontal and joined presentation, motion, pairing/separation, player LEDs, battery and multiple simultaneous controllers tested. |
-| Nintendo Switch 2 Joy-Con | Not implemented and untested. |
+| Nintendo Switch 2 Joy-Con | Not implemented. The Bluetooth scan recognises them and logs that it is skipping them; connecting one would need a report parser for their button layout. |
 | Nintendo Switch Pro Controller | USB/Bluetooth input, motion, player LEDs and HD rumble are implemented, but untested since the overhaul. |
-| Nintendo Switch 2 Pro Controller | USB gameplay input, calibrated sticks, motion, player LEDs and fixed-amplitude rumble tested. Bluetooth is not supported yet. |
+| Nintendo Switch 2 Pro Controller | USB gameplay input, calibrated sticks, motion and player LEDs tested. HD rumble with amplitude, and the Bluetooth transport, are implemented but not yet confirmed on hardware. |
 | DualShock 4 | Bluetooth and USB gameplay input, stick conventions, motion, battery reporting and cable/Bluetooth transport switching tested. Battery percentages were checked against DS4Windows. Rumble could not be validated because the available controller's rumble hardware is broken. |
 | DualSense / DualSense Edge | USB/Bluetooth input, motion, touchpad, light, player indicators and rumble are implemented, but need a regression test after the overhaul. Battery report offsets are unverified. |
 | Xbox / other XInput pads | Handled entirely by Unreal, not by this plugin. The plugin takes their player slots into account so a JoyShock controller lands where a second Xbox pad would, and **Wait For Any Controller Changes** reports them alongside ours. Mixing them works; player numbering when a *wireless* Xbox pad is in the mix is still under investigation (see below). |
@@ -393,8 +393,8 @@ Per controller family:
 
 - **DualShock 4 / DualSense**: small and big motor intensities.
 - **Joy-Cons / Pro Controller (Switch 1)**: full HD-rumble amplitude control — `BigRumble` drives the low-frequency component (heavy shake), `SmallRumble` the high-frequency one (fine buzz). The vibration is sustained automatically until you set `(0, 0)`.
-- **Switch 2 Pro Controller (USB)**: **no amplitude support.** While either value is above 0 the controller vibrates (sustained automatically, like the other controllers) until you call `(0, 0)`, so it is effectively on/off. The Switch 2's amplitude-accurate rumble channel hasn't been mapped over USB yet (Steam itself never rumbles this controller, so there was no traffic to reverse-engineer it from). Under the hood this retriggers the controller's short built-in vibration preset, so the texture may feel slightly pulsed compared to the Switch 1's HD rumble — and a force feedback effect that fades in or out will feel like a flat buzz on this controller.
-- Note: close Steam when using the Switch 2 Pro Controller with Unreal — Steam holds the controller's USB command interface exclusively, which blocks the plugin's init and rumble (the plugin logs a warning and re-acquires the interface automatically once Steam is closed).
+- **Switch 2 Pro Controller**: full HD-rumble amplitude control, the same as the Switch 1 — `BigRumble` drives the low-frequency component, `SmallRumble` the high-frequency one, and the vibration is sustained until you set `(0, 0)`. Each packet carries about 15ms of waveform, so the plug-in feeds the controller continuously while a rumble is held. Works over both USB and Bluetooth.
+- Note: close Steam when using the Switch 2 Pro Controller with Unreal — Steam holds the controller's USB command interface exclusively, which blocks the plugin's init and rumble (the plugin logs a warning and re-acquires the interface automatically once Steam is closed). Rumble also has an HID fallback that works without that interface, and Bluetooth is unaffected either way.
 
 ## Battery
 
@@ -447,15 +447,33 @@ the write cannot be distinguished from one that is not running.
 
 ## Nintendo Switch 2 Pro Controller
 
-The Switch 2 Pro Controller is supported over **USB** on Windows. Just plug it in — the plug-in initializes it through its WinUSB interface (the Switch 2 uses a new protocol that is not compatible with Switch 1 controllers), reads its factory stick calibration and colors, and parses all of its inputs:
+The Switch 2 Pro Controller is supported over **USB and Bluetooth** on Windows. Over USB, just plug it in — the plug-in initializes it through its WinUSB interface (the Switch 2 uses a new protocol that is not compatible with Switch 1 controllers), reads its factory stick calibration and colors, and parses all of its inputs:
 
 - All buttons, including the new **C (GameChat)**, **GL** and **GR** buttons
 - Both analog sticks, using the per-unit factory calibration
 - Gyro and accelerometer, fully integrated with the motion API (`JSL4U Get Motion State`, `JSL4U Get And Clear Accumulated Gyro`, calibration, etc.)
+- HD rumble with real amplitude on both actuators
 - Player-indicator LEDs, kept in sync with the controller's assigned Unreal Local Player
 - Multiple Switch 2 Pro Controllers at the same time
 
-Bluetooth is currently **not** supported for the Switch 2 Pro Controller: it uses Bluetooth LE (GATT) and Windows does not expose it as a gamepad, which would require a dedicated BLE client. USB is the supported connection for now.
+### Bluetooth
+
+**Do not pair the controller in Windows' Bluetooth settings.** It would not help: the Switch 2 has no
+Bluetooth HID profile, so Windows has nothing to pair it *as* and never makes it a gamepad. It is a plain
+Bluetooth LE peripheral with a vendor GATT service, and the plug-in speaks to that service directly —
+scanning for the controller itself, connecting, and reading its input from a GATT notification.
+
+To connect a controller the first time, **hold its SYNC button** (the small button next to the USB port)
+until the lights start moving. The plug-in finds it, connects, and pairs it to this PC. From then on
+**pressing any button** is enough — the controller reconnects on its own.
+
+Everything above works the same over Bluetooth as over USB: the same buttons, the same factory-calibrated
+sticks, motion, HD rumble and player LEDs. A controller that is connected by cable is left on the cable;
+the radio link is only taken for a controller that is not already here on USB.
+
+The transport is Windows-only and needs a machine with Bluetooth LE. It is built against the Windows SDK's
+C++/WinRT headers; if the build machine has no Windows 10/11 SDK carrying those, the plug-in still builds
+and logs that Switch 2 controllers will be USB-only.
 
 The Switch 2 command endpoint is WinUSB-exclusive even though its HID input endpoint is visible to more
 than one process. This matters for Unreal's multi-process Standalone mode: the parent editor and the
