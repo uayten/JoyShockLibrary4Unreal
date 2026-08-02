@@ -22,23 +22,24 @@ void UJoyShockSubsystem::Initialize(FSubsystemCollectionBase& Collection)
 	FJoyShockLibrary4UnrealModule& JSL4UModule = FJoyShockLibrary4UnrealModule::GetInstance();
 
 	// Weak lambdas so a GC'd subsystem can never be broadcast into, even if Deinitialize is skipped.
+	// These carry the library handle, because they are raised by the library side. The handle goes no
+	// further than this file: it keys the cache below and is turned into a description immediately.
 	ConnectedHandle = JSL4UModule.GetOnDeviceConnected().AddWeakLambda(this, [this](int32 DeviceId)
 	{
-		const FJSL4UControllerInfo Info = UJoyShockLibrary::JSL4UGetControllerInfo(DeviceId);
+		const FJSL4UControllerInfo Info = UJoyShockLibrary::GetControllerInfoForHandle(DeviceId);
 		LastControllerInfoByDeviceId.Add(DeviceId, Info);
 		OnControllerConnected.Broadcast(Info);
 	});
 
 	DisconnectedHandle = JSL4UModule.GetOnDeviceDisconnected().AddWeakLambda(this, [this](int32 DeviceId, bool bTimedOut)
 	{
+		// The cache is the only description left: by now the controller is gone from both the library and
+		// the interface, so there is nothing to look its identity up in. A controller that was never cached
+		// leaves as an empty description rather than one carrying an id that no longer means anything.
 		FJSL4UControllerInfo Info;
 		if (const FJSL4UControllerInfo* CachedInfo = LastControllerInfoByDeviceId.Find(DeviceId))
 		{
 			Info = *CachedInfo;
-		}
-		else
-		{
-			Info.DeviceId = DeviceId;
 		}
 		Info.bIsConnected = false;
 		OnControllerDisconnected.Broadcast(Info, bTimedOut);
@@ -49,9 +50,9 @@ void UJoyShockSubsystem::Initialize(FSubsystemCollectionBase& Collection)
 		[this](int32 LeftDeviceId, int32 RightDeviceId, bool bJoined)
 		{
 			const FJSL4UControllerInfo LeftInfo =
-				UJoyShockLibrary::JSL4UGetControllerInfo(LeftDeviceId);
+				UJoyShockLibrary::GetControllerInfoForHandle(LeftDeviceId);
 			const FJSL4UControllerInfo RightInfo =
-				UJoyShockLibrary::JSL4UGetControllerInfo(RightDeviceId);
+				UJoyShockLibrary::GetControllerInfoForHandle(RightDeviceId);
 			LastControllerInfoByDeviceId.Add(LeftDeviceId, LeftInfo);
 			LastControllerInfoByDeviceId.Add(RightDeviceId, RightInfo);
 
@@ -68,19 +69,28 @@ void UJoyShockSubsystem::Initialize(FSubsystemCollectionBase& Collection)
 	FunctionBlockedHandle = JSL4UModule.GetOnDeviceFunctionBlocked().AddWeakLambda(this,
 		[this](int32 DeviceId, EJSL4UControllerFunction Function)
 		{
-			const FJSL4UControllerInfo Info = UJoyShockLibrary::JSL4UGetControllerInfo(DeviceId);
+			const FJSL4UControllerInfo Info = UJoyShockLibrary::GetControllerInfoForHandle(DeviceId);
 			OnControllerFunctionBlocked.Broadcast(Info, Function);
 		});
 
 	// Controllers already connected when this subsystem is created never produced an event for it to hear,
-	// so seed from JSL4UGetConnectedControllers on Init and use the events only for changes after that.
-	const TArray<FJSL4UControllerInfo> ExistingControllers = UJoyShockLibrary::JSL4UGetConnectedControllers();
-	for (const FJSL4UControllerInfo& Info : ExistingControllers)
+	// so seed the cache on Init and use the events only for changes after that. Seeded from the handles
+	// rather than from the public listing because the cache is keyed by handle -- that is what the
+	// disconnect event will arrive with, and it is the one place in the plugin where the two must line up.
+	TArray<int32> ExistingHandles;
+	UJoyShockLibrary::JslGetConnectedDeviceHandles(ExistingHandles);
+	int32 SeededCount = 0;
+	for (int32 Handle : ExistingHandles)
 	{
-		LastControllerInfoByDeviceId.Add(Info.DeviceId, Info);
+		const FJSL4UControllerInfo Info = UJoyShockLibrary::GetControllerInfoForHandle(Handle);
+		if (Info.bIsConnected)
+		{
+			LastControllerInfoByDeviceId.Add(Handle, Info);
+			++SeededCount;
+		}
 	}
 	UE_LOG(LogJoyShockLibrary, Verbose, TEXT("UJoyShockSubsystem: listening for device changes (%d controller(s) already connected)."),
-		ExistingControllers.Num());
+		SeededCount);
 }
 
 void UJoyShockSubsystem::ListenForControllers(FJSL4UControllerInfoConnectedSignature Event)
@@ -93,7 +103,8 @@ void UJoyShockSubsystem::ListenForControllers(FJSL4UControllerInfoConnectedSigna
 	OnControllerConnected.AddUnique(Event);
 	for (const FJSL4UControllerInfo& Info : UJoyShockLibrary::JSL4UGetConnectedControllers())
 	{
-		LastControllerInfoByDeviceId.Add(Info.DeviceId, Info);
+		// No cache write here: Initialize seeded every controller that was already connected, and the
+		// connect event caches every one that arrives later, so this replay has nothing to add.
 		Event.Execute(Info);
 	}
 }
@@ -128,8 +139,8 @@ APlayerController* UJoyShockSubsystem::FindLocalPlayerForController(const FJSL4U
 {
 	// Same freshness rule as EnsureLocalPlayerForController: re-read one of ours, trust the payload for a
 	// controller we do not drive, because for that one the payload is the only description there is.
-	const FJSL4UControllerInfo Info = Controller.DeviceId >= 0
-		? UJoyShockLibrary::JSL4UGetControllerInfo(Controller.DeviceId)
+	const FJSL4UControllerInfo Info = Controller.bIsJoyShockController
+		? UJoyShockLibrary::JSL4UGetControllerInfo(Controller.ConnectionId)
 		: Controller;
 
 	const UGameInstance* GameInstance = GetGameInstance();
@@ -160,8 +171,8 @@ bool UJoyShockSubsystem::EnsureLocalPlayerForController(const FJSL4UControllerIn
 	// be holding an info from an earlier event, and the platform user is exactly the field that moves
 	// underneath it. For a controller we do not drive there is nothing to re-read -- the payload from
 	// Wait For Any Controller Changes is the only description of it that exists.
-	const FJSL4UControllerInfo Info = Controller.DeviceId >= 0
-		? UJoyShockLibrary::JSL4UGetControllerInfo(Controller.DeviceId)
+	const FJSL4UControllerInfo Info = Controller.bIsJoyShockController
+		? UJoyShockLibrary::JSL4UGetControllerInfo(Controller.ConnectionId)
 		: Controller;
 
 	UGameInstance* GameInstance = GetGameInstance();
@@ -190,8 +201,8 @@ bool UJoyShockSubsystem::EnsureLocalPlayerForController(const FJSL4UControllerIn
 		if (LocalPlayer == nullptr)
 		{
 			UE_LOG(LogJoyShockLibrary, Warning,
-				TEXT("EnsureLocalPlayerForController failed for device %d / platform user %d: %s"),
-				Info.DeviceId, Info.PlatformUserId, *Error);
+				TEXT("EnsureLocalPlayerForController failed for connection %lld / platform user %d: %s"),
+				Info.ConnectionId, Info.PlatformUserId, *Error);
 			return false;
 		}
 		bWasCreated = true;
@@ -212,7 +223,7 @@ bool UJoyShockSubsystem::EnsureLocalPlayerForController(const FJSL4UControllerIn
 	// the same number as a platform user index the moment those two lists diverge. Re-mapping a foreign
 	// device from that number is a no-op at best and moves it off its own player at worst. Skipping here
 	// rather than at the call site is what lets one Blueprint path seat every controller.
-	if (Info.DeviceId >= 0 && !UJoyShockLibrary::JSL4UAssignControllerToPlayerIndex(Info, LocalPlayerIndex))
+	if (Info.bIsJoyShockController && !UJoyShockLibrary::JSL4UAssignControllerToPlayerIndex(Info, LocalPlayerIndex))
 	{
 		return false;
 	}
@@ -227,7 +238,7 @@ void UJoyShockSubsystem::StopAllControllerRumble()
 	// sees them change to zero.
 	for (const FJSL4UControllerInfo& Info : UJoyShockLibrary::JSL4UGetConnectedControllers())
 	{
-		UJoyShockLibrary::JSL4USetControllerRumble(Info.DeviceId, 0.0f, 0.0f);
+		UJoyShockLibrary::JSL4USetControllerRumble(Info.ConnectionId, 0.0f, 0.0f);
 	}
 }
 

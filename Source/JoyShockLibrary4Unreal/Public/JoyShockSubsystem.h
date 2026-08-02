@@ -47,7 +47,7 @@ public:
 	FJSL4UControllerInfoDisconnectedDelegate OnControllerDisconnected;
 
 	// Fires after two halves have become one logical vertical controller. Both infos already contain the
-	// shared player index, their reciprocal JoinedToDeviceId and Vertical grip mode.
+	// shared player index, their reciprocal JoinedToConnectionId and Vertical grip mode.
 	UPROPERTY(BlueprintAssignable, Category = "JoyShock Library|Events",
 		meta = (DisplayName = "On Joy-Cons Joined", ToolTip = "Fires after a left and right Joy-Con become one logical vertical controller. Both controller infos already contain the new pairing and player assignment."))
 	FJSL4UJoyConsPairingDelegate OnJoyConsJoined;
@@ -122,12 +122,12 @@ public:
 	 * controller is then assigned back to the resulting local-player index, repairing mapper changes made
 	 * by Create Local Player. This does not spawn or possess a Pawn and does not add mapping contexts.
 	 *
-	 * Takes the whole controller description rather than a Device Id, and that is the point: a player is
+	 * Takes the whole controller description rather than a bare id, and that is the point: a player is
 	 * found by Platform User, which every controller Unreal accepts has, while only the ones this plugin
-	 * drives have a Device Id. Feeding this the payload from Wait For Any Controller Changes therefore
+	 * drives are ours. Feeding this the payload from Wait For Any Controller Changes therefore
 	 * seats an Xbox pad and a DualSense through the same node, with no branch on which kind arrived -- the
 	 * assignment step that only means something for ours is skipped from in here, where the caller cannot
-	 * forget it. Passing a Device Id was what made a game write one path per controller family.
+	 * forget it. Naming controllers per family was what made a game write one path per family.
 	 */
 	UFUNCTION(BlueprintCallable, Category = "JoyShock Library|Local Multiplayer",
 		meta = (ExpandBoolAsExecs = "ReturnValue", CPP_Default_bCreateIfMissing = "true", ToolTip = "Finds the Local Player for this controller's Platform User, optionally creates it, then reconciles controller assignment. Works for every controller Unreal accepts, including XInput pads this plugin does not drive. It does not spawn a Pawn or add an Input Mapping Context."))

@@ -82,11 +82,10 @@ The Mirror and HUD are deliberately not responsible for controller discovery, Lo
 The demo automatically spawns one Mirror per physical connection and passes the complete
 `FJSL4UControllerInfo` into its Expose-on-Spawn `Controller` property. The Initializer keeps a
 `ConnectionId → BP_JoyShockControllerMirror` map; disconnecting destroys only that connection's actor.
-`ConnectionId`, rather than `DeviceId` or `PlayerIndex`, is intentional: DeviceIds can be reused after
-reconnecting, while joined Joy-Con halves share a PlayerIndex but remain two physical motion sensors and
-therefore two Mirrors. No Mirror is placed manually in the level.
+`ConnectionId` rather than `PlayerIndex` is intentional: joined Joy-Con halves share a PlayerIndex but
+remain two physical motion sensors and therefore two Mirrors. No Mirror is placed manually in the level.
 
-The HUD is rebuilt only when the connected set changes, then receives the current DeviceId-to-Mirror map;
+The HUD is rebuilt only when the connected set changes, then receives the current ConnectionId-to-Mirror map;
 its sensor values continue updating normally between those rare changes. The Mirror never enumerates
 controllers or creates Local Players. `FJSL4UControllerInfo` also
 exposes capability flags (`Has RGB Light`, `Has Player Indicator`, `Has Motion Sensors`, `Has Touchpad`,
@@ -124,7 +123,21 @@ Mapping contexts belong to the Local Player. The cleanest reusable place to add 
 A standalone Joy-Con is presented in Nintendo's solo-horizontal grip: its stick is rotated into the
 physical horizontal orientation and exposed as Unreal's standard left stick; its four front buttons become
 positional face buttons; SL/SR become the standard left/right shoulders; and the inaccessible outer
-L/ZL or R/ZR buttons do not generate gameplay input. When a left and right half are joined they return to
+L/ZL or R/ZR buttons do not generate gameplay input.
+
+**Motion is rotated with them.** A Joy-Con held sideways is the same hardware turned a quarter turn about
+the axis out of its face, and its IMU does not know that: without correction, pointing the far end of a
+sideways Joy-Con up arrives as *roll*, and the pitch a game reads never moves. The plugin takes that quarter turn out of orientation,
+gravity, acceleration and local-space gyro, so `Pitch` means pitch and `Yaw` means yaw in either grip —
+through the direct getters and through Enhanced Input's motion keys alike, which apply the same rotation.
+World- and player-space gyro are left alone: those are already resolved against gravity and so are
+grip-independent by construction. Joining two halves returns both to the vertical presentation and the
+rotation disappears with it.
+
+There is one place this shows: a mesh driven straight from `Get Motion State` draws a sideways Joy-Con
+upright, because upright is the pose its input is being reported in. That is deliberate — the reading
+describes how the controller is being *played*, not how it is lying — and it is the same answer for every
+controller, so nothing in a project needs a Joy-Con special case. When a left and right half are joined they return to
 vertical presentation, with the left half supplying Unreal's left stick and the right half its right stick.
 Direct `JSL4U` state getters retain the native hardware fields; only engine-facing gamepad keys are adapted.
 In particular, the Joy-Con R's native inverted vertical stick axis is normalised before its horizontal or
@@ -219,8 +232,9 @@ payload as ordinary data pins — no Create Event, no Bind Event, no matching cu
   including Xbox pads and everything else arriving through XInput. Use this one to decide when a *player*
   joins or leaves, and the JSL4U-only node above when you specifically need gyro, touchpad, lights or HD
   rumble. Both report the same `FJSL4UControllerInfo`; `bIsJoyShockController` says which kind arrived, and
-  a controller the plugin does not drive carries `DeviceId` -1 with every capability flag false, since
-  those flags describe what *this plugin* can do with it. Keyboard and mouse are not reported: they share
+  a controller the plugin does not drive reports the capability flags of its own hardware -- false for the
+  gyro it does not have, true for the rumble it does. You rarely need to ask which kind arrived: every
+  node takes the payload's `ConnectionId`, whichever kind it is. Keyboard and mouse are not reported: they share
   one device that is connected from the first frame, so announcing it would spawn a player before anyone
   touched anything.
 - **Wait For Joy-Con Pairing Changes** — `On Joined` / `On Separated`, with both halves' identities
@@ -242,11 +256,20 @@ Blueprints that prefer that style. If you use those directly, get the subsystem 
 from a Game Instance's `Init`, because subsystems are created at the very end of `Init` and the events
 would silently never fire.
 
-`FJSL4UControllerInfo` includes three different identities:
+`FJSL4UControllerInfo` includes two different identities:
 
-- `DeviceId` is the short JSL handle accepted by the other plugin nodes. JSL can reuse it after a disconnect.
-- `ConnectionId` uniquely identifies this connection and is not reused during the run. Use it as the key of maps that track spawned Pawns or handled connections.
+- `ConnectionId` names the controller. It is the only address the plugin's nodes take, it is not reused during the run, and it exists for every controller Unreal accepts -- positive for one this plugin drives, negative for one it does not. Use it as the key of maps that track spawned Pawns or handled connections.
 - `InputDeviceId` and `PlatformUserId` are Unreal's native identities, exposed as integers for Blueprint. `HardwareDeviceIdentifier` is the stable model name registered with the engine.
+
+### One address, honest answers
+
+Every per-controller node takes a `ConnectionId` and accepts one for **any** controller, including the Xbox pads this plugin does not drive. A game does not branch on whose controller it is holding; it asks the controller for what it wants, and what comes back is the truth about that hardware:
+
+- **Readings** — `Get IMU State`, `Get Motion State`, `Get Touch State` and friends return zeroes for hardware that has no such sensor. Check `Has Motion Sensors` / `Has Touchpad` on the controller info before believing (or offering) a reading of zero.
+- **Rumble** — works on every pad. For one of ours the plugin writes the motors over HID; for a foreign pad it routes through Unreal's own force-feedback channels. One caveat there: the engine rewrites those channels every frame for a pad that belongs to a player, so a direct value set on an **assigned** foreign pad survives about a frame. On an unassigned one — the assignment screen, "buzz this pad so you know which it is" — it stands. For rumble during play, on any pad, use Force Feedback.
+- **Everything else** (gyro calibration, light colour, player indicator, HOME light) does nothing on hardware that lacks it, and logs one warning naming the node and the connection. One warning per controller per node, not one per call, so a node sitting in a Tick cannot bury the log.
+
+A stored `ConnectionId` whose controller has been unplugged resolves to nothing: the call fails or does nothing rather than landing on whichever controller connected next. That is the whole reason the nodes take this id and not the library's own handle, which *is* reused.
 
 ## Controller assignment and local multiplayer
 
@@ -299,7 +322,7 @@ Pairing nodes are under **JoyShock Library | Joy-Con Pairing**:
 ![Controllers Events](Images/Joy-ConPairing.png)
 
 - **JSL4U Get Joy-Con Pair** — given either half, returns whether it is a pair plus both halves' identities. `Primary` names the same half no matter which one was asked, which is what lets an actor act  on a pair   without first working out which half it is attached to.
-- **JSL4U Get Joy-Con Partner** — whether this half is joined right now, and to which Device Id.
+- **JSL4U Get Joy-Con Partner** — whether this half is joined right now, and to which Connection Id.
 - **JSL4U Is Controller Type Joinable** — whether a controller type can be joined into a pair (currently the left and right Joy-Cons). `JSL4U Join Joy-Cons` validates with this same function.
 - **JSL4U Is Joy-Con Primary** — whether this device is the one representing its logical controller. True
   for any standalone controller of any type, and for exactly one half of a joined pair.
@@ -360,9 +383,9 @@ These controllers work with **Unreal's own force feedback**. `Play Force Feedbac
 
 The channels map the way Unreal's XInput interface reads them: `LeftLarge` drives the heavy/low-frequency motor and `RightSmall` the light/high-frequency one, so an effect authored against a standard gamepad comes out the same here.
 
-For direct control there is `JSL4U Set Rumble (DeviceId, SmallRumble, BigRumble)`, 0-1 per motor (call it with `(0, 0)` to stop). Both routes reach the same maximum — force feedback is clamped to 0-1 and 1 arrives as full strength — so an effect that feels weak is a weak curve in the asset rather than a limit here. (`Force Feedback Scale` and `b Force Feedback Enabled` on the PlayerController also apply.)
+For direct control there is `JSL4U Set Controller Rumble (ConnectionId, SmallRumble, BigRumble)`, 0-1 per motor (call it with `(0, 0)` to stop). Both routes reach the same maximum — force feedback is clamped to 0-1 and 1 arrives as full strength — so an effect that feels weak is a weak curve in the asset rather than a limit here. (`Force Feedback Scale` and `b Force Feedback Enabled` on the PlayerController also apply.)
 
-Use the direct node for the three things force feedback cannot do, all of them because it is aimed at a *player* rather than a controller: rumbling **one specific controller** (a joined Joy-Con pair is one player but two device ids, so only this can buzz just the left one); rumbling a controller **not assigned to any player**, which is what a controller-assignment screen needs for "press here and feel which controller this is" before players exist; and holding a constant intensity without authoring a looping asset.
+Use the direct node for the three things force feedback cannot do, all of them because it is aimed at a *player* rather than a controller: rumbling **one specific controller** (a joined Joy-Con pair is one player but two controllers, so only this can buzz just the left one); rumbling a controller **not assigned to any player**, which is what a controller-assignment screen needs for "press here and feel which controller this is" before players exist; and holding a constant intensity without authoring a looping asset.
 
 The two are independent — a force feedback effect plays over a rumble you set directly, and neither cancels the other. Each motor runs at whichever of the two is stronger.
 
@@ -407,7 +430,7 @@ state. Switch 2 Pro initialization likewise preserves its current indicator unti
 Local Player, instead of briefly turning every player LED off.
 
 DualShock 4 has no numeric player LEDs, so **Set Player Indicator** intentionally does nothing on it. To
-test its RGB light bar, call **JSL4U Set Light Color** with its `DeviceId` and an obvious color such as
+test its RGB light bar, call **JSL4U Set Light Color** with its `ConnectionId` and an obvious color such as
 magenta. The light bar and rumble are separate fields in the same output report, so a broken rumble motor
 does not by itself prevent the color test.
 
@@ -493,7 +516,7 @@ that light is cleared exactly once per connection.
 
 Plugging a USB cable into a controller that is already paired over Bluetooth does not end the Bluetooth
 link — it adds a second HID device. The plugin recognises both paths as one controller by its MAC address,
-moves input onto the cable and back to the radio when it is pulled, and keeps the same device id, player
+moves input onto the cable and back to the radio when it is pulled, and keeps the same connection id, player
 slot and Pawn throughout, so neither event reaches the game as a connect or disconnect.
 
 ## Questions

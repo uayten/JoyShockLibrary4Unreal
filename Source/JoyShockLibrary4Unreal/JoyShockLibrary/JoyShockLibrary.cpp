@@ -1343,10 +1343,10 @@ static FJSLSettings JSL4UReadJslSettings(JoyShock* jc)
 	return settings;
 }
 
-// Builds the Blueprint-facing struct from the raw JSL settings. Leaves the interface-owned fields
-// (PlayerIndex / JoinedToDeviceId) at their defaults -- see JSL4UFillPlayerFields.
-static FJSL4UControllerInfo JSL4UMakeControllerInfo(int32 DeviceId, const FJSLSettings& JslSettings,
-	const JoyShock* jc)
+// Builds the Blueprint-facing struct from the raw JSL settings. Leaves every field the interface owns --
+// the whole identity block, from Connection Id down -- at its defaults; see JSL4UFillPlayerFields, which is
+// what turns this into a controller a caller can name.
+static FJSL4UControllerInfo JSL4UMakeControllerInfo(const FJSLSettings& JslSettings, const JoyShock* jc)
 {
 	// The colour arrives packed as 0xRRGGBB (both the Switch body colour read over SPI and the DS4/DualSense
 	// LED colour are assembled that way), so it has to go into FColor as (R, G, B) -- passing it reversed
@@ -1360,7 +1360,6 @@ static FJSL4UControllerInfo JSL4UMakeControllerInfo(int32 DeviceId, const FJSLSe
 	// Everything built here is, by definition, a controller this plugin drives. The flag exists for the one
 	// node that also reports controllers it does not -- see FJSL4UControllerInfo::bIsJoyShockController.
 	Info.bIsJoyShockController = true;
-	Info.DeviceId = DeviceId;
 	Info.ControllerType = JSL4UControllerTypeFromLegacy(JslSettings.controllerType);
 	Info.PlayerLedNumber = JslSettings.playerNumber;
 
@@ -1410,12 +1409,210 @@ static FJSL4UControllerInfo JSL4UMakeControllerInfo(int32 DeviceId, const FJSLSe
 // Fills the fields the input-device interface owns. Must NOT be called while holding _connectedLock:
 // the game thread takes the interface's lock and then calls Jsl* getters (which take _connectedLock),
 // so acquiring them in the opposite order here could deadlock.
-static void JSL4UFillPlayerFields(FJSL4UControllerInfo& Info, FJoyShockInterface* Interface)
+//
+// False means the interface has no live registration for this controller, so none of the identity it owns
+// -- Connection Id, Input Device Id, Platform User Id, player slot -- was written. The caller must then
+// drop the controller rather than hand out the struct: see JSL4UGetConnectedControllers.
+static bool JSL4UFillPlayerFields(FJSL4UControllerInfo& Info, int32 Handle, FJoyShockInterface* Interface)
 {
-	if (Interface != nullptr)
+	return Interface != nullptr && Interface->FillControllerInfo(Info, Handle);
+}
+
+FQuat UJoyShockLibrary::GetJoyConGripUndoRotation(bool bHorizontal, bool bIsLeft)
+{
+	// A Joy-Con held sideways is the same hardware turned a quarter turn about the axis that runs out of its
+	// FACE -- Unreal's +Z once the readings are in Unreal axes, the same axis a yaw turns about. Its IMU has
+	// no idea that happened, so every reading arrives a quarter turn out of true: what the player does as
+	// "point the far end up" comes out as roll, and the pitch a game reads never moves. That is the whole
+	// bug -- the buttons and the stick have been rotated for the grip since the solo-horizontal support
+	// landed, and the motion never was.
+	//
+	// Undone here rather than left to each game, for the same reason the stick is: a Joy-Con held sideways is
+	// a controller in its own right, and "read its pitch" should mean the same thing there as on a DualSense.
+	//
+	// The angle comes from the stick, whose rotation is hardware-verified: ProcessAnalogInputs presents the
+	// left half's stick as (X, Y) -> (-Y, X). The stick lies in the plane of the face, so its "right" is
+	// Unreal +Y and its "forward" is Unreal +X -- which makes that transform X' = Y, Y' = -X, a -90 degree
+	// turn about +Z. The right half is turned the opposite way into its grip, so its undo is the positive.
+	//
+	// Getting the axis wrong is not subtle, and the check is worth writing down: a turn about the face
+	// normal cannot change which way is DOWN for a controller lying flat on a table. Put a Joy-Con and any
+	// other controller flat and facing the same way, and Get Motion State must report the same gravity for
+	// both, near (0, 0, -1). It reported (0, -1, 0) for the Joy-Con while this rotated about +X instead.
+	if (!bHorizontal)
 	{
-		Interface->FillControllerInfo(Info);
+		return FQuat::Identity;
 	}
+	return FQuat(FVector::UpVector, bIsLeft ? -HALF_PI : HALF_PI);
+}
+
+// The rotation that undoes the grip of the controller this handle names, or identity for anything that is
+// not a Joy-Con held sideways.
+//
+// MUST be called before taking _connectedLock: this asks the interface, and the game thread takes the
+// interface's lock and then calls Jsl* getters (which take _connectedLock), so acquiring the two in the
+// opposite order here could deadlock. Every caller below resolves it as its first statement.
+static FQuat GripUndoRotationForHandle(int32 Handle)
+{
+	FJoyShockInterface* Interface = FJoyShockLibrary4UnrealModule::GetInstance().GetActiveInterface();
+	bool bHorizontal = false;
+	bool bIsLeft = false;
+	if (Interface == nullptr || !Interface->GetJoyConGrip(Handle, bHorizontal, bIsLeft))
+	{
+		return FQuat::Identity;
+	}
+	return UJoyShockLibrary::GetJoyConGripUndoRotation(bHorizontal, bIsLeft);
+}
+
+// Takes a whole motion state out of a sideways Joy-Con's frame. Identity does nothing, so callers need no
+// guard of their own.
+static void ApplyGripUndo(FJSL4UMotionState& MotionState, const FQuat& GripUndo)
+{
+	if (GripUndo.IsIdentity())
+	{
+		return;
+	}
+
+	// Conjugated -- both sides -- and the reason is the reset that starts a manual calibration.
+	//
+	// The orientation is a rotation FROM a reference pose TO the controller's current one, and
+	// motion.Reset() (which Start Manual Gyro Calibration cues) makes the pose the player is holding
+	// become that reference. So the quarter turn sits in both frames at once, not just in the device's.
+	// Taking it out of one side only counted it twice: at the very moment of calibrating, with the
+	// controller perfectly still, the reading came back as a 90 degree roll -- a Joy-Con calibrated lying
+	// sideways reported itself as standing up, and stayed a quarter turn out from then on.
+	//
+	// Conjugating satisfies both things at once, which one-sided multiplication cannot:
+	//   - calibrate in the grip you play in, and the reading is neutral, like every other controller;
+	//   - turn the far end up, and it arrives as pitch rather than as roll (the bug this whole rotation
+	//     exists for -- a rotation axis is carried into the corrected frame by the same conjugation).
+	//
+	// The three vectors below are readings in the controller's own frame, with no second frame to
+	// reconcile, so they stay a plain rotation.
+	MotionState.Orientation = GripUndo * MotionState.Orientation * GripUndo.Inverse();
+	MotionState.Acceleration = GripUndo.RotateVector(MotionState.Acceleration);
+	MotionState.Gravity = GripUndo.RotateVector(MotionState.Gravity);
+}
+
+// Whether this controller's gyro readings are still in its own frame, which is the only case the grip
+// rotation applies to. In World or Player space the library has already resolved the gyro against gravity,
+// so the reading is relative to the room rather than to the controller and is grip-independent already --
+// rotating it again would take a correctly-reported turn and tilt it a quarter turn out.
+static bool IsGyroInLocalSpace(int32 Handle)
+{
+	return UJoyShockLibrary::JslGetControllerInfoAndSettings(Handle).gyroSpace == 0;
+}
+
+// The library handle that addresses this connection, or INDEX_NONE when nothing of ours answers to it: a
+// pad Unreal drives (negative id), a connection that has ended, or an uninitialised 0.
+//
+// Every public node goes through here, and INDEX_NONE is deliberately passed on down rather than turned
+// into an early return. The layer below is a TMap keyed by handle: a miss returns nullptr, and every getter
+// answers nullptr with the zeroed reading its capability flag already promised. That is what lets a game
+// call Get Motion State on whatever controller the player happens to be holding, Xbox pad included, without
+// asking whose controller it is first.
+// Remembers which (connection, call site) pairs have already been warned about. These warnings come from
+// nodes that are usually called from a Tick -- an options screen driving whatever controller is selected --
+// so warning on every call would bury the log in a single frame. Keyed by the literal's address rather than
+// its text so the hot path costs a hash lookup and no allocation.
+static FCriticalSection GUnservableWarningLock;
+static TSet<TPair<int64, UPTRINT>> GUnservableWarnings;
+
+static int32 HandleForConnection(int64 ConnectionId)
+{
+	FJoyShockInterface* Interface = FJoyShockLibrary4UnrealModule::GetInstance().GetActiveInterface();
+	const int32 Handle = Interface != nullptr ? Interface->GetHandleForConnection(ConnectionId) : INDEX_NONE;
+
+	// A reading that quietly comes back as zeroes is the hardest thing to debug in this whole API: it looks
+	// exactly like a controller lying still. A NEGATIVE id is not that -- it is a pad we do not drive, and
+	// zeroes are the honest answer for hardware without the sensor. Anything else reaching here is an id
+	// that names no live controller of ours: an uninitialised 0, or one whose controller is gone. Said once
+	// per id, so a getter in a Tick cannot bury the log.
+	if (Handle == INDEX_NONE && ConnectionId >= 0)
+	{
+		static const TCHAR* ReadingSite = TEXT("JSL4U reading");
+		bool bAlreadyWarned = false;
+		{
+			FScopeLock Lock(&GUnservableWarningLock);
+			GUnservableWarnings.Add(TPair<int64, UPTRINT>(ConnectionId, reinterpret_cast<UPTRINT>(ReadingSite)),
+				&bAlreadyWarned);
+		}
+		if (!bAlreadyWarned)
+		{
+			FString Live = TEXT("none");
+			if (Interface != nullptr)
+			{
+				TArray<int64> LiveIds;
+				TArray<int32> Handles;
+				UJoyShockLibrary::JslGetConnectedDeviceHandles(Handles);
+				for (int32 LiveHandle : Handles)
+				{
+					const int64 LiveId = Interface->GetConnectionForHandle(LiveHandle);
+					if (LiveId != 0)
+					{
+						LiveIds.Add(LiveId);
+					}
+				}
+				if (LiveIds.Num() > 0)
+				{
+					Live = FString::JoinBy(LiveIds, TEXT(", "), [](int64 Id) { return LexToString(Id); });
+				}
+			}
+			UE_LOG(LogJoyShockLibrary, Warning,
+				TEXT("JSL4U: asked to read connection %lld, which is not a connected controller, so every ")
+				TEXT("reading for it is zero. Connected right now: %s. A 0 here means the Blueprint passed an ")
+				TEXT("unset variable -- Connection Id comes from the controller info a Wait For ... Changes ")
+				TEXT("pin or Get All Connected Controllers handed you."),
+				ConnectionId, *Live);
+		}
+	}
+	return Handle;
+}
+
+// Resolves for a node that DRIVES a controller, warning once when nothing of ours answers to the id.
+//
+// Silence would be wrong here in a way it is not for a getter: a getter that returns zeroes has told the
+// truth (the pad has no gyro to report), while "set the light colour" quietly doing nothing looks like a
+// bug in the game. The call still does nothing -- that is the honest answer for hardware that lacks the
+// feature -- but it says so once.
+static int32 HandleForOutput(int64 ConnectionId, const TCHAR* NodeName)
+{
+	const int32 Handle = HandleForConnection(ConnectionId);
+	if (Handle != INDEX_NONE)
+	{
+		return Handle;
+	}
+
+	{
+		FScopeLock Lock(&GUnservableWarningLock);
+		bool bAlreadyWarned = false;
+		GUnservableWarnings.Add(TPair<int64, UPTRINT>(ConnectionId, reinterpret_cast<UPTRINT>(NodeName)),
+			&bAlreadyWarned);
+		if (bAlreadyWarned)
+		{
+			return INDEX_NONE;
+		}
+	}
+
+	// The two cases read differently to whoever is debugging, so they are named apart: a negative id is a
+	// pad this plugin does not drive (the game asked for something only its own controllers can do), while
+	// anything else is an id that no longer refers to a live controller.
+	if (ConnectionId < 0)
+	{
+		UE_LOG(LogJoyShockLibrary, Warning,
+			TEXT("%s: connection %lld is a controller this plugin does not drive, so this did nothing. ")
+			TEXT("Its rumble is reachable (Set Controller Rumble routes it through Unreal's force feedback); ")
+			TEXT("everything else here needs hardware it does not have. Check the capability flag on the ")
+			TEXT("controller info before offering the option."), NodeName, ConnectionId);
+	}
+	else
+	{
+		UE_LOG(LogJoyShockLibrary, Warning,
+			TEXT("%s: no connected controller has connection id %lld, so this did nothing. Connection ids ")
+			TEXT("are not reused, so this one belongs to a controller that has been disconnected."),
+			NodeName, ConnectionId);
+	}
+	return INDEX_NONE;
 }
 
 TArray<FJSL4UControllerInfo> UJoyShockLibrary::JSL4UGetConnectedControllers()
@@ -1423,29 +1620,58 @@ TArray<FJSL4UControllerInfo> UJoyShockLibrary::JSL4UGetConnectedControllers()
 	FJoyShockLibrary4UnrealModule& JSL4UModule = FJoyShockLibrary4UnrealModule::GetInstance();
 	FJoyShockInterface* Interface = JSL4UModule.GetActiveInterface();
 
-	TArray<FJSL4UControllerInfo> Result;
+	// Each entry keeps the handle it was built from only for as long as this function runs: it is what the
+	// interface is asked about below, and it is deliberately not carried out of here.
+	TArray<TPair<int32, FJSL4UControllerInfo>> Found;
 	{
 		// One shared lock for every device, rather than one per device per getter.
 		std::shared_lock<std::shared_timed_mutex> lock(JSL4UModule._connectedLock);
 
-		Result.Reserve(_joyshocks.Num());
+		Found.Reserve(_joyshocks.Num());
 		for (const TTuple<int32, JoyShock*>& Pair : _joyshocks)
 		{
 			// Same filter as JslGetConnectedDeviceHandles: only controllers that have actually delivered
 			// input, so a device still lingering in enumeration after a disconnect never shows up here.
 			if (Pair.Value != nullptr && Pair.Value->has_delivered_input.load())
 			{
-				Result.Add(JSL4UMakeControllerInfo(Pair.Key, JSL4UReadJslSettings(Pair.Value), Pair.Value));
+				Found.Add({ Pair.Key, JSL4UMakeControllerInfo(JSL4UReadJslSettings(Pair.Value), Pair.Value) });
 			}
 		}
 	}
 
-	Result.Sort([](const FJSL4UControllerInfo& A, const FJSL4UControllerInfo& B) { return A.DeviceId < B.DeviceId; });
-
-	for (FJSL4UControllerInfo& Info : Result)
+	// A controller the library has opened is not yet a controller the engine knows about: the connect is
+	// raised on a polling thread and only becomes an engine identity when the interface drains it on the
+	// game thread (see PendingConnects). In between -- a whole engine-init's worth of frames for a
+	// controller that was already plugged in at launch, since nothing drains until the loop starts ticking
+	// -- the device is here, working and delivering input, with no Connection Id, no Input Device Id and no
+	// player slot yet allocated.
+	//
+	// Listing it in that window handed out an identity that was simply the struct's defaults: Connection Id
+	// 0, Input Device Id -1. Zero is not a Connection Id this plugin ever issues (they count from 1), so
+	// anything keyed by it -- the demo's HUD, any per-controller map -- filed the controller under a key
+	// that the connect event contradicted a frame later, and Get All Connected Controllers listed the same
+	// pad twice, once as ours and once as an undriven device, because the -1 defeated its de-duplication.
+	//
+	// So the listing waits for the identity instead of inventing one. What a caller loses is a controller
+	// for the frames before it is announced; what it gains is that every controller in this list has an
+	// identity that agrees with the one Wait For Controller Changes and Wait For Any Controller Changes
+	// report, which is the whole point of the list.
+	TArray<FJSL4UControllerInfo> Result;
+	Result.Reserve(Found.Num());
+	for (TPair<int32, FJSL4UControllerInfo>& Entry : Found)
 	{
-		JSL4UFillPlayerFields(Info, Interface);
+		if (JSL4UFillPlayerFields(Entry.Value, Entry.Key, Interface))
+		{
+			Result.Add(MoveTemp(Entry.Value));
+		}
 	}
+
+	// Connection order, which is what the ids count. It used to be handle order, and for the plugin's own
+	// controllers the two agree often enough that no caller can tell them apart -- but handle order is the
+	// library's business and no longer visible from a Blueprint, so ordering by the one identity the caller
+	// can see is the only order it can reason about.
+	Result.Sort([](const FJSL4UControllerInfo& A, const FJSL4UControllerInfo& B)
+		{ return A.ConnectionId < B.ConnectionId; });
 	return Result;
 }
 
@@ -1453,18 +1679,15 @@ FJSL4UControllerInfo UJoyShockLibrary::JSL4UDescribeUndrivenDevice(FPlatformUser
 	FInputDeviceId InputDevice)
 {
 	// Fill in what Unreal knows about any input device and leave the rest at its defaults, which is what
-	// bIsJoyShockController staying false tells a Blueprint to expect. Device Id is explicitly -1 rather
-	// than the field's default of 0, so a controller this plugin cannot address can never be mistaken for
-	// its device 0 -- and that -1 is the test for "can I call the controller-specific nodes on this".
+	// bIsJoyShockController staying false tells a Blueprint to expect.
 	FJSL4UControllerInfo Info;
 	Info.bIsJoyShockController = false;
-	Info.DeviceId = INDEX_NONE;
 	Info.InputDeviceId = InputDevice.GetId();
 
-	// Connection Id is the one identity here no JSL4U call consumes, so unlike Device Id it can carry a
-	// real value for a controller this plugin does not drive -- and it has to. Left at its default of 0,
-	// every XInput pad shared one key: a second one collided with the first in any map keyed by it, and a
-	// disconnect removed whichever entry sat on 0. The demo's controller mirror keys exactly this way.
+	// A pad this plugin does not drive still needs a name, and this is it: the same address every other
+	// controller has, so one map, one node signature and one Blueprint path cover both kinds. Left at its
+	// default of 0, every XInput pad shared one key -- a second one collided with the first in any map keyed
+	// by it, and a disconnect removed whichever entry sat on 0.
 	//
 	// Negative, derived from Unreal's device id: the interface counts Connection Ids up from 1 (see
 	// NextConnectionId in JoyShockInterface), so the two sources share a map without ever colliding.
@@ -1480,7 +1703,7 @@ FJSL4UControllerInfo UJoyShockLibrary::JSL4UDescribeUndrivenDevice(FPlatformUser
 	Info.bIsConnected = true;
 
 	// The capability flags describe the HARDWARE, not what this plugin can drive -- "can I drive it" is
-	// what Device Id -1 already says. An XInput pad has rumble motors and a game should offer the setting
+	// what Is Joy Shock Controller says. An XInput pad has rumble motors and a game should offer the setting
 	// for it; that rumble is reached through Unreal's own force feedback, which drives our controllers and
 	// this one from the same authored effect. Reporting false here made a game hide its vibration options
 	// from the one pad every player owns. Motion, touchpad, lights and the player indicator stay false
@@ -1542,19 +1765,22 @@ bool UJoyShockLibrary::JSL4UIsControllerTypeJoinable(EJSL4UControllerType Contro
 		|| ControllerType == EJSL4UControllerType::JoyConRight;
 }
 
-bool UJoyShockLibrary::JSL4UJoinJoyCons(int32 DeviceIdA, int32 DeviceIdB)
+bool UJoyShockLibrary::JSL4UJoinJoyCons(int64 ConnectionIdA, int64 ConnectionIdB)
 {
-	if (DeviceIdA == DeviceIdB)
+	if (ConnectionIdA == ConnectionIdB)
 	{
 		return false;
 	}
+
+	const int32 DeviceIdA = HandleForOutput(ConnectionIdA, TEXT("JSL4UJoinJoyCons"));
+	const int32 DeviceIdB = HandleForOutput(ConnectionIdB, TEXT("JSL4UJoinJoyCons"));
 
 	const EJSL4UControllerType TypeA = JSL4UControllerTypeFromLegacy(JslGetControllerType(DeviceIdA));
 	const EJSL4UControllerType TypeB = JSL4UControllerTypeFromLegacy(JslGetControllerType(DeviceIdB));
 
 	if (!JSL4UIsControllerTypeJoinable(TypeA) || !JSL4UIsControllerTypeJoinable(TypeB))
 	{
-		UE_LOG(LogJoyShockLibrary, Warning, TEXT("JSL4UJoinJoyCons: both device ids must be Joy-Cons (got %d and %d)."), DeviceIdA, DeviceIdB);
+		UE_LOG(LogJoyShockLibrary, Warning, TEXT("JSL4UJoinJoyCons: both controllers must be Joy-Cons (connections %lld and %lld)."), ConnectionIdA, ConnectionIdB);
 		return false;
 	}
 
@@ -1568,8 +1794,9 @@ bool UJoyShockLibrary::JSL4UJoinJoyCons(int32 DeviceIdA, int32 DeviceIdB)
 	return Interface != nullptr && Interface->JoinControllers(DeviceIdA, DeviceIdB);
 }
 
-void UJoyShockLibrary::JSL4UUnjoinJoyCon(int32 DeviceId)
+void UJoyShockLibrary::JSL4UUnjoinJoyCon(int64 ConnectionId)
 {
+	const int32 DeviceId = HandleForOutput(ConnectionId, TEXT("JSL4UUnjoinJoyCon"));
 	if (FJoyShockInterface* Interface = FJoyShockLibrary4UnrealModule::GetInstance().GetActiveInterface())
 	{
 		Interface->UnjoinController(DeviceId);
@@ -1584,52 +1811,72 @@ void UJoyShockLibrary::JSL4UUnjoinAllJoyCons()
 	}
 }
 
-bool UJoyShockLibrary::JSL4USetJoyConGripMode(int32 DeviceId, EJSL4UJoyConGripMode GripMode)
+bool UJoyShockLibrary::JSL4USetJoyConGripMode(int64 ConnectionId, EJSL4UJoyConGripMode GripMode)
 {
+	// Before resolving, so asking for a grip mode that means nothing is not also reported as a controller
+	// that could not be served.
 	if (GripMode == EJSL4UJoyConGripMode::NotApplicable)
 	{
 		return false;
 	}
+
+	const int32 DeviceId = HandleForOutput(ConnectionId, TEXT("JSL4USetJoyConGripMode"));
 	FJoyShockInterface* Interface = FJoyShockLibrary4UnrealModule::GetInstance().GetActiveInterface();
 	return Interface != nullptr
 		&& Interface->SetJoyConHorizontal(DeviceId, GripMode == EJSL4UJoyConGripMode::Horizontal);
 }
 
-bool UJoyShockLibrary::JSL4UGetJoyConPartner(int32 DeviceId, int32& PartnerDeviceId)
+bool UJoyShockLibrary::JSL4UGetJoyConPartner(int64 ConnectionId, int64& PartnerConnectionId)
 {
+	PartnerConnectionId = 0;
+
 	FJoyShockInterface* Interface = FJoyShockLibrary4UnrealModule::GetInstance().GetActiveInterface();
-	PartnerDeviceId = Interface != nullptr ? Interface->GetJoinPartner(DeviceId) : INDEX_NONE;
-	return PartnerDeviceId != INDEX_NONE;
+	if (Interface == nullptr)
+	{
+		return false;
+	}
+
+	const int32 PartnerHandle = Interface->GetJoinPartner(Interface->GetHandleForConnection(ConnectionId));
+	if (PartnerHandle == INDEX_NONE)
+	{
+		return false;
+	}
+
+	// Named as the caller names everything else. A partner that has just left resolves to 0, which reads the
+	// same as "no partner" -- and is the truth by then.
+	PartnerConnectionId = Interface->GetConnectionForHandle(PartnerHandle);
+	return PartnerConnectionId != 0;
 }
 
-bool UJoyShockLibrary::JSL4UIsJoyConPrimary(int32 DeviceId)
+bool UJoyShockLibrary::JSL4UIsJoyConPrimary(int64 ConnectionId)
 {
+	const int32 DeviceId = HandleForConnection(ConnectionId);
 	FJoyShockInterface* Interface = FJoyShockLibrary4UnrealModule::GetInstance().GetActiveInterface();
 	// Without an interface there is no pairing at all, so every device stands alone -- and a standalone
 	// device is its own primary. Returning true keeps a mirror visible rather than hiding everything.
 	return Interface == nullptr || Interface->IsJoinPrimary(DeviceId);
 }
 
-bool UJoyShockLibrary::JSL4UGetJoyConPair(int32 DeviceId, FJSL4UControllerInfo& PrimaryController,
+bool UJoyShockLibrary::JSL4UGetJoyConPair(int64 ConnectionId, FJSL4UControllerInfo& PrimaryController,
 	FJSL4UControllerInfo& PartnerController)
 {
-	PrimaryController = JSL4UGetControllerInfo(DeviceId);
+	PrimaryController = JSL4UGetControllerInfo(ConnectionId);
 	PartnerController = FJSL4UControllerInfo();
 
-	int32 PartnerDeviceId = INDEX_NONE;
-	if (!JSL4UGetJoyConPartner(DeviceId, PartnerDeviceId))
+	int64 PartnerConnectionId = 0;
+	if (!JSL4UGetJoyConPartner(ConnectionId, PartnerConnectionId))
 	{
 		// Standalone: the caller's controller leads a group of one. Partner stays unset rather than being
 		// filled with a copy, so "is there a second half" is answerable from the struct alone.
 		return false;
 	}
 
-	const FJSL4UControllerInfo OtherInfo = JSL4UGetControllerInfo(PartnerDeviceId);
+	const FJSL4UControllerInfo OtherInfo = JSL4UGetControllerInfo(PartnerConnectionId);
 
 	// Order the two by the plugin's own grouping rule instead of by which half was asked about. Both halves
 	// therefore get identical answers, which is what lets a caller act on a pair without first working out
 	// which of the two it is holding.
-	if (JSL4UIsJoyConPrimary(DeviceId))
+	if (JSL4UIsJoyConPrimary(ConnectionId))
 	{
 		PartnerController = OtherInfo;
 	}
@@ -1681,20 +1928,18 @@ int32 UJoyShockLibrary::JSL4UGetMaxLocalPlayers(const UObject* WorldContextObjec
 
 bool UJoyShockLibrary::JSL4UAssignControllerToPlayerIndex(const FJSL4UControllerInfo& Controller, int32 PlayerIndex)
 {
-	const int32 DeviceId = Controller.DeviceId;
-
 	// A controller this plugin does not drive has no slot in the plugin's table, and does not need one: the
 	// engine decides which player an input device feeds by which platform user it is mapped to, so moving
 	// it means remapping it there. Doing that here rather than making the caller find out which kind it is
-	// holding is the whole point of taking the description instead of a device id.
-	if (DeviceId < 0)
+	// holding is the whole point of taking the description instead of a bare id.
+	if (!Controller.bIsJoyShockController)
 	{
 		if (Controller.InputDeviceId < 0)
 		{
 			UE_LOG(LogJoyShockLibrary, Warning,
-				TEXT("JSL4UAssignControllerToPlayerIndex: this controller has neither a device id nor an Unreal ")
-				TEXT("input device id, so there is nothing to assign. Pass a controller from Get All Connected ")
-				TEXT("Controllers or from one of the Wait For ... Changes nodes."));
+				TEXT("JSL4UAssignControllerToPlayerIndex: this controller has no Unreal input device id, so ")
+				TEXT("there is nothing to assign. Pass a controller from Get All Connected Controllers or ")
+				TEXT("from one of the Wait For ... Changes nodes."));
 			return false;
 		}
 
@@ -1726,18 +1971,21 @@ bool UJoyShockLibrary::JSL4UAssignControllerToPlayerIndex(const FJSL4UController
 	if (Interface == nullptr)
 	{
 		UE_LOG(LogJoyShockLibrary, Warning,
-			TEXT("JSL4UAssignControllerToPlayerIndex: no input interface yet, so device %d was not assigned."), DeviceId);
+			TEXT("JSL4UAssignControllerToPlayerIndex: no input interface yet, so connection %lld was not assigned."),
+			Controller.ConnectionId);
 		return false;
 	}
 
-	if (!Interface->SetPlayerIndexForDevice(DeviceId, PlayerIndex))
+	// Resolved from the id rather than trusted from the struct: a caller can be holding a description from
+	// an earlier event, and this is the point where "that controller is gone" has to become a failure
+	// instead of an assignment landing on whichever controller took its place.
+	if (!Interface->SetPlayerIndexForDevice(Interface->GetHandleForConnection(Controller.ConnectionId), PlayerIndex))
 	{
-		// The only way that fails is the handle not being a connected controller, which is worth naming --
-		// a stale or wrong device id looks identical to "the assignment didn't work" from Blueprint.
 		UE_LOG(LogJoyShockLibrary, Warning,
-			TEXT("JSL4UAssignControllerToPlayerIndex: %d is not a connected controller, so it was not assigned to player %d. ")
-			TEXT("Device ids come from JSL4UGetConnectedControllers and are not array indices."),
-			DeviceId, PlayerIndex);
+			TEXT("JSL4UAssignControllerToPlayerIndex: connection %lld is not a connected controller, so it was ")
+			TEXT("not assigned to player %d. Connection ids are not reused, so a stored one whose controller ")
+			TEXT("has been unplugged fails here rather than moving somebody else's controller."),
+			Controller.ConnectionId, PlayerIndex);
 		return false;
 	}
 
@@ -1746,14 +1994,13 @@ bool UJoyShockLibrary::JSL4UAssignControllerToPlayerIndex(const FJSL4UController
 
 bool UJoyShockLibrary::JSL4UAssignControllerToPlayer(const FJSL4UControllerInfo& Controller, APlayerController* PlayerController)
 {
-	const int32 DeviceId = Controller.DeviceId;
 	if (PlayerController == nullptr)
 	{
 		UE_LOG(LogJoyShockLibrary, Warning,
-			TEXT("JSL4UAssignControllerToPlayer: no player controller given, so device %d was not assigned. ")
+			TEXT("JSL4UAssignControllerToPlayer: no player controller given, so connection %lld was not assigned. ")
 			TEXT("Create Local Player returns null when it cannot make another player -- check the viewport's "
 			TEXT("MaxSplitscreenPlayers if that is where this came from.")),
-			DeviceId);
+			Controller.ConnectionId);
 		return false;
 	}
 
@@ -1770,10 +2017,10 @@ bool UJoyShockLibrary::JSL4UAssignControllerToPlayer(const FJSL4UControllerInfo&
 	if (!User.IsValid() || UserIndex < 0)
 	{
 		UE_LOG(LogJoyShockLibrary, Warning,
-			TEXT("JSL4UAssignControllerToPlayer: %s has no platform user yet, so device %d was not assigned. ")
+			TEXT("JSL4UAssignControllerToPlayer: %s has no platform user yet, so connection %lld was not assigned. ")
 			TEXT("Assign after the player controller has been created and possesses its pawn -- from the pawn's "
 			TEXT("Possessed By, for instance, rather than from a Begin Play.")),
-			*PlayerController->GetName(), DeviceId);
+			*PlayerController->GetName(), Controller.ConnectionId);
 		return false;
 	}
 
@@ -1827,8 +2074,24 @@ TArray<FJSL4UControllerInfo> UJoyShockLibrary::JSL4UGetControllersAssignedToPlay
 // session with no way back short of restarting the editor. Removed rather than given a JSL4U name --
 // there is no situation in which a game should be tearing the device layer down underneath itself.
 
-bool UJoyShockLibrary::JSL4UIsControllerConnected(int32 DeviceId)
+bool UJoyShockLibrary::JSL4UIsControllerConnected(int64 ConnectionId)
 {
+	// "Is this controller still there" is the one question a game asks about EVERY controller it has an id
+	// for, so answering only for ours would make a caller keep a second test for the pads it does not drive
+	// -- and every Blueprint holding a stored id would need to know which kind it stored.
+	if (ConnectionId < 0)
+	{
+		const FInputDeviceId InputDevice = FInputDeviceId::CreateFromInternalId(
+			static_cast<int32>(-ConnectionId - 1));
+		TArray<FInputDeviceId> ConnectedDevices;
+		IPlatformInputDeviceMapper::Get().GetAllConnectedInputDevices(ConnectedDevices);
+		return ConnectedDevices.Contains(InputDevice);
+	}
+
+	// For ours, the id resolving at all already means a live connection -- the interface only answers for
+	// handles it has connected -- and the library-side test below then agrees with what the listings show.
+	const int32 DeviceId = HandleForConnection(ConnectionId);
+
 	FJoyShockLibrary4UnrealModule& JSL4UModule = FJoyShockLibrary4UnrealModule::GetInstance();
 
 	std::shared_lock<std::shared_timed_mutex> lock(JSL4UModule._connectedLock);
@@ -1885,8 +2148,9 @@ FJoyShockState UJoyShockLibrary::JslGetSimpleState(int32 deviceId)
 	return {};
 }
 
-FJSL4UJoyShockState UJoyShockLibrary::JSL4UGetControllerState(int32 DeviceId)
+FJSL4UJoyShockState UJoyShockLibrary::JSL4UGetControllerState(int64 ConnectionId)
 {
+	const int32 DeviceId = HandleForConnection(ConnectionId);
 	const FJoyShockState& LegacySimpleState = JslGetSimpleState(DeviceId);
 	return {
 		.Buttons = LegacySimpleState.buttons,
@@ -1910,17 +2174,25 @@ FIMUState UJoyShockLibrary::JslGetIMUState(int32 deviceId)
 	return {};
 }
 
-FJSL4UIMUState UJoyShockLibrary::JSL4UGetIMUState(int32 DeviceID)
+FJSL4UIMUState UJoyShockLibrary::JSL4UGetIMUState(int64 ConnectionId)
 {
+	const int32 DeviceID = HandleForConnection(ConnectionId);
+	const FQuat GripUndo = GripUndoRotationForHandle(DeviceID);
+	const bool bRotateGyro = !GripUndo.IsIdentity() && IsGyroInLocalSpace(DeviceID);
+
 	const FIMUState& LegacyIMUState = JslGetIMUState(DeviceID);
+	const FVector Acceleration(LegacyIMUState.accelZ, LegacyIMUState.accelX, -LegacyIMUState.accelY);
+	// Negate rotation around vertical axis to make up for different handedness
+	const FVector Gyro(-LegacyIMUState.gyroZ, LegacyIMUState.gyroX, -LegacyIMUState.gyroY);
 	return {
-		.Acceleration = FVector(LegacyIMUState.accelZ, LegacyIMUState.accelX, -LegacyIMUState.accelY),
-		.Gyro = FVector(-LegacyIMUState.gyroZ, LegacyIMUState.gyroX, -LegacyIMUState.gyroY) // Negate rotation around vertical axis to make up for different handedness 
+		.Acceleration = GripUndo.RotateVector(Acceleration),
+		.Gyro = bRotateGyro ? GripUndo.RotateVector(Gyro) : Gyro
 	};
 }
 
-FJSL4UIMUState UJoyShockLibrary::JSL4UGetRawIMUState(int32 DeviceID)
+FJSL4UIMUState UJoyShockLibrary::JSL4UGetRawIMUState(int64 ConnectionId)
 {
+	const int32 DeviceID = HandleForConnection(ConnectionId);
 	const FIMUState& LegacyIMUState = JslGetIMUState(DeviceID);
 	return {
 		.Acceleration = FVector(LegacyIMUState.accelX, LegacyIMUState.accelY, LegacyIMUState.accelZ),
@@ -1946,7 +2218,12 @@ FMotionState UJoyShockLibrary::JslGetMotionState(int32 deviceId)
 	return {};
 }
 
-FJSL4UMotionState UJoyShockLibrary::JSL4UGetMotionState(int32 DeviceID)
+FJSL4UMotionState UJoyShockLibrary::JSL4UGetMotionState(int64 ConnectionId)
+{
+	return GetMotionStateForHandle(HandleForConnection(ConnectionId));
+}
+
+FJSL4UMotionState UJoyShockLibrary::GetMotionStateForHandle(int32 DeviceHandle)
 {
 	/* TEMP DEBUG
 	FVector Origin = FVector(280.0, 0.0f, 0.0f);
@@ -1956,8 +2233,8 @@ FJSL4UMotionState UJoyShockLibrary::JSL4UGetMotionState(int32 DeviceID)
 	// FVector TempFlattened = FVector(GamepadMotionHelpers::Motion::FlattenedX, GamepadMotionHelpers::Motion::FlattenedY, GamepadMotionHelpers::Motion::FlattenedZ);
 	UKismetSystemLibrary::DrawDebugArrow(World, Origin, Origin + TempFlattened * 200.0f, 2.0f, FColor::Red);
 	TEMP DEBUG */
-	
-	FMotionState NativeMotionState = JslGetMotionState(DeviceID);
+
+	FMotionState NativeMotionState = JslGetMotionState(DeviceHandle);
 	FJSL4UMotionState UnrealMotionState;
 
 
@@ -1975,11 +2252,20 @@ FJSL4UMotionState UJoyShockLibrary::JSL4UGetMotionState(int32 DeviceID)
 
 	UnrealMotionState.Acceleration = FVector(NativeMotionState.accelZ, NativeMotionState.accelX, -NativeMotionState.accelY);
 	UnrealMotionState.Gravity = FVector(-NativeMotionState.gravZ, NativeMotionState.gravX, NativeMotionState.gravY);
+
+	// A Joy-Con held sideways reports everything a quarter turn out of true, orientation included -- see
+	// GetJoyConGripUndoRotation for what the turn is, and ApplyGripUndo for why the orientation is
+	// conjugated while the vectors are simply rotated.
+	//
+	// This is the getter a game reads to aim, so it is the one that has to be right: pointing the far end of
+	// a sideways Joy-Con up used to arrive as roll, leaving the pitch a game reads dead still.
+	ApplyGripUndo(UnrealMotionState, GripUndoRotationForHandle(DeviceHandle));
 	return UnrealMotionState;
 }
 
-FJSL4UMotionState UJoyShockLibrary::JSL4UGetRawMotionState(int32 DeviceID)
+FJSL4UMotionState UJoyShockLibrary::JSL4UGetRawMotionState(int64 ConnectionId)
 {
+	const int32 DeviceID = HandleForConnection(ConnectionId);
 	FMotionState NativeMotionState = JslGetMotionState(DeviceID);
 	FJSL4UMotionState UnrealMotionState;
 
@@ -1992,6 +2278,10 @@ FJSL4UMotionState UJoyShockLibrary::JSL4UGetRawMotionState(int32 DeviceID)
 
 	UnrealMotionState.Acceleration = FVector(NativeMotionState.accelZ, NativeMotionState.accelX, -NativeMotionState.accelY);
 	UnrealMotionState.Gravity = FVector(-NativeMotionState.gravZ, NativeMotionState.gravX, NativeMotionState.gravY);
+
+	// "Raw" here means without the gravity correction, not in some other space -- so the grip comes out of
+	// this one too, or the two getters would describe different spaces the moment a Joy-Con is held sideways.
+	ApplyGripUndo(UnrealMotionState, GripUndoRotationForHandle(DeviceID));
 	return UnrealMotionState;
 }
 
@@ -2008,8 +2298,9 @@ FTouchState UJoyShockLibrary::JslGetTouchState(int32 deviceId, bool previous)
 	return {};
 }
 
-FJSL4UTouchState UJoyShockLibrary::JSL4UGetTouchState(int32 DeviceId, bool bPrevious)
+FJSL4UTouchState UJoyShockLibrary::JSL4UGetTouchState(int64 ConnectionId, bool bPrevious)
 {
+	const int32 DeviceId = HandleForConnection(ConnectionId);
 	const FTouchState& LegacyTouchState = JslGetTouchState(DeviceId, bPrevious);
 
 	return {
@@ -2026,8 +2317,9 @@ FJSL4UTouchState UJoyShockLibrary::JSL4UGetTouchState(int32 DeviceId, bool bPrev
 	};
 }
 
-FVector2D UJoyShockLibrary::JSL4UGetTouchpadSize(int32 DeviceId)
+FVector2D UJoyShockLibrary::JSL4UGetTouchpadSize(int64 ConnectionId)
 {
+	const int32 DeviceId = HandleForConnection(ConnectionId);
 	int32 SizeX = 0;
 	int32 SizeY = 0;
 	// Returns zero for a controller with no touchpad, which is also what the legacy call leaves behind.
@@ -2075,8 +2367,9 @@ int32 UJoyShockLibrary::JslGetButtons(int32 deviceId)
 	return 0;
 }
 
-FVector2D UJoyShockLibrary::JSL4UGetLeftStick(int32 DeviceId)
+FVector2D UJoyShockLibrary::JSL4UGetLeftStick(int64 ConnectionId)
 {
+	const int32 DeviceId = HandleForConnection(ConnectionId);
 	FJoyShockLibrary4UnrealModule& JSL4UModule = FJoyShockLibrary4UnrealModule::GetInstance();
 	
 	std::shared_lock<std::shared_timed_mutex> lock(JSL4UModule._connectedLock);
@@ -2115,8 +2408,9 @@ float UJoyShockLibrary::JslGetLeftY(int32 deviceId)
 	return 0.0f;
 }
 
-FVector2D UJoyShockLibrary::JSL4UGetRightStick(int32 DeviceId)
+FVector2D UJoyShockLibrary::JSL4UGetRightStick(int64 ConnectionId)
 {
+	const int32 DeviceId = HandleForConnection(ConnectionId);
 	FJoyShockLibrary4UnrealModule& JSL4UModule = FJoyShockLibrary4UnrealModule::GetInstance();
 	
 	std::shared_lock<std::shared_timed_mutex> lock(JSL4UModule._connectedLock);
@@ -2231,11 +2525,19 @@ void UJoyShockLibrary::JslGetAndFlushAccumulatedGyro(int32 deviceId, float& gyro
 	gyroX = gyroY = gyroZ = 0.f;
 }
 
-FVector UJoyShockLibrary::JSL4UGetAndClearAccumulatedGyro(int32 DeviceId)
+FVector UJoyShockLibrary::JSL4UGetAndClearAccumulatedGyro(int64 ConnectionId)
 {
+	const int32 DeviceId = HandleForConnection(ConnectionId);
+	const FQuat GripUndo = GripUndoRotationForHandle(DeviceId);
+	// Same rule as the live gyro in JSL4UGetIMUState: only a reading still in the controller's own frame
+	// needs the grip taken out of it. What accumulates here is whatever the poll thread transformed, so the
+	// space question is the same question.
+	const bool bRotate = !GripUndo.IsIdentity() && IsGyroInLocalSpace(DeviceId);
+
 	float GyroX, GyroY, GyroZ;
 	JslGetAndFlushAccumulatedGyro(DeviceId, GyroY, GyroZ, GyroX);
-	return FVector(-GyroX, GyroY, -GyroZ);
+	const FVector Gyro(-GyroX, GyroY, -GyroZ);
+	return bRotate ? GripUndo.RotateVector(Gyro) : Gyro;
 }
 
 void UJoyShockLibrary::JslSetGyroSpace(int32 deviceId, int32 gyroSpace)
@@ -2259,8 +2561,9 @@ void UJoyShockLibrary::JslSetGyroSpace(int32 deviceId, int32 gyroSpace)
 	}
 }
 
-void UJoyShockLibrary::JSL4USetGyroSpace(int32 DeviceId, EJSL4UGyroSpace GyroSpace)
+void UJoyShockLibrary::JSL4USetGyroSpace(int64 ConnectionId, EJSL4UGyroSpace GyroSpace)
 {
+	const int32 DeviceId = HandleForOutput(ConnectionId, TEXT("JSL4USetGyroSpace"));
 	JslSetGyroSpace(DeviceId, static_cast<int32>(GyroSpace));
 }
 
@@ -2338,8 +2641,9 @@ bool UJoyShockLibrary::JslGetTouchDown(int32 deviceId, bool secondTouch)
 	return false;
 }
 
-FVector2D UJoyShockLibrary::JSL4UGetTouchPosition(int32 DeviceId, bool bSecondTouch)
+FVector2D UJoyShockLibrary::JSL4UGetTouchPosition(int64 ConnectionId, bool bSecondTouch)
 {
+	const int32 DeviceId = HandleForConnection(ConnectionId);
 	FJoyShockLibrary4UnrealModule& JSL4UModule = FJoyShockLibrary4UnrealModule::GetInstance();
 	
 	std::shared_lock<std::shared_timed_mutex> lock(JSL4UModule._connectedLock);
@@ -2392,23 +2696,27 @@ float UJoyShockLibrary::JslGetTouchY(int32 deviceId, bool secondTouch)
 }
 
 // analog parameters have different resolutions depending on device
-float UJoyShockLibrary::JSL4UGetStickResolutionStep(int32 DeviceId)
+float UJoyShockLibrary::JSL4UGetStickResolutionStep(int64 ConnectionId)
 {
+	const int32 DeviceId = HandleForConnection(ConnectionId);
 	return JslGetStickStep(DeviceId);
 }
 
-float UJoyShockLibrary::JSL4UGetTriggerResolutionStep(int32 DeviceId)
+float UJoyShockLibrary::JSL4UGetTriggerResolutionStep(int64 ConnectionId)
 {
+	const int32 DeviceId = HandleForConnection(ConnectionId);
 	return JslGetTriggerStep(DeviceId);
 }
 
-float UJoyShockLibrary::JSL4UGetPollInterval(int32 DeviceId)
+float UJoyShockLibrary::JSL4UGetPollInterval(int64 ConnectionId)
 {
+	const int32 DeviceId = HandleForConnection(ConnectionId);
 	return JslGetPollRate(DeviceId);
 }
 
-float UJoyShockLibrary::JSL4UGetSecondsSinceLastReport(int32 DeviceId)
+float UJoyShockLibrary::JSL4UGetSecondsSinceLastReport(int64 ConnectionId)
 {
+	const int32 DeviceId = HandleForConnection(ConnectionId);
 	return JslGetTimeSinceLastUpdate(DeviceId);
 }
 
@@ -2493,30 +2801,35 @@ static void JSL4UGyroFromUnreal(const FVector& InVector, float& OutJslX, float& 
 	OutJslZ = -InVector.X;
 }
 
-void UJoyShockLibrary::JSL4USetGyroCalibrationMode(int32 DeviceId, EJSL4UGyroCalibrationMode Mode)
+void UJoyShockLibrary::JSL4USetGyroCalibrationMode(int64 ConnectionId, EJSL4UGyroCalibrationMode Mode)
 {
+	const int32 DeviceId = HandleForOutput(ConnectionId, TEXT("JSL4USetGyroCalibrationMode"));
 	// Automatic is the library's SensorFusion+Stillness pair: it decides for itself when the controller is
 	// being held still. Manual leaves it entirely to JSL4UStartManualGyroCalibration / JSL4UStopManualGyroCalibration.
 	JslSetAutomaticCalibration(DeviceId, Mode == EJSL4UGyroCalibrationMode::Automatic);
 }
 
-void UJoyShockLibrary::JSL4UStartManualGyroCalibration(int32 DeviceId)
+void UJoyShockLibrary::JSL4UStartManualGyroCalibration(int64 ConnectionId)
 {
+	const int32 DeviceId = HandleForOutput(ConnectionId, TEXT("JSL4UStartManualGyroCalibration"));
 	JslStartContinuousCalibration(DeviceId);
 }
 
-void UJoyShockLibrary::JSL4UStopManualGyroCalibration(int32 DeviceId)
+void UJoyShockLibrary::JSL4UStopManualGyroCalibration(int64 ConnectionId)
 {
+	const int32 DeviceId = HandleForOutput(ConnectionId, TEXT("JSL4UStopManualGyroCalibration"));
 	JslPauseContinuousCalibration(DeviceId);
 }
 
-void UJoyShockLibrary::JSL4UResetGyroCalibration(int32 DeviceId)
+void UJoyShockLibrary::JSL4UResetGyroCalibration(int64 ConnectionId)
 {
+	const int32 DeviceId = HandleForOutput(ConnectionId, TEXT("JSL4UResetGyroCalibration"));
 	JslResetContinuousCalibration(DeviceId);
 }
 
-FJSL4UGyroCalibrationStatus UJoyShockLibrary::JSL4UGetGyroCalibrationStatus(int32 DeviceId)
+FJSL4UGyroCalibrationStatus UJoyShockLibrary::JSL4UGetGyroCalibrationStatus(int64 ConnectionId)
 {
+	const int32 DeviceId = HandleForConnection(ConnectionId);
 	FJoyShockLibrary4UnrealModule& JSL4UModule = FJoyShockLibrary4UnrealModule::GetInstance();
 
 	std::shared_lock<std::shared_timed_mutex> lock(JSL4UModule._connectedLock);
@@ -2539,15 +2852,17 @@ FJSL4UGyroCalibrationStatus UJoyShockLibrary::JSL4UGetGyroCalibrationStatus(int3
 	return Status;
 }
 
-FVector UJoyShockLibrary::JSL4UGetGyroCalibrationOffset(int32 DeviceId)
+FVector UJoyShockLibrary::JSL4UGetGyroCalibrationOffset(int64 ConnectionId)
 {
+	const int32 DeviceId = HandleForConnection(ConnectionId);
 	float JslX = 0.f, JslY = 0.f, JslZ = 0.f;
 	JslGetCalibrationOffset(DeviceId, JslX, JslY, JslZ);
 	return JSL4UGyroToUnreal(JslX, JslY, JslZ);
 }
 
-void UJoyShockLibrary::JSL4USetGyroCalibrationOffset(int32 DeviceId, FVector Offset)
+void UJoyShockLibrary::JSL4USetGyroCalibrationOffset(int64 ConnectionId, FVector Offset)
 {
+	const int32 DeviceId = HandleForOutput(ConnectionId, TEXT("JSL4USetGyroCalibrationOffset"));
 	float JslX, JslY, JslZ;
 	JSL4UGyroFromUnreal(Offset, JslX, JslY, JslZ);
 	JslSetCalibrationOffset(DeviceId, JslX, JslY, JslZ);
@@ -2648,7 +2963,7 @@ FJSLAutoCalibration UJoyShockLibrary::JslGetAutoCalibrationStatus(int32 deviceId
 	return {};
 }
 
-FJSL4UControllerInfo UJoyShockLibrary::JSL4UGetControllerInfo(int32 DeviceId)
+FJSL4UControllerInfo UJoyShockLibrary::GetControllerInfoForHandle(int32 Handle)
 {
 	FJoyShockLibrary4UnrealModule& JSL4UModule = FJoyShockLibrary4UnrealModule::GetInstance();
 	FJoyShockInterface* Interface = JSL4UModule.GetActiveInterface();
@@ -2657,16 +2972,44 @@ FJSL4UControllerInfo UJoyShockLibrary::JSL4UGetControllerInfo(int32 DeviceId)
 	{
 		std::shared_lock<std::shared_timed_mutex> lock(JSL4UModule._connectedLock);
 
-		JoyShock* jc = GetJoyShockFromHandle(DeviceId);
+		JoyShock* jc = GetJoyShockFromHandle(Handle);
 		if (jc == nullptr)
 		{
 			return {}; // bIsConnected stays false
 		}
-		Info = JSL4UMakeControllerInfo(DeviceId, JSL4UReadJslSettings(jc), jc);
+		Info = JSL4UMakeControllerInfo(JSL4UReadJslSettings(jc), jc);
 	}
 
-	JSL4UFillPlayerFields(Info, Interface);
+	// Same rule as the listing: a controller whose connect has not reached the game thread yet has no
+	// identity to report, and reporting the defaults as one is what put a Connection Id of 0 into a
+	// Blueprint. Is Connected false is the answer a caller already handles, since it is what an id naming
+	// no live controller gives.
+	if (!JSL4UFillPlayerFields(Info, Handle, Interface))
+	{
+		return {};
+	}
 	return Info;
+}
+
+FJSL4UControllerInfo UJoyShockLibrary::JSL4UGetControllerInfo(int64 ConnectionId)
+{
+	// A pad this plugin does not drive is not an error here: it has a description, it is simply Unreal's
+	// rather than ours, and a caller holding its id deserves the same struct back that the listing gave.
+	if (ConnectionId < 0)
+	{
+		const FInputDeviceId InputDevice = FInputDeviceId::CreateFromInternalId(
+			static_cast<int32>(-ConnectionId - 1));
+		IPlatformInputDeviceMapper& DeviceMapper = IPlatformInputDeviceMapper::Get();
+		TArray<FInputDeviceId> ConnectedDevices;
+		DeviceMapper.GetAllConnectedInputDevices(ConnectedDevices);
+		if (!ConnectedDevices.Contains(InputDevice))
+		{
+			return {};
+		}
+		return JSL4UDescribeUndrivenDevice(DeviceMapper.GetUserForInputDevice(InputDevice), InputDevice);
+	}
+
+	return GetControllerInfoForHandle(HandleForConnection(ConnectionId));
 }
 
 // super-getter for reading a whole lot of state at once
@@ -2741,13 +3084,14 @@ FColor UJoyShockLibrary::JslGetControllerColor(int32 InDeviceId)
 	return FColor::White;
 }
 
-void UJoyShockLibrary::JSL4USetLightColor(int32 DeviceId, FColor Color)
+// Shared by JSL4USetLightColor and the legacy JslSetLightColor, so the two cannot drift.
+static void SetLightColorRaw(int32 DeviceHandle, FColor Color)
 {
 	FJoyShockLibrary4UnrealModule& JSL4UModule = FJoyShockLibrary4UnrealModule::GetInstance();
 
 	std::shared_lock<std::shared_timed_mutex> lock(JSL4UModule._connectedLock);
 
-	JoyShock* jc = GetJoyShockFromHandle(DeviceId);
+	JoyShock* jc = GetJoyShockFromHandle(DeviceHandle);
 	if (jc != nullptr && (jc->controller_type == ControllerType::s_ds4 || jc->controller_type == ControllerType::s_ds))
 	{
 		// Store only -- the polling thread is the sole writer of the output report (see pollIndividualLoop).
@@ -2759,10 +3103,15 @@ void UJoyShockLibrary::JSL4USetLightColor(int32 DeviceId, FColor Color)
 	}
 }
 
+void UJoyShockLibrary::JSL4USetLightColor(int64 ConnectionId, FColor Color)
+{
+	SetLightColorRaw(HandleForOutput(ConnectionId, TEXT("JSL4USetLightColor")), Color);
+}
+
 // set controller light colour (not all controllers have a light whose colour can be set, but that just means nothing will be done when this is called -- no harm)
 void UJoyShockLibrary::JslSetLightColor(int32 InDeviceId, FColor InColor)
 {
-	JSL4USetLightColor(InDeviceId, InColor);
+	SetLightColorRaw(InDeviceId, InColor);
 }
 
 // Shared by JSL4USetControllerRumble and the legacy JslSetRumble. Every controller family now works the same way:
@@ -2812,11 +3161,68 @@ void UJoyShockLibrary::SetForceFeedbackRumble(int32 DeviceId, int32 SmallRumble,
 	jc->modifying_lock.Unlock();
 }
 
-void UJoyShockLibrary::JSL4USetControllerRumble(int32 DeviceId, float SmallRumble, float BigRumble)
+// Buzzes a controller this plugin does not drive, through the only route there is to one: Unreal's own
+// force-feedback channels for the device.
+//
+// Worth being exact about what this can and cannot do, because it is not the same guarantee our own
+// controllers get. We write their motors over HID, so nothing else can overwrite the value. Here the engine
+// owns the channels and rewrites them every frame for any device that belongs to a player, zeroes included,
+// so a value set on an assigned pad survives at most one frame. On an UNASSIGNED pad -- the assignment
+// screen, "buzz this one so you know which it is", which is the job this node exists for -- nothing is
+// ticking those channels and the value stands.
+//
+// For rumble during play, on any pad, the answer remains Unreal's force feedback: it is per-player, it
+// drives ours and the foreign ones from a single authored effect, and it does not fight anybody.
+static void SetUndrivenPadRumble(int64 ConnectionId, float SmallRumble, float BigRumble)
 {
+	// The negative id is derived from Unreal's device id (see JSL4UDescribeUndrivenDevice), so it inverts
+	// exactly rather than needing a lookup.
+	const FInputDeviceId InputDevice = FInputDeviceId::CreateFromInternalId(
+		static_cast<int32>(-ConnectionId - 1));
+
+	IPlatformInputDeviceMapper& DeviceMapper = IPlatformInputDeviceMapper::Get();
+	const FPlatformUserId PlatformUser = DeviceMapper.GetUserForInputDevice(InputDevice);
+
+	// The force-feedback interface is still addressed by the legacy controller id, and the mapper is what
+	// knows which one this device is.
+	int32 ControllerId = INDEX_NONE;
+	if (!DeviceMapper.RemapUserAndDeviceToControllerId(PlatformUser, ControllerId, InputDevice))
+	{
+		return;
+	}
+
+	if (!FSlateApplication::IsInitialized())
+	{
+		return;
+	}
+	IInputInterface* InputInterface = FSlateApplication::Get().GetInputInterface();
+	if (InputInterface == nullptr)
+	{
+		return;
+	}
+
+	// Both sides get the same value: the plugin's two channels are "heavy" and "light" motors, which is what
+	// LeftLarge/RightLarge and LeftSmall/RightSmall are on a pad that reports one pair per side.
+	FForceFeedbackValues Values;
+	Values.LeftLarge = Values.RightLarge = FMath::Clamp(BigRumble, 0.0f, 1.0f);
+	Values.LeftSmall = Values.RightSmall = FMath::Clamp(SmallRumble, 0.0f, 1.0f);
+	InputInterface->SetForceFeedbackChannelValues(ControllerId, Values);
+}
+
+void UJoyShockLibrary::JSL4USetControllerRumble(int64 ConnectionId, float SmallRumble, float BigRumble)
+{
+	// The one output every controller has, so this is the one node that does not simply give up on a pad we
+	// do not drive. Reporting Has Rumble true for an Xbox pad and then refusing to rumble it would be the
+	// worse half of both answers.
+	if (ConnectionId < 0)
+	{
+		SetUndrivenPadRumble(ConnectionId, SmallRumble, BigRumble);
+		return;
+	}
+
 	// Normalised 0..1 to match Unreal's force-feedback convention, rather than the raw 0-255 the HID reports
 	// carry.
-	SetRumbleRaw(DeviceId,
+	SetRumbleRaw(HandleForOutput(ConnectionId, TEXT("JSL4USetControllerRumble")),
 		FMath::RoundToInt(FMath::Clamp(SmallRumble, 0.0f, 1.0f) * 255.0f),
 		FMath::RoundToInt(FMath::Clamp(BigRumble, 0.0f, 1.0f) * 255.0f));
 }
@@ -2827,8 +3233,9 @@ void UJoyShockLibrary::JslSetRumble(int32 deviceId, int32 smallRumble, int32 big
 	SetRumbleRaw(deviceId, smallRumble, bigRumble);
 }
 
-void UJoyShockLibrary::JSL4USetHomeLight(int32 DeviceId, float Brightness)
+void UJoyShockLibrary::JSL4USetHomeLight(int64 ConnectionId, float Brightness)
 {
+	const int32 DeviceId = HandleForOutput(ConnectionId, TEXT("JSL4USetHomeLight"));
 	FJoyShockLibrary4UnrealModule& JSL4UModule = FJoyShockLibrary4UnrealModule::GetInstance();
 
 	std::shared_lock<std::shared_timed_mutex> lock(JSL4UModule._connectedLock);
@@ -2855,13 +3262,18 @@ void UJoyShockLibrary::JSL4USetHomeLight(int32 DeviceId, float Brightness)
 	jc->home_light_generation.fetch_add(1);
 }
 
-void UJoyShockLibrary::JSL4USetPlayerIndicator(int32 DeviceId, int32 Number)
+void UJoyShockLibrary::JSL4USetPlayerIndicator(int64 ConnectionId, int32 Number)
+{
+	SetPlayerIndicatorForHandle(HandleForOutput(ConnectionId, TEXT("JSL4USetPlayerIndicator")), Number);
+}
+
+void UJoyShockLibrary::SetPlayerIndicatorForHandle(int32 DeviceHandle, int32 Number)
 {
 	FJoyShockLibrary4UnrealModule& JSL4UModule = FJoyShockLibrary4UnrealModule::GetInstance();
 
 	std::shared_lock<std::shared_timed_mutex> lock(JSL4UModule._connectedLock);
 
-	JoyShock* jc = GetJoyShockFromHandle(DeviceId);
+	JoyShock* jc = GetJoyShockFromHandle(DeviceHandle);
 	if (jc != nullptr && (jc->controller_type == ControllerType::n_switch
 		|| jc->controller_type == ControllerType::s_ds))
 	{
@@ -2888,5 +3300,5 @@ void UJoyShockLibrary::JSL4UGetSwitchPlayerLedPattern(int32 PlayerNumber,
 // set controller player number indicator (not all controllers have a number indicator which can be set, but that just means nothing will be done when this is called -- no harm)
 void UJoyShockLibrary::JslSetPlayerNumber(int32 deviceId, int32 number)
 {
-	JSL4USetPlayerIndicator(deviceId, number);
+	SetPlayerIndicatorForHandle(deviceId, number);
 }

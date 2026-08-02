@@ -298,7 +298,7 @@ bool UJSL4UWaitForBatteryChanges::Poll(float /*DeltaTime*/)
 
 	for (const FJSL4UControllerInfo& Info : Controllers)
 	{
-		FBatteryWatch& Watch = WatchByDeviceId.FindOrAdd(Info.DeviceId);
+		FBatteryWatch& Watch = WatchByConnectionId.FindOrAdd(Info.ConnectionId);
 		const bool bFirstSight = !Watch.bSeen;
 		const bool bChargingChanged = Watch.bIsCharging != Info.bIsCharging;
 
@@ -337,15 +337,15 @@ bool UJSL4UWaitForBatteryChanges::Poll(float /*DeltaTime*/)
 
 	// Forget controllers that have gone away, so a reused device id cannot inherit another controller's
 	// "already warned" state.
-	if (WatchByDeviceId.Num() > Controllers.Num())
+	if (WatchByConnectionId.Num() > Controllers.Num())
 	{
-		TSet<int32> Live;
+		TSet<int64> Live;
 		Live.Reserve(Controllers.Num());
 		for (const FJSL4UControllerInfo& Info : Controllers)
 		{
-			Live.Add(Info.DeviceId);
+			Live.Add(Info.ConnectionId);
 		}
-		for (auto It = WatchByDeviceId.CreateIterator(); It; ++It)
+		for (auto It = WatchByConnectionId.CreateIterator(); It; ++It)
 		{
 			if (!Live.Contains(It.Key()))
 			{

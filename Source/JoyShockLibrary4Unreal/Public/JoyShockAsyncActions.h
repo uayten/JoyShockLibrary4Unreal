@@ -131,8 +131,8 @@ public:
 	 *
 	 * This plugin does not implement XInput and does not need to: Unreal already supports those pads
 	 * natively and JSL4U shares player slots with them. This node simply reports both sources through one
-	 * pin, and Is Joy Shock Controller on the payload says which one each came from -- check it before
-	 * feeding Device Id to any of the controller-specific JSL4U nodes.
+	 * pin, and Is Joy Shock Controller on the payload says which one each came from -- though you rarely
+	 * need to ask, since every node takes the payload's Connection Id whichever kind it is.
 	 *
 	 * The keyboard and mouse are not reported. They share a single device that is connected from the first
 	 * frame of every game, so announcing it as a controller joining would spawn a player for it before
@@ -235,7 +235,7 @@ private:
 	};
 
 	EJSL4UBatteryLevel WarnLevel = EJSL4UBatteryLevel::Low;
-	TMap<int32, FBatteryWatch> WatchByDeviceId;
+	TMap<int64, FBatteryWatch> WatchByConnectionId;
 	FTSTicker::FDelegateHandle TickerHandle;
 };
 

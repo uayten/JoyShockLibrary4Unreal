@@ -72,6 +72,10 @@ public:
 	// joined half dissolves the pair. Vertical mode is available for exceptional games such as Just Dance.
 	bool SetJoyConHorizontal(int32 Handle, bool bHorizontal);
 	bool IsJoyConHorizontal(int32 Handle) const;
+	// Both halves of the question the motion presentation asks -- is this controller held sideways, and is
+	// it the left half -- answered from one locked read, so a grip change cannot be seen half-applied (which
+	// would rotate a reading the wrong way for exactly one frame). False for anything that is not a Joy-Con.
+	bool GetJoyConGrip(int32 Handle, bool& bOutHorizontal, bool& bOutIsLeft) const;
 	// Assigns this device's logical controller to a player slot, overriding the slot it was given on
 	// connection. Pass INDEX_NONE to hand it back to automatic assignment. Returns false if the handle is
 	// not a connected controller. Slots may be shared: assigning two controllers to one slot makes both
@@ -79,7 +83,21 @@ public:
 	bool SetPlayerIndexForDevice(int32 Handle, int32 PlayerIndex);
 	// Adds all identity and player-assignment fields owned by the input-device interface to a controller
 	// info struct in one locked read. Returns false when the handle is not connected.
-	bool FillControllerInfo(FJSL4UControllerInfo& Info) const;
+	bool FillControllerInfo(FJSL4UControllerInfo& Info, int32 Handle) const;
+
+	// The library handle this connection id addresses, or INDEX_NONE for a connection this interface does
+	// not own -- an id belonging to a controller that has left, or the negative id of a pad Unreal drives.
+	//
+	// This is the whole translation layer behind the plugin's public API: a Blueprint names a controller by
+	// its connection id, which is unique for the run, and only here does that become the library's reusable
+	// handle, immediately before the call that uses it. Nothing outside the plugin ever holds the handle,
+	// so nothing outside can hold a stale one and drive whichever controller inherited it.
+	int32 GetHandleForConnection(int64 ConnectionId) const;
+
+	// The connection id of a live handle, or 0 when the handle is not a connected controller. For the paths
+	// that start from the library side (the connect/disconnect callbacks, the polling threads) and have to
+	// name the controller the way the public API does.
+	int64 GetConnectionForHandle(int32 Handle) const;
 
 private:
 	FJoyShockInterface(const TSharedRef<FGenericApplicationMessageHandler>& MessageHandler);

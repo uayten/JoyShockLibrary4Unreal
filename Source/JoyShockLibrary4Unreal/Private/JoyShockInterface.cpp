@@ -1,4 +1,4 @@
-﻿// Copyright Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "JoyShockInterface.h"
 #include "HAL/PlatformTime.h"
@@ -866,13 +866,30 @@ void FJoyShockInterface::ProcessIMUState(int32 DeviceHandle, const FIMUState& In
 	//
 	// The axes match JSL4UGetIMUState and JSL4UGetMotionState exactly, so a project can mix Enhanced Input
 	// bindings and the direct getters without the two disagreeing about which way is up.
-	const FVector RotationRate(-InIMUState.gyroZ, InIMUState.gyroX, -InIMUState.gyroY);
-	const FVector Acceleration(InIMUState.accelZ, InIMUState.accelX, -InIMUState.accelY);
+	FVector RotationRate(-InIMUState.gyroZ, InIMUState.gyroX, -InIMUState.gyroY);
+	FVector Acceleration(InIMUState.accelZ, InIMUState.accelX, -InIMUState.accelY);
+
+	// A Joy-Con held sideways has its buttons and its stick rotated into that grip a few lines above; its
+	// motion is rotated here, by the same function the direct getters use, so Enhanced Input and
+	// JSL4UGetIMUState cannot end up disagreeing about which way a sideways Joy-Con is pointing. This
+	// sample is always in the controller's own frame -- the gyro-space conversion belongs to the getters --
+	// so the rotation applies unconditionally, unlike there.
+	{
+		bool bHorizontal = false;
+		bool bIsLeft = false;
+		GetJoyConGrip(DeviceHandle, bHorizontal, bIsLeft);
+		const FQuat GripUndo = UJoyShockLibrary::GetJoyConGripUndoRotation(bHorizontal, bIsLeft);
+		if (!GripUndo.IsIdentity())
+		{
+			RotationRate = GripUndo.RotateVector(RotationRate);
+			Acceleration = GripUndo.RotateVector(Acceleration);
+		}
+	}
 
 	// Gravity and orientation are derived state the library maintains, not part of the raw IMU sample, so
 	// they come from the motion state rather than from InIMUState. get_motion_state only reads already
 	// computed values, so this is cheap enough to do per controller per frame.
-	const FJSL4UMotionState MotionState = UJoyShockLibrary::JSL4UGetMotionState(DeviceHandle);
+	const FJSL4UMotionState MotionState = UJoyShockLibrary::GetMotionStateForHandle(DeviceHandle);
 
 	// Unreal's motion input expects Tilt as the device's attitude in radians. Euler() gives (Roll, Pitch,
 	// Yaw) in degrees, which is the component order Unreal uses elsewhere for a rotation carried in a vector.
@@ -1457,7 +1474,7 @@ void FJoyShockInterface::RefreshPlayerAssignments()
 		// This covers hot-plugging, explicit reassignment and joined Joy-Con halves (which share Slot).
 		// The setter only stores the semantic one-based number; each controller's polling thread performs
 		// the family-specific output write, so no HID/WinUSB I/O blocks this game-thread refresh.
-		UJoyShockLibrary::JSL4USetPlayerIndicator(Handle, Slot + 1);
+		UJoyShockLibrary::SetPlayerIndicatorForHandle(Handle, Slot + 1);
 	}
 }
 
@@ -1668,21 +1685,81 @@ bool FJoyShockInterface::IsJoyConHorizontal(int32 Handle) const
 	return State != nullptr && State->bIsConnected && State->bJoyConHorizontal;
 }
 
-bool FJoyShockInterface::FillControllerInfo(FJSL4UControllerInfo& Info) const
+bool FJoyShockInterface::GetJoyConGrip(int32 Handle, bool& bOutHorizontal, bool& bOutIsLeft) const
 {
+	bOutHorizontal = false;
+	bOutIsLeft = false;
+
 	FScopeLock ContainerLock(&ControllerContainerLock);
-	const FControllerState* State = ControllerStateByDeviceHandle.Find(Info.DeviceId);
+	const FControllerState* State = ControllerStateByDeviceHandle.Find(Handle);
 	if (State == nullptr || !State->bIsConnected)
 	{
 		return false;
 	}
 
-	const int32* Slot = PlayerSlotByPrimary.Find(GetGroupPrimary(Info.DeviceId));
-	Info.PlayerIndex = Slot != nullptr ? *Slot : INDEX_NONE;
-	Info.JoinedToDeviceId = JoinPartner.FindRef(Info.DeviceId);
-	if (!JoinPartner.Contains(Info.DeviceId))
+	const bool bIsLeft = State->HardwareDeviceIdentifier == TEXT("JoyConLeft");
+	if (!bIsLeft && State->HardwareDeviceIdentifier != TEXT("JoyConRight"))
 	{
-		Info.JoinedToDeviceId = INDEX_NONE;
+		return false;
+	}
+
+	bOutHorizontal = State->bJoyConHorizontal;
+	bOutIsLeft = bIsLeft;
+	return true;
+}
+
+int32 FJoyShockInterface::GetHandleForConnection(int64 ConnectionId) const
+{
+	// Zero is the "no identity" value of the field and negative ids belong to pads Unreal drives, so neither
+	// can name a controller here. Rejecting them before taking the lock also means the per-frame nodes of a
+	// game holding a foreign pad never contend for it.
+	if (ConnectionId <= 0)
+	{
+		return INDEX_NONE;
+	}
+
+	FScopeLock ContainerLock(&ControllerContainerLock);
+	for (const TTuple<int32, FControllerState>& Pair : ControllerStateByDeviceHandle)
+	{
+		if (Pair.Value.ConnectionId == ConnectionId && Pair.Value.bIsConnected)
+		{
+			return Pair.Key;
+		}
+	}
+	// A connection that has ended. The caller treats this exactly as it treats a foreign pad: there is no
+	// controller of ours behind this id, which is the answer that keeps a stale id from driving the
+	// controller that inherited its handle.
+	return INDEX_NONE;
+}
+
+int64 FJoyShockInterface::GetConnectionForHandle(int32 Handle) const
+{
+	FScopeLock ContainerLock(&ControllerContainerLock);
+	const FControllerState* State = ControllerStateByDeviceHandle.Find(Handle);
+	return State != nullptr && State->bIsConnected ? State->ConnectionId : 0;
+}
+
+bool FJoyShockInterface::FillControllerInfo(FJSL4UControllerInfo& Info, int32 Handle) const
+{
+	FScopeLock ContainerLock(&ControllerContainerLock);
+	const FControllerState* State = ControllerStateByDeviceHandle.Find(Handle);
+	if (State == nullptr || !State->bIsConnected)
+	{
+		return false;
+	}
+
+	const int32* Slot = PlayerSlotByPrimary.Find(GetGroupPrimary(Handle));
+	Info.PlayerIndex = Slot != nullptr ? *Slot : INDEX_NONE;
+
+	// The partner is named the same way everything else is: by its connection id, read here while the
+	// container lock is already held rather than left to a second lookup that could see a different pairing.
+	Info.JoinedToConnectionId = 0;
+	if (const int32* Partner = JoinPartner.Find(Handle))
+	{
+		if (const FControllerState* PartnerState = ControllerStateByDeviceHandle.Find(*Partner))
+		{
+			Info.JoinedToConnectionId = PartnerState->ConnectionId;
+		}
 	}
 	Info.ConnectionId = State->ConnectionId;
 	Info.InputDeviceId = State->InputDevice.GetId();
