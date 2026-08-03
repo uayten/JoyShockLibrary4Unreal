@@ -200,7 +200,7 @@ static bool SwitchControllerTransport(JoyShock* jc, const FString& NewPath, bool
 			jc->init_ds4_bt();
 		}
 	}
-	else if (jc->controller_type == ControllerType::n_switch && !jc->is_switch2_pro)
+	else if (jc->controller_type == ControllerType::n_switch && !jc->is_switch2)
 	{
 		bNewIsUsb ? jc->init_usb() : jc->init_bt();
 	}
@@ -214,7 +214,7 @@ void pollIndividualLoop(JoyShock *jc) {
 
 	// A Bluetooth Switch 2 has no HID handle at all -- its reports arrive as GATT notifications, and
 	// read_input_report blocks on those instead. Only a device with neither transport has nothing to poll.
-	if (!jc->handle && !jc->is_ble()) { return; }
+	if (!jc->handle && !jc->is_ble()) { jc->thread_exited.store(true); return; }
 
 	if (jc->handle)
 	{
@@ -330,6 +330,16 @@ void pollIndividualLoop(JoyShock *jc) {
 		int reuseCounter = jc->reuse_counter;
 		int res = jc->read_input_report(buf, 64, 1000);
 
+		// Shutdown asked this thread to stop while it was inside that read. Leave before the branches below
+		// can read the result as a disconnect: they take the connected lock, announce the controller as gone
+		// and free it -- all of which now belong to whoever is shutting this thread down, and none of which
+		// is safe once the maps and callbacks it would touch have been torn down. Everything this device
+		// owns is released after the join.
+		if (jc->cancel_thread)
+		{
+			break;
+		}
+
 		if (res == -1)
 		{
 			// The cable was pulled on a controller that is still paired over Bluetooth. That is not a
@@ -399,7 +409,7 @@ void pollIndividualLoop(JoyShock *jc) {
 		if (res == 0)
 		{
 			numTimeOuts++;
-			if (numTimeOuts >= 10 && !jc->is_switch2_pro)
+			if (numTimeOuts >= 10 && !jc->is_switch2)
 			{
 				UE_LOG(LogJoyShockLibrary, Log, TEXT("Controller %d timed out\n"), jc->intHandle);
 
@@ -434,13 +444,13 @@ void pollIndividualLoop(JoyShock *jc) {
 		{
 			numTimeOuts = 0;
 
-			if (jc->is_switch2_pro && !bLoggedFirstRead)
+			if (jc->is_switch2 && !bLoggedFirstRead)
 			{
 				UE_LOG(LogJoyShockLibrary, Log, TEXT("Pro Controller 2 first report received: %d bytes, report id 0x%02X"), res, buf[0]);
 				bLoggedFirstRead = true;
 			}
 
-			if (jc->is_switch2_pro && !jc->sw2_init_succeeded)
+			if (jc->is_switch2 && !jc->sw2_init_succeeded)
 			{
 				const auto now = std::chrono::steady_clock::now();
 				if (std::chrono::duration_cast<std::chrono::milliseconds>(now - lastSw2InitRetryTime).count() >= 2000)
@@ -467,7 +477,7 @@ void pollIndividualLoop(JoyShock *jc) {
 				{
 					const unsigned char playerLightMask = PlayerNumberToSwitchLedMask(wantedPlayerNumber);
 					bool bSent = false;
-					if (jc->is_switch2_pro)
+					if (jc->is_switch2)
 					{
 						bSent = jc->set_sw2_player_lights(playerLightMask);
 					}
@@ -496,7 +506,7 @@ void pollIndividualLoop(JoyShock *jc) {
 			// switched it off again and it stayed lit for the rest of the session. It is cheap to repeat
 			// next to a 60Hz input stream, and the write-only path means it cannot disturb that stream.
 			if (jc->controller_type == ControllerType::n_switch
-				&& !jc->is_switch2_pro && (jc->left_right == 2 || jc->left_right == 3))
+				&& !jc->is_switch2 && (jc->left_right == 2 || jc->left_right == 3))
 			{
 				if (jc->home_light_owned_by_game.load())
 				{
@@ -551,7 +561,7 @@ void pollIndividualLoop(JoyShock *jc) {
 			// 4 input reports (~60ms at 66Hz) -- the actuator fades out on its own otherwise, which made a
 			// single packet feel like a short, inconsistent blip. The write happens outside modifying_lock
 			// so a slow Bluetooth write can never stall the game thread's Jsl* calls.
-			if (jc->controller_type == ControllerType::n_switch && !jc->is_switch2_pro)
+			if (jc->controller_type == ControllerType::n_switch && !jc->is_switch2)
 			{
 				jc->modifying_lock.Lock();
 				const unsigned char wantedSmallRumble = jc->get_wanted_small_rumble();
@@ -577,7 +587,7 @@ void pollIndividualLoop(JoyShock *jc) {
 			// Going silent takes a few zero-amplitude packets -- enough to overwrite whatever the actuator
 			// still had queued -- and after those the wire is left alone entirely rather than carrying a
 			// steady stream of silence.
-			if (jc->is_switch2_pro)
+			if (jc->is_switch2)
 			{
 				constexpr int32 Sw2RumbleIntervalMs = 15;
 				constexpr int32 Sw2RumbleSilentPackets = 3;
@@ -707,7 +717,7 @@ void pollIndividualLoop(JoyShock *jc) {
 				{
 					consecutiveReportsWithoutIMU++;
 					const bool bCanRepairIMU = jc->controller_type == ControllerType::n_switch
-						&& !jc->is_switch2_pro;
+						&& !jc->is_switch2;
 					if (bCanRepairIMU && imuRepairAttempts < 3)
 					{
 						if (bImuRepairToggleOffSent)
@@ -868,7 +878,8 @@ void pollIndividualLoop(JoyShock *jc) {
 	}
 
 	// disconnect this device
-	if (jc->delete_on_finish)
+	const bool bDeletedHere = jc->delete_on_finish;
+	if (bDeletedHere)
 	{
 		UE_LOG(LogJoyShockLibrary, Log, TEXT("\t\tdeleting jc\n"));
 		delete jc;
@@ -903,6 +914,100 @@ void pollIndividualLoop(JoyShock *jc) {
 			intHandle);
 		JSL4UModule.RequestConnectDevices();
 	}
+
+	// The very last thing, and only when this thread did not free the device itself: this is the handoff to
+	// a shutdown that kept ownership precisely so it could wait here. Guarded, because in every other path
+	// jc is already gone and reading it would be the use-after-free this exists to prevent.
+	if (!bDeletedHere)
+	{
+		jc->thread_exited.store(true);
+	}
+}
+
+// Stops every controller's polling thread and destroys the devices, in that order. Returns false if any
+// thread was still running when the wait ran out, which means its device (and the hidapi handle inside it)
+// is deliberately left alive for the process to reclaim.
+//
+// This exists because the polling threads outlive everything they touch. Nothing stopped them: the maps
+// they read, the module they call back into and the hidapi library they hold handles from were all freed
+// during module shutdown while the threads were still running on them. Over HID that mostly went unnoticed,
+// because the process usually died before a thread noticed. Bluetooth made it deterministic -- shutdown
+// actively freed the connection object each polling thread was asleep inside -- which is the crash on
+// closing the editor with a controller on the radio.
+bool JslShutdownAllDevices()
+{
+	FJoyShockLibrary4UnrealModule& JSL4UModule = FJoyShockLibrary4UnrealModule::GetInstance();
+
+	// Empty the maps first, under the lock, so nothing can hand one of these devices out again while it is
+	// being stopped -- and so the threads themselves have nothing left to remove on their way out.
+	TArray<JoyShock*> Devices;
+	JSL4UModule._connectedLock.lock();
+	_joyshocks.GenerateValueArray(Devices);
+	_joyshocks.Empty();
+	_byPath.Empty();
+	JSL4UModule._connectedLock.unlock();
+
+	_pathHandleLock.Lock();
+	_handleByIdentity.Empty();
+	_phantomAttemptsByPath.Empty();
+	_pathHandleLock.Unlock();
+
+	Devices.RemoveAll([](const JoyShock* Device) { return Device == nullptr; });
+
+	// Signalled all at once, before waiting on any of them. Each polling thread is blocked in a read of up
+	// to a second, so asking them one at a time would cost a second per controller instead of a second for
+	// all of them.
+	for (JoyShock* jc : Devices)
+	{
+		// Neither flag may be left set: the thread must not touch the maps (already gone) or announce a
+		// disconnect (the callbacks are unbound), and above all it must not free itself, because a thread
+		// that never exits would then be running inside memory this function had freed.
+		jc->remove_on_finish = false;
+		jc->delete_on_finish = false;
+		jc->cancel_thread = true;
+	}
+
+	// Bounded, not a join. hidapi's Windows write waits on its overlapped result with no timeout, so a
+	// controller that stops completing writes -- a half-unplugged one, in practice -- leaves its polling
+	// thread wedged for good. Joining that would leave the editor unable to close, which is a worse failure
+	// than the one being fixed. Anything still running when the deadline passes is left to process teardown,
+	// exactly as every polling thread was before this function existed.
+	const double Deadline = FPlatformTime::Seconds() + 3.0;
+	for (const JoyShock* jc : Devices)
+	{
+		while (!jc->thread_exited.load() && FPlatformTime::Seconds() < Deadline)
+		{
+			FPlatformProcess::Sleep(0.002f);
+		}
+	}
+
+	bool bAllStopped = true;
+	for (JoyShock* jc : Devices)
+	{
+		if (!jc->thread_exited.load())
+		{
+			UE_LOG(LogJoyShockLibrary, Warning,
+				TEXT("Controller %d did not stop polling in time; leaving it and its device open for process teardown."),
+				jc->intHandle);
+			// Deliberately leaked, thread object included: the thread is still inside this device, so both
+			// freeing it and destroying an unjoined std::thread (which terminates the process) are worse
+			// than the leak. The process is exiting.
+			bAllStopped = false;
+			continue;
+		}
+
+		if (jc->thread != nullptr)
+		{
+			jc->thread->join();
+			delete jc->thread;
+			jc->thread = nullptr;
+		}
+		// Closes the HID handle, or hands the Bluetooth connection back -- the single owner of both, now
+		// that the only other user has stopped.
+		delete jc;
+	}
+
+	return bAllStopped;
 }
 
 void UJoyShockLibrary::JSL4URefreshControllers()
@@ -1135,13 +1240,14 @@ int32 UJoyShockLibrary::JslConnectDevices()
 
 		for (const FSwitch2BleAdvertisement& Advertisement : Discovered)
 		{
-			// Only the Pro Controller 2 for now. The Joy-Con 2 pair advertises the same service and would
-			// connect, but the Switch 2 report parser is written around the Pro's button layout, so taking
-			// one would produce a controller whose buttons are all wrong -- worse than not taking it.
-			if (Advertisement.ProductId != PRO_CONTROLLER_2)
+			// The three Switch 2 shapes, all of which speak the same protocol on the same GATT service.
+			// Anything else advertising as Nintendo is not something this parser can read.
+			if (Advertisement.ProductId != PRO_CONTROLLER_2
+				&& Advertisement.ProductId != SWITCH2_JOYCON_L
+				&& Advertisement.ProductId != SWITCH2_JOYCON_R)
 			{
 				UE_LOG(LogJoyShockLibrary, Log,
-					TEXT("\tignoring Bluetooth controller %012llx (product %04x): only the Pro Controller 2 is supported over Bluetooth\n"),
+					TEXT("\tignoring Bluetooth controller %012llx (product %04x): not a Switch 2 controller this plugin can read\n"),
 					Advertisement.Address, Advertisement.ProductId);
 				continue;
 			}
@@ -1282,7 +1388,7 @@ int32 UJoyShockLibrary::JslConnectDevices()
 			continue;
 		}
 
-		if (jc->is_switch2_pro) {
+		if (jc->is_switch2) {
 			// Send the Switch 2 init sequence that makes it start streaming: over the cable the one Steam
 			// uses, over the radio the same commands on the GATT command channel.
 			if (jc->is_ble()) {
@@ -1399,6 +1505,8 @@ static EJSL4UControllerType JSL4UControllerTypeFromLegacy(int32 LegacyType)
 	case JS_TYPE_JOYCON_RIGHT:   return EJSL4UControllerType::JoyConRight;
 	case JS_TYPE_PRO_CONTROLLER: return EJSL4UControllerType::ProController;
 	case JS_TYPE_PRO_CONTROLLER_2: return EJSL4UControllerType::ProController2;
+	case JS_TYPE_JOYCON2_LEFT:   return EJSL4UControllerType::JoyCon2Left;
+	case JS_TYPE_JOYCON2_RIGHT:  return EJSL4UControllerType::JoyCon2Right;
 	case JS_TYPE_DS4:            return EJSL4UControllerType::DualShock4;
 	case JS_TYPE_DS:             return EJSL4UControllerType::DualSense;
 	default:                     return EJSL4UControllerType::Undefined;
@@ -1429,7 +1537,7 @@ static FJSLSettings JSL4UReadJslSettings(JoyShock* jc)
 		break;
 	default:
 	case ControllerType::n_switch:
-		settings.controllerType = jc->is_switch2_pro ? JS_TYPE_PRO_CONTROLLER_2 : jc->left_right;
+		settings.controllerType = jc->switch_legacy_type();
 		settings.colour = jc->body_colour;
 		break;
 	}
@@ -1493,6 +1601,8 @@ static FJSL4UControllerInfo JSL4UMakeControllerInfo(const FJSLSettings& JslSetti
 		|| Info.ControllerType == EJSL4UControllerType::JoyConRight
 		|| Info.ControllerType == EJSL4UControllerType::ProController
 		|| Info.ControllerType == EJSL4UControllerType::ProController2
+		|| Info.ControllerType == EJSL4UControllerType::JoyCon2Left
+		|| Info.ControllerType == EJSL4UControllerType::JoyCon2Right
 		|| Info.ControllerType == EJSL4UControllerType::DualSense;
 	// JSL stores the gyro space as a raw int. Anything outside the three JSL4U knows about reads as Local
 	// Space rather than as a garbage enumerator, so a value the library grows later cannot make a Blueprint
@@ -1862,7 +1972,9 @@ TArray<FJSL4UControllerInfo> UJoyShockLibrary::JSL4UGetAllConnectedControllers()
 bool UJoyShockLibrary::JSL4UIsControllerTypeJoinable(EJSL4UControllerType ControllerType)
 {
 	return ControllerType == EJSL4UControllerType::JoyConLeft
-		|| ControllerType == EJSL4UControllerType::JoyConRight;
+		|| ControllerType == EJSL4UControllerType::JoyConRight
+		|| ControllerType == EJSL4UControllerType::JoyCon2Left
+		|| ControllerType == EJSL4UControllerType::JoyCon2Right;
 }
 
 bool UJoyShockLibrary::JSL4UJoinJoyCons(int64 ConnectionIdA, int64 ConnectionIdB)
@@ -3143,7 +3255,7 @@ int32 UJoyShockLibrary::JslGetControllerType(int32 deviceId)
 			return JS_TYPE_DS;
 		default:
 		case ControllerType::n_switch:
-			return jc->is_switch2_pro ? JS_TYPE_PRO_CONTROLLER_2 : jc->left_right;
+			return jc->switch_legacy_type();
 		}
 	}
 	return 0;
@@ -3333,6 +3445,37 @@ void UJoyShockLibrary::JslSetRumble(int32 deviceId, int32 smallRumble, int32 big
 	SetRumbleRaw(deviceId, smallRumble, bigRumble);
 }
 
+FJSL4USwitch2Sensors UJoyShockLibrary::JSL4UGetSwitch2Sensors(int64 ConnectionId)
+{
+	FJSL4USwitch2Sensors Sensors;
+
+	const int32 DeviceId = HandleForConnection(ConnectionId);
+	FJoyShockLibrary4UnrealModule& JSL4UModule = FJoyShockLibrary4UnrealModule::GetInstance();
+
+	std::shared_lock<std::shared_timed_mutex> lock(JSL4UModule._connectedLock);
+
+	const JoyShock* jc = GetJoyShockFromHandle(DeviceId);
+	if (jc == nullptr || !jc->is_switch2)
+	{
+		// Zeroes and Is Supported false, which is the honest answer for a controller without these sensors
+		// -- and for a connection id that names nothing, which HandleForConnection has already warned about.
+		return Sensors;
+	}
+
+	// Each field is written by the polling thread as reports arrive, so this reads a set of independently
+	// atomic values rather than one coherent snapshot. That is fine for what they are: nothing here is a
+	// pair of numbers that has to agree with itself, and the newest reading of each is what a caller wants.
+	Sensors.bIsSupported = true;
+	Sensors.BatteryVolts = jc->sw2_battery_volts.load();
+	Sensors.TemperatureCelsius = jc->sw2_temperature_celsius.load();
+	Sensors.Magnetometer = FVector(
+		jc->sw2_magnetometer_x.load(), jc->sw2_magnetometer_y.load(), jc->sw2_magnetometer_z.load());
+	Sensors.MousePosition = FVector2D(jc->sw2_mouse_x.load(), jc->sw2_mouse_y.load());
+	Sensors.MouseRoughness = jc->sw2_mouse_roughness.load();
+	Sensors.MouseDistance = jc->sw2_mouse_distance.load();
+	return Sensors;
+}
+
 void UJoyShockLibrary::JSL4USetHomeLight(int64 ConnectionId, float Brightness)
 {
 	const int32 DeviceId = HandleForOutput(ConnectionId, TEXT("JSL4USetHomeLight"));
@@ -3343,7 +3486,7 @@ void UJoyShockLibrary::JSL4USetHomeLight(int64 ConnectionId, float Brightness)
 	JoyShock* jc = GetJoyShockFromHandle(DeviceId);
 	// Only a Switch 1 right Joy-Con (left_right 2) or Pro Controller (3) has this light. The Switch 2 Pro
 	// speaks a different command protocol and is excluded until its equivalent is mapped.
-	if (jc == nullptr || jc->controller_type != ControllerType::n_switch || jc->is_switch2_pro
+	if (jc == nullptr || jc->controller_type != ControllerType::n_switch || jc->is_switch2
 		|| (jc->left_right != 2 && jc->left_right != 3))
 	{
 		return;

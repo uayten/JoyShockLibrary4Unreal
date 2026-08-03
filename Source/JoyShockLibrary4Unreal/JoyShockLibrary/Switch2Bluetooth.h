@@ -73,6 +73,12 @@ namespace Switch2Ble
 	bool SendCommand(FSwitch2BleConnection* Connection, uint8 CommandId, uint8 SubcommandId,
 		const uint8* Data, int32 DataLength, TArray<uint8>* OutResponse = nullptr, int32 TimeoutMs = 1000);
 
+	// Writes bytes to the command characteristic exactly as given, with no header and no acknowledgement.
+	// Almost everything the controller is told goes through SendCommand instead; this exists for the one
+	// packet that does not fit that shape -- the Joy-Con 2's input-mode selection, whose second byte is not
+	// the 0x91 every other command carries.
+	bool SendRawCommand(FSwitch2BleConnection* Connection, const uint8* Data, int32 Length);
+
 	// Writes HD rumble frames to the vibration characteristic. Unacknowledged, like every other transport's
 	// rumble: the next packet is due in 15ms, so there is nothing useful to do about a lost one.
 	bool SendVibration(FSwitch2BleConnection* Connection, const uint8* Payload, int32 Length);

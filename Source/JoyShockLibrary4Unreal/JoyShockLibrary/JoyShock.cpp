@@ -104,7 +104,7 @@ void JoyShock::init(struct hid_device_info *dev, hid_device* inHandle, int uniqu
 		this->name = TEXT("Pro Controller 2");
 		this->left_right = 3;// treated like a Pro Controller (both halves)
 		this->is_usb = true;
-		this->is_switch2_pro = true;
+		this->is_switch2 = true;
 	}
 
 	if (dev->product_id == DS4_BT ||
@@ -170,6 +170,11 @@ void JoyShock::init(struct hid_device_info *dev, hid_device* inHandle, int uniqu
 JoyShock::JoyShock(struct hid_device_info* dev, hid_device* inHandle, int uniqueHandle, const FString& inPath) {
 	init(dev, inHandle, uniqueHandle, inPath);
 
+	// The window in which a button still held from before this controller existed is ignored. Started here,
+	// at creation, rather than at the first report: a controller that arrives already streaming would
+	// otherwise settle on that first frame, which is the exact frame the stale press is in.
+	input_settle_deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(1000);
+
 	// initialise continuous calibration windows
 	reset_continuous_calibration();
 
@@ -196,7 +201,7 @@ JoyShock::JoyShock(FSwitch2BleConnection* inConnection, uint16 productId, uint64
 	// Bluetooth, so not on a cable -- but everything else about the Switch 2 protocol is the same either
 	// way, which is what lets the parser, the init sequence and rumble be shared with the USB path.
 	this->is_usb = false;
-	this->is_switch2_pro = true;
+	this->is_switch2 = true;
 	this->controller_type = ControllerType::n_switch;
 
 	switch (productId)
@@ -220,6 +225,10 @@ JoyShock::JoyShock(FSwitch2BleConnection* inConnection, uint16 productId, uint64
 	const FString AddressText = FString::Printf(TEXT("%012llx"), address);
 	this->serial = _wcsdup(*AddressText);
 	this->mac_address = AddressText;
+
+	// See the HID constructor. It matters more here: over Bluetooth the button press IS what brought this
+	// controller back, so its first reports always carry one.
+	input_settle_deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(1000);
 
 	reset_continuous_calibration();
 
@@ -1164,6 +1173,25 @@ bool JoyShock::init_switch2_bluetooth() {
 		}
 	}
 
+	// A Joy-Con 2 needs to be told which report format to stream. Left in its default it puts its status
+	// byte where the button word's top bits are, and the Left half's bit 23 lands on ZL -- a controller
+	// that arrives holding a trigger nothing can release. Format 3 (0x30) moves it out of the way; the
+	// parser's 0x03FFFFFF mask covers what is left.
+	//
+	// Sent raw because it is not a command in the usual shape: its second byte is 0x00 where every other
+	// command carries 0x91, so it cannot go through SendCommand, and nothing acknowledges it.
+	if (is_switch2_joycon())
+	{
+		static const uint8 SetInputModeFormat3[11] = {
+			0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x03, 0x30 };
+		if (!Switch2Ble::SendRawCommand(ble_connection, SetInputModeFormat3, sizeof(SetInputModeFormat3)))
+		{
+			UE_LOG(LogJoyShockLibrary, Warning,
+				TEXT("Joy-Con 2 on device %d refused the input-mode selection; its triggers may read as held.\n"),
+				intHandle);
+		}
+	}
+
 	// Factory data, same blocks the USB path reads over SPI. A controller whose calibration cannot be read
 	// still works -- the parser falls back to fixed centres -- so none of this fails the init.
 	TArray<uint8> Block;
@@ -1178,19 +1206,33 @@ bool JoyShock::init_switch2_bluetooth() {
 
 	// Three packed 12-bit pairs: the centre, then the distance to each end of travel. Same layout the USB
 	// path unpacks, read from the same addresses -- only the way of asking for them differs.
-	auto ReadStickCal = [this](uint32 address, uint16_t* calX, uint16_t* calY)
+	auto Unpack12 = [](const uint8* p, uint16_t& v0, uint16_t& v1)
+	{
+		v0 = static_cast<uint16_t>(p[0] | ((p[1] & 0x0F) << 8));
+		v1 = static_cast<uint16_t>((p[1] >> 4) | (p[2] << 4));
+	};
+
+	// The player's own calibration is preferred over the factory's, and this is not a nicety: a controller
+	// whose sticks drifted far enough for its owner to have run the console's correction screen is exactly
+	// the one whose factory centres are now wrong. The user region is separate and starts out erased, which
+	// reads back as all-ones -- that is how "never calibrated" is told from a real reading, and why the
+	// probe has to look at the bytes rather than just at whether the read succeeded.
+	auto ReadStickCal = [this, &Unpack12](uint32 userAddress, uint32 factoryAddress,
+		uint16_t* calX, uint16_t* calY, const TCHAR* label)
 	{
 		TArray<uint8> Cal;
-		if (!read_sw2_ble_memory(address, 9, Cal) || Cal.Num() < 9)
+		const TCHAR* source = TEXT("user");
+		const bool bHasUser = read_sw2_ble_memory(userAddress, 9, Cal) && Cal.Num() >= 9
+			&& !(Cal[0] == 0xFF && Cal[1] == 0xFF && Cal[2] == 0xFF);
+		if (!bHasUser)
 		{
-			return false;
+			Cal.Reset();
+			source = TEXT("factory");
+			if (!read_sw2_ble_memory(factoryAddress, 9, Cal) || Cal.Num() < 9)
+			{
+				return false;
+			}
 		}
-
-		auto Unpack12 = [](const uint8* p, uint16_t& v0, uint16_t& v1)
-		{
-			v0 = static_cast<uint16_t>(p[0] | ((p[1] & 0x0F) << 8));
-			v1 = static_cast<uint16_t>((p[1] >> 4) | (p[2] << 4));
-		};
 
 		uint16_t cx, cy, rxa, rya, rxb, ryb;
 		Unpack12(Cal.GetData(), cx, cy);
@@ -1198,18 +1240,28 @@ bool JoyShock::init_switch2_bluetooth() {
 		Unpack12(Cal.GetData() + 6, rxb, ryb);
 		calX[1] = cx; calX[2] = cx + rxa; calX[0] = cx - rxb;
 		calY[1] = cy; calY[2] = cy + rya; calY[0] = cy - ryb;
+
+		UE_LOG(LogJoyShockLibrary, Log,
+			TEXT("SW2 %s stick cal (%s): centre (%d, %d), min (%d, %d), max (%d, %d)\n"),
+			label, source, calX[1], calY[1], calX[0], calY[0], calX[2], calY[2]);
 		return true;
 	};
 
-	if (ReadStickCal(0x0130A8, stick_cal_x_l, stick_cal_y_l))
+	// A Joy-Con has one stick, and it is always the FIRST calibration block whichever half it is -- the
+	// blocks are per stick on the controller, not per side of a pair. Which of the plugin's two slots it
+	// fills is decided by the half, matching where the parser reads that half's stick from.
+	if (is_switch2_joycon())
 	{
-		UE_LOG(LogJoyShockLibrary, Log, TEXT("SW2 left stick cal: centre (%d, %d), min (%d, %d), max (%d, %d)\n"),
-			stick_cal_x_l[1], stick_cal_y_l[1], stick_cal_x_l[0], stick_cal_y_l[0], stick_cal_x_l[2], stick_cal_y_l[2]);
+		const bool bLeft = left_right == 1;
+		ReadStickCal(0x1FC042, 0x0130A8,
+			bLeft ? stick_cal_x_l : stick_cal_x_r,
+			bLeft ? stick_cal_y_l : stick_cal_y_r,
+			bLeft ? TEXT("left") : TEXT("right"));
 	}
-	if (ReadStickCal(0x0130E8, stick_cal_x_r, stick_cal_y_r))
+	else
 	{
-		UE_LOG(LogJoyShockLibrary, Log, TEXT("SW2 right stick cal: centre (%d, %d), min (%d, %d), max (%d, %d)\n"),
-			stick_cal_x_r[1], stick_cal_y_r[1], stick_cal_x_r[0], stick_cal_y_r[0], stick_cal_x_r[2], stick_cal_y_r[2]);
+		ReadStickCal(0x1FC042, 0x0130A8, stick_cal_x_l, stick_cal_y_l, TEXT("left"));
+		ReadStickCal(0x1FC062, 0x0130E8, stick_cal_x_r, stick_cal_y_r, TEXT("right"));
 	}
 
 	sw2_init_succeeded = true;
@@ -1295,14 +1347,15 @@ bool JoyShock::init_switch2() {
 			v1 = (p[1] >> 4) | (p[2] << 4);
 		};
 
-		// Stick factory calibration layout (blocks 0x013080 = left, 0x0130C0 = right): 9 bytes at offset
-		// 0x28 as packed 12-bit pairs: [centerX,centerY][rangeX_a,rangeY_a][rangeX_b,rangeY_b].
-		auto ParseStickCal = [&Unpack12](const unsigned char* blk, uint16_t* calX, uint16_t* calY)
+		// Stick calibration is nine bytes wherever it is stored: packed 12-bit pairs holding
+		// [centerX,centerY][rangeX_a,rangeY_a][rangeX_b,rangeY_b]. Takes the nine bytes rather than a block
+		// base, because the factory copy and the user copy sit at different offsets within their blocks.
+		auto ParseStickCal = [&Unpack12](const unsigned char* nine, uint16_t* calX, uint16_t* calY)
 		{
 			uint16_t cx, cy, rxa, rya, rxb, ryb;
-			Unpack12(blk + 0x28, cx, cy);
-			Unpack12(blk + 0x2B, rxa, rya);
-			Unpack12(blk + 0x2E, rxb, ryb);
+			Unpack12(nine, cx, cy);
+			Unpack12(nine + 3, rxa, rya);
+			Unpack12(nine + 6, rxb, ryb);
 			calX[1] = cx; calX[2] = cx + rxa; calX[0] = cx - rxb;
 			calY[1] = cy; calY[2] = cy + rya; calY[0] = cy - ryb;
 		};
@@ -1317,16 +1370,42 @@ bool JoyShock::init_switch2() {
 			right_grip_colour = (spi[0x22] << 16) | (spi[0x23] << 8) | spi[0x24];
 			UE_LOG(LogJoyShockLibrary, Log, TEXT("SW2 colours: body %06x, buttons %06x\n"), body_colour, button_colour);
 		}
-		if (SpiRead(0x013080, spi))
+
+		// The player's own calibration, written by the console's stick-correction screen, wins over the
+		// factory's: a controller drifted enough for its owner to have corrected it is exactly the one whose
+		// factory centres no longer describe it. Both sticks' user copies live in the one 64-byte block at
+		// 0x1FC040 (left at +0x02, right at +0x22), so one read covers them. An erased region reads back as
+		// all-ones, which is how "never calibrated" is told from a real reading.
+		unsigned char userCal[64];
+		const bool bReadUserCal = SpiRead(0x1FC040, userCal);
+		auto UserCalWritten = [](const unsigned char* nine)
 		{
-			ParseStickCal(spi, stick_cal_x_l, stick_cal_y_l);
-			UE_LOG(LogJoyShockLibrary, Log, TEXT("SW2 left stick cal: centre (%d, %d), min (%d, %d), max (%d, %d)\n"),
+			return !(nine[0] == 0xFF && nine[1] == 0xFF && nine[2] == 0xFF);
+		};
+
+		if (bReadUserCal && UserCalWritten(userCal + 0x02))
+		{
+			ParseStickCal(userCal + 0x02, stick_cal_x_l, stick_cal_y_l);
+			UE_LOG(LogJoyShockLibrary, Log, TEXT("SW2 left stick cal (user): centre (%d, %d), min (%d, %d), max (%d, %d)\n"),
 				stick_cal_x_l[1], stick_cal_y_l[1], stick_cal_x_l[0], stick_cal_y_l[0], stick_cal_x_l[2], stick_cal_y_l[2]);
 		}
-		if (SpiRead(0x0130C0, spi))
+		else if (SpiRead(0x013080, spi))
 		{
-			ParseStickCal(spi, stick_cal_x_r, stick_cal_y_r);
-			UE_LOG(LogJoyShockLibrary, Log, TEXT("SW2 right stick cal: centre (%d, %d), min (%d, %d), max (%d, %d)\n"),
+			ParseStickCal(spi + 0x28, stick_cal_x_l, stick_cal_y_l);
+			UE_LOG(LogJoyShockLibrary, Log, TEXT("SW2 left stick cal (factory): centre (%d, %d), min (%d, %d), max (%d, %d)\n"),
+				stick_cal_x_l[1], stick_cal_y_l[1], stick_cal_x_l[0], stick_cal_y_l[0], stick_cal_x_l[2], stick_cal_y_l[2]);
+		}
+
+		if (bReadUserCal && UserCalWritten(userCal + 0x22))
+		{
+			ParseStickCal(userCal + 0x22, stick_cal_x_r, stick_cal_y_r);
+			UE_LOG(LogJoyShockLibrary, Log, TEXT("SW2 right stick cal (user): centre (%d, %d), min (%d, %d), max (%d, %d)\n"),
+				stick_cal_x_r[1], stick_cal_y_r[1], stick_cal_x_r[0], stick_cal_y_r[0], stick_cal_x_r[2], stick_cal_y_r[2]);
+		}
+		else if (SpiRead(0x0130C0, spi))
+		{
+			ParseStickCal(spi + 0x28, stick_cal_x_r, stick_cal_y_r);
+			UE_LOG(LogJoyShockLibrary, Log, TEXT("SW2 right stick cal (factory): centre (%d, %d), min (%d, %d), max (%d, %d)\n"),
 				stick_cal_x_r[1], stick_cal_y_r[1], stick_cal_x_r[0], stick_cal_y_r[0], stick_cal_x_r[2], stick_cal_y_r[2]);
 		}
 

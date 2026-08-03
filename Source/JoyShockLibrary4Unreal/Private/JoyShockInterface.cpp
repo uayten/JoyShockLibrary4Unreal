@@ -221,6 +221,10 @@ FString FJoyShockInterface::GetDeviceName(int32 InControllerId)
 		return TEXT("Pro Controller");
 	case JS_TYPE_PRO_CONTROLLER_2:
 		return TEXT("Pro Controller 2");
+	case JS_TYPE_JOYCON2_LEFT:
+		return TEXT("Left Joy-Con 2");
+	case JS_TYPE_JOYCON2_RIGHT:
+		return TEXT("Right Joy-Con 2");
 	case JS_TYPE_DS4:
 		return TEXT("DualShock 4");
 	case JS_TYPE_DS:
@@ -242,6 +246,10 @@ FName FJoyShockInterface::GetHardwareDeviceIdentifier(int32 InControllerId)
 		return TEXT("SwitchProController");
 	case JS_TYPE_PRO_CONTROLLER_2:
 		return TEXT("Switch2ProController");
+	case JS_TYPE_JOYCON2_LEFT:
+		return TEXT("JoyCon2Left");
+	case JS_TYPE_JOYCON2_RIGHT:
+		return TEXT("JoyCon2Right");
 	case JS_TYPE_DS4:
 		return TEXT("DualShock4");
 	case JS_TYPE_DS:
@@ -251,11 +259,26 @@ FName FJoyShockInterface::GetHardwareDeviceIdentifier(int32 InControllerId)
 	}
 }
 
+// Which half of a Joy-Con pair a hardware identifier names, across both generations. Everything about
+// joining is the same for a Joy-Con 2 -- a pair separates on SL+SR and joins on an outer shoulder, each
+// half fills only its own buttons and its own stick -- so the generation is not something any of the code
+// below should have to know. Kept as identifier tests rather than as a flag on the state because the
+// identifier is what the engine already carries per device.
+static bool IsJoyConLeftIdentifier(const FName& Identifier)
+{
+	return Identifier == TEXT("JoyConLeft") || Identifier == TEXT("JoyCon2Left");
+}
+
+static bool IsJoyConRightIdentifier(const FName& Identifier)
+{
+	return Identifier == TEXT("JoyConRight") || Identifier == TEXT("JoyCon2Right");
+}
+
 FJoyShockInterface::FJoyConPairingChange FJoyShockInterface::MakeJoyConPairingChange(
 	int32 HandleA, int32 HandleB, bool bJoined) const
 {
 	const FControllerState* StateA = ControllerStateByDeviceHandle.Find(HandleA);
-	const bool bAIsLeft = StateA != nullptr && StateA->HardwareDeviceIdentifier == TEXT("JoyConLeft");
+	const bool bAIsLeft = StateA != nullptr && IsJoyConLeftIdentifier(StateA->HardwareDeviceIdentifier);
 	return { bAIsLeft ? HandleA : HandleB, bAIsLeft ? HandleB : HandleA, bJoined };
 }
 
@@ -305,8 +328,8 @@ void FJoyShockInterface::UpdateJoyConGripTransitions(TArray<FJoyConPairingChange
 		{
 			continue;
 		}
-		const bool bIsJoyCon = State->HardwareDeviceIdentifier == TEXT("JoyConLeft")
-			|| State->HardwareDeviceIdentifier == TEXT("JoyConRight");
+		const bool bIsJoyCon = IsJoyConLeftIdentifier(State->HardwareDeviceIdentifier)
+			|| IsJoyConRightIdentifier(State->HardwareDeviceIdentifier);
 		if (bIsJoyCon && (State->SimpleState.buttons & (JSMASK_SL | JSMASK_SR)) == (JSMASK_SL | JSMASK_SR))
 		{
 			SplitRequests.AddUnique(Handle);
@@ -352,12 +375,12 @@ void FJoyShockInterface::UpdateJoyConGripTransitions(TArray<FJoyConPairingChange
 		{
 			continue;
 		}
-		if (State->HardwareDeviceIdentifier == TEXT("JoyConLeft")
+		if (IsJoyConLeftIdentifier(State->HardwareDeviceIdentifier)
 			&& (State->SimpleState.buttons & LeftJoinButtons) != 0)
 		{
 			LeftCandidates.Add(Handle);
 		}
-		else if (State->HardwareDeviceIdentifier == TEXT("JoyConRight")
+		else if (IsJoyConRightIdentifier(State->HardwareDeviceIdentifier)
 			&& (State->SimpleState.buttons & RightJoinButtons) != 0)
 		{
 			RightCandidates.Add(Handle);
@@ -512,8 +535,8 @@ void FJoyShockInterface::SendControllerEvents()
 				FIMUState CurrentIMUState;
 				{
 					FScopeLock Lock(&SimpleStateLock);
-					const bool bJoyConLeft = ControllerState.HardwareDeviceIdentifier == TEXT("JoyConLeft");
-					const bool bJoyConRight = ControllerState.HardwareDeviceIdentifier == TEXT("JoyConRight");
+					const bool bJoyConLeft = IsJoyConLeftIdentifier(ControllerState.HardwareDeviceIdentifier);
+					const bool bJoyConRight = IsJoyConRightIdentifier(ControllerState.HardwareDeviceIdentifier);
 					const bool bDualShock4 = ControllerState.HardwareDeviceIdentifier == TEXT("DualShock4");
 					const int32 SuppressedButtons = ControllerState.SuppressedGripButtons;
 					int32 CurrentButtons = ControllerState.SimpleState.buttons & ~SuppressedButtons;
@@ -1145,8 +1168,8 @@ bool FJoyShockInterface::OnConnectCallback(int32 InDeviceHandle)
 	State.ConnectionId = NextConnectionId++;
 	State.DeviceName = GetDeviceName(InDeviceHandle);
 	State.HardwareDeviceIdentifier = GetHardwareDeviceIdentifier(InDeviceHandle);
-	State.bJoyConHorizontal = State.HardwareDeviceIdentifier == TEXT("JoyConLeft")
-		|| State.HardwareDeviceIdentifier == TEXT("JoyConRight");
+	State.bJoyConHorizontal = IsJoyConLeftIdentifier(State.HardwareDeviceIdentifier)
+		|| IsJoyConRightIdentifier(State.HardwareDeviceIdentifier);
 	State.bAnalogWasJoyConHorizontal = false;
 	State.bButtonsWereJoyConHorizontal = false;
 	State.SuppressedGripButtons = 0;
@@ -1184,8 +1207,8 @@ void FJoyShockInterface::ReleaseAllInput(FControllerState& State)
 	{
 		FScopeLock StateLock(&SimpleStateLock);
 
-		const bool bJoyConLeft = State.HardwareDeviceIdentifier == TEXT("JoyConLeft");
-		const bool bJoyConRight = State.HardwareDeviceIdentifier == TEXT("JoyConRight");
+		const bool bJoyConLeft = IsJoyConLeftIdentifier(State.HardwareDeviceIdentifier);
+		const bool bJoyConRight = IsJoyConRightIdentifier(State.HardwareDeviceIdentifier);
 		const bool bDualShock4 = State.HardwareDeviceIdentifier == TEXT("DualShock4");
 
 		// Released against the buttons the engine was actually last told about, which means after the same
@@ -1552,8 +1575,8 @@ void FJoyShockInterface::UnjoinController(int32 Handle)
 		{
 			if (FControllerState* State = ControllerStateByDeviceHandle.Find(Handle))
 			{
-				if (State->HardwareDeviceIdentifier == TEXT("JoyConLeft")
-					|| State->HardwareDeviceIdentifier == TEXT("JoyConRight"))
+				if (IsJoyConLeftIdentifier(State->HardwareDeviceIdentifier)
+					|| IsJoyConRightIdentifier(State->HardwareDeviceIdentifier))
 				{
 					State->bJoyConHorizontal = true;
 				}
@@ -1588,8 +1611,8 @@ void FJoyShockInterface::UnjoinAllControllers()
 		JoinPartner.Empty();
 		for (TTuple<int32, FControllerState>& Pair : ControllerStateByDeviceHandle)
 		{
-			if (Pair.Value.HardwareDeviceIdentifier == TEXT("JoyConLeft")
-				|| Pair.Value.HardwareDeviceIdentifier == TEXT("JoyConRight"))
+			if (IsJoyConLeftIdentifier(Pair.Value.HardwareDeviceIdentifier)
+				|| IsJoyConRightIdentifier(Pair.Value.HardwareDeviceIdentifier))
 			{
 				Pair.Value.bJoyConHorizontal = true;
 			}
@@ -1697,7 +1720,7 @@ bool FJoyShockInterface::GetJoyConGrip(int32 Handle, bool& bOutHorizontal, bool&
 		return false;
 	}
 
-	const bool bIsLeft = State->HardwareDeviceIdentifier == TEXT("JoyConLeft");
+	const bool bIsLeft = IsJoyConLeftIdentifier(State->HardwareDeviceIdentifier);
 	if (!bIsLeft && State->HardwareDeviceIdentifier != TEXT("JoyConRight"))
 	{
 		return false;
@@ -1765,8 +1788,8 @@ bool FJoyShockInterface::FillControllerInfo(FJSL4UControllerInfo& Info, int32 Ha
 	Info.InputDeviceId = State->InputDevice.GetId();
 	Info.PlatformUserId = State->PlatformUser.GetInternalId();
 	Info.HardwareDeviceIdentifier = State->HardwareDeviceIdentifier;
-	if (State->HardwareDeviceIdentifier == TEXT("JoyConLeft")
-		|| State->HardwareDeviceIdentifier == TEXT("JoyConRight"))
+	if (IsJoyConLeftIdentifier(State->HardwareDeviceIdentifier)
+		|| IsJoyConRightIdentifier(State->HardwareDeviceIdentifier))
 	{
 		Info.JoyConGripMode = State->bJoyConHorizontal
 			? EJSL4UJoyConGripMode::Horizontal
@@ -1778,3 +1801,5 @@ bool FJoyShockInterface::FillControllerInfo(FJSL4UControllerInfo& Info, int32 Ha
 	}
 	return true;
 }
+
+#undef LOCTEXT_NAMESPACE

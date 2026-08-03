@@ -33,6 +33,8 @@ enum class EJSL4UControllerFunction : uint8
 #define JS_TYPE_DS4 4
 #define JS_TYPE_DS 5
 #define JS_TYPE_PRO_CONTROLLER_2 6
+#define JS_TYPE_JOYCON2_LEFT 7
+#define JS_TYPE_JOYCON2_RIGHT 8
 
 #define JS_SPLIT_TYPE_LEFT 1
 #define JS_SPLIT_TYPE_RIGHT 2
@@ -364,11 +366,11 @@ enum class EJSL4UControllerType : uint8
 	ProController2 = 5 UMETA(DisplayName = "Pro Controller 2"),
 	JoyConLeft = 6 UMETA(DisplayName = "Joy-Con (L)"),
 	JoyConRight = 7 UMETA(DisplayName = "Joy-Con (R)"),
-	// Reserved, and NOT reported yet: the plugin does not enumerate Switch 2 Joy-Cons at all -- their USB
-	// product ids are not in JslConnectDevices and there is no parser for their reports. A Blueprint branch
-	// on this will not run until that support lands.
+	// Bluetooth only. A Joy-Con 2 never appears over USB -- the console charges it through the rails, and a
+	// cable to a PC gives nothing -- so it arrives from the radio scan, and only once it has been paired
+	// (hold SYNC) or woken with a button press. Joins into a pair exactly as a Switch 1 Joy-Con does.
 	JoyCon2Left = 8 UMETA(DisplayName = "Joy-Con 2 (L)"),
-	// Reserved, and NOT reported yet -- see Joy-Con 2 (L) above.
+	// Bluetooth only -- see Joy-Con 2 (L) above.
 	JoyCon2Right = 9 UMETA(DisplayName = "Joy-Con 2 (R)")
 };
 
@@ -632,6 +634,58 @@ struct JOYSHOCKLIBRARY4UNREAL_API FJSLSettings // typedef struct JSL_SETTINGS {
 	UPROPERTY(BlueprintReadOnly)
 	bool isConnected = false;
 }; // JSL_SETTINGS;
+
+// Stops every controller's polling thread and destroys the devices. Called by the module on its way out,
+// which is the only place it belongs: a game has no reason to tear the library down while it is running.
+// Returns false if a thread was still running when the wait ran out, in which case its device is left alive
+// on purpose and the hidapi library must not be unloaded.
+bool JslShutdownAllDevices();
+
+// The sensors that only the Switch 2 controllers carry. These are not motion -- the accelerometer and
+// gyroscope are read through the usual IMU nodes, which every driven controller answers -- and nothing else
+// in the plugin's families reports them, which is why they are gathered here instead of being added to the
+// IMU state that a DualSense would then have to answer with zeroes.
+//
+// Any other controller returns this struct with Is Supported false and every field zero, so a Blueprint can
+// read it unconditionally and branch on the flag.
+USTRUCT(BlueprintType)
+struct JOYSHOCKLIBRARY4UNREAL_API FJSL4USwitch2Sensors
+{
+	GENERATED_BODY()
+
+	// False for every controller that is not a Switch 2, and for a Switch 2 that has not reported yet.
+	UPROPERTY(BlueprintReadOnly)
+	bool bIsSupported = false;
+
+	// The battery cell's terminal voltage. Roughly 4.2 full and 3.0 empty, but it sags under load and
+	// recovers at rest -- Battery Level on the controller info is the interpolated version of this, and the
+	// better thing to drive a UI from. This is here for a readout that wants the measurement itself.
+	UPROPERTY(BlueprintReadOnly)
+	float BatteryVolts = 0.f;
+
+	UPROPERTY(BlueprintReadOnly)
+	float TemperatureCelsius = 0.f;
+
+	// Raw magnetometer counts. Uncalibrated: a magnetometer reads the local field, which in a room means
+	// the building's steel and whatever is on the desk as much as it means north. Useful as an extra axis
+	// for a fusion filter that knows how to calibrate it, not as a compass on its own.
+	UPROPERTY(BlueprintReadOnly)
+	FVector Magnetometer = FVector::ZeroVector;
+
+	// The optical sensor in the controller's underside, the one the console uses for mouse mode. The
+	// position accumulates as the controller is slid over a surface rather than resetting each frame, so
+	// take differences between reads for a delta.
+	UPROPERTY(BlueprintReadOnly)
+	FVector2D MousePosition = FVector2D::ZeroVector;
+
+	// The sensor's read of the surface under it. Distance rises as the controller is lifted, so these are
+	// what tell you whether it is actually being used as a mouse rather than held in the air.
+	UPROPERTY(BlueprintReadOnly)
+	int32 MouseRoughness = 0;
+
+	UPROPERTY(BlueprintReadOnly)
+	int32 MouseDistance = 0;
+};
 
 UCLASS()
 class JOYSHOCKLIBRARY4UNREAL_API UJoyShockLibrary : public UBlueprintFunctionLibrary
@@ -1263,6 +1317,20 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "JoyShock Library|Output",
 		meta = (DisplayName = "JSL4U Set Home Light", ToolTip = "Sets the HOME ring light brightness (0-1) on a right Joy-Con or Pro Controller. This is a notification light, not a player indicator. Calling it stops the plugin's automatic keep-it-off upkeep for that controller."))
 	static void JSL4USetHomeLight(int64 ConnectionId, float Brightness);
+
+	/**
+	 * The extra sensors a Switch 2 controller carries: battery voltage, temperature, the magnetometer and
+	 * the optical mouse sensor in its underside.
+	 *
+	 * Motion is NOT here -- read the accelerometer and gyroscope through the usual IMU nodes, which every
+	 * controller this plugin drives answers. This is only for readings no other family reports.
+	 *
+	 * Any other controller returns Is Supported false with every field zero, so this is safe to call
+	 * without checking the controller's model first.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "JoyShock Library|Controllers",
+		meta = (DisplayName = "JSL4U Get Switch 2 Sensors", ToolTip = "Battery voltage, temperature, magnetometer and mouse sensor from a Switch 2 controller. Motion is not here -- use the IMU nodes for that. Other controllers return Is Supported false."))
+	static FJSL4USwitch2Sensors JSL4UGetSwitch2Sensors(int64 ConnectionId);
 
 	// Converts the same semantic one-based number into Nintendo's four visible LED states. This is useful
 	// for controller mirrors and UI; the physical controller is updated automatically by assignment.

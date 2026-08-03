@@ -1,6 +1,7 @@
 # JoyShockLibrary4Unreal
 
-This is a fork of JibbSmart's [JoyShockLibrary](https://github.com/JibbSmart/JoyShockLibrary), modified to integrate with Unreal Engine's input system as a plug-in. This allows your Unreal Engine games to support DualShock 4, DualSense (including Edge), Switch Pro, Joy-Con and Switch 2 Pro controllers natively, and use some of their exclusive features such as gyro and touchpad.
+This is a fork of JibbSmart's [JoyShockLibrary](https://github.com/JibbSmart/JoyShockLibrary), modified to integrate with Unreal Engine's input system as a plug-in. This allows your Unreal Engine games to support DualShock 4, DualSense (including Edge), Switch Pro, Joy-Con and Switch 2 Pro controllers natively, and use some of their exclusive features such as gyro and touchpad. Switch 2 controllers — the
+Pro Controller 2 and both Joy-Con 2 — connect over Bluetooth without being paired in Windows first.
 
 **It fills the gaps rather than replacing Unreal's input.** Anything a standard gamepad can do — buttons, sticks, triggers, rumble, motion — reaches your game through Unreal's own input system, as the same keys and the same nodes an Xbox pad already uses. The `JSL4U*` nodes exist only for what Unreal and Windows have no concept of: gyro calibration, the light bar, joining two Joy-Cons into one player, assigning a controller to a player. So write your game against the engine's APIs and it supports every gamepad, and reach for a `JSL4U*` node when you want something only these controllers can do.
 
@@ -23,6 +24,7 @@ This is a fork of JibbSmart's [JoyShockLibrary](https://github.com/JibbSmart/Joy
 - [Lights and player indicators](#lights-and-player-indicators)
 - [Conflicts with other applications](#conflicts-with-other-applications)
 - [Nintendo Switch 2 Pro Controller](#nintendo-switch-2-pro-controller)
+- [Nintendo Switch 2 Joy-Con](#nintendo-switch-2-joy-con)
 
 **Reference**
 - [Blueprint nodes](#blueprint-nodes)
@@ -40,9 +42,9 @@ known to be broken. "Untested" means no unit has been available.
 | Controller | Current validation |
 | --- | --- |
 | Nintendo Switch Joy-Con | Gameplay input, solo-horizontal and joined presentation, motion, pairing/separation, player LEDs, battery and multiple simultaneous controllers tested. |
-| Nintendo Switch 2 Joy-Con | Not implemented. The Bluetooth scan recognises them and logs that it is skipping them; connecting one would need a report parser for their button layout. |
+| Nintendo Switch 2 Joy-Con | Implemented over Bluetooth (they never appear over USB), but **not yet confirmed on hardware** — no unit has been available here. Buttons, the single stick with its calibration, motion, rumble, player LEDs and joining into a pair are all in place; the sensor axis signs for a detached half are carried over from the Switch 1 Joy-Cons rather than measured. |
 | Nintendo Switch Pro Controller | USB/Bluetooth input, motion, player LEDs and HD rumble are implemented, but untested since the overhaul. |
-| Nintendo Switch 2 Pro Controller | USB gameplay input, calibrated sticks, motion and player LEDs tested. HD rumble with amplitude, and the Bluetooth transport, are implemented but not yet confirmed on hardware. |
+| Nintendo Switch 2 Pro Controller | USB gameplay input, calibrated sticks, motion and player LEDs tested. HD rumble with amplitude, the Bluetooth transport, battery reporting and the extra sensors (magnetometer, mouse, temperature) are implemented but not yet confirmed on hardware. |
 | DualShock 4 | Bluetooth and USB gameplay input, stick conventions, motion, battery reporting and cable/Bluetooth transport switching tested. Battery percentages were checked against DS4Windows. Rumble could not be validated because the available controller's rumble hardware is broken. |
 | DualSense / DualSense Edge | USB/Bluetooth input, motion, touchpad, light, player indicators and rumble are implemented, but need a regression test after the overhaul. Battery report offsets are unverified. |
 | Xbox / other XInput pads | Handled entirely by Unreal, not by this plugin. The plugin takes their player slots into account so a JoyShock controller lands where a second Xbox pad would, and **Wait For Any Controller Changes** reports them alongside ours. Mixing them works; player numbering when a *wireless* Xbox pad is in the mix is still under investigation (see below). |
@@ -404,11 +406,17 @@ those into events: `On Low Battery` fires once per episode and re-arms when the 
 plugged in, and `On Charging Changed` reports the cable or dock going in and out.
 
 Battery Level is a coarse enum — `Empty`, `Critical`, `Low`, `Medium`, `Full` — deliberately, not a
-percentage: a Switch controller reports five states, so a percentage there would be invented precision,
+percentage: a Switch 1 controller reports five states, so a percentage there would be invented precision,
 and a game written against a percentage misbehaves on exactly the controllers that cannot supply one.
-Only the PlayStation controllers fill Battery Percent; it is `-1` elsewhere and is meant for display, not
-for decisions. `Unknown` means the controller does not report charge (the Switch 2 Pro Controller), and is
-never a low battery.
+The PlayStation controllers and the Switch 2 fill Battery Percent; it is `-1` elsewhere and is meant for
+display, not for decisions. `Unknown` means the controller does not report charge at all, and is never a
+low battery.
+
+A Switch 2 controller reports its battery as the cell's terminal **voltage** rather than as a charge, so
+its percentage is interpolated across a lithium cell's usable span (3.0 V empty to 4.2 V full). That is a
+straight line where the real discharge curve is not one, and voltage sags under load — a controller reads
+lower mid-rumble than it does at rest. Drive a bar from it, not a number. The measured voltage itself is
+available from **JSL4U Get Switch 2 Sensors** if you want the reading rather than the estimate.
 
 ## Lights and player indicators
 
@@ -467,9 +475,29 @@ To connect a controller the first time, **hold its SYNC button** (the small butt
 until the lights start moving. The plug-in finds it, connects, and pairs it to this PC. From then on
 **pressing any button** is enough — the controller reconnects on its own.
 
-Everything above works the same over Bluetooth as over USB: the same buttons, the same factory-calibrated
-sticks, motion, HD rumble and player LEDs. A controller that is connected by cable is left on the cable;
-the radio link is only taken for a controller that is not already here on USB.
+Everything above works the same over Bluetooth as over USB: the same buttons, the same calibrated sticks,
+motion, HD rumble and player LEDs. A controller that is connected by cable is left on the cable; the radio
+link is only taken for a controller that is not already here on USB.
+
+On connecting, the plug-in asks Windows for a 7.5 ms connection interval. That request is what decides the
+polling rate — a Bluetooth LE peripheral may only speak once per interval, and the default Windows picks
+for a link it was told nothing about is tens of milliseconds, which turns a controller with input ready
+every frame into one heard from a handful of times a second. If the radio refuses the request the
+controller still works, just with more latency, and a line is logged saying so.
+
+### Nintendo Switch 2 Joy-Con
+
+The Joy-Con 2 connect the same way, and only that way — they never appear over USB, because the console
+charges them through the rails and a cable to a PC gives nothing. Hold SYNC on each half the first time;
+after that a button press brings it back.
+
+A detached half behaves like a Switch 1 Joy-Con: it is its own controller, reports as `Joy-Con 2 (L)` or
+`Joy-Con 2 (R)`, starts out sideways, and joins into a single two-stick player with the same chords —
+**L or ZL on the left half together with R or ZR on the right** to join, **SL+SR on either half** to
+separate. The Blueprint pairing nodes treat both generations identically.
+
+**Untested on hardware.** No Joy-Con 2 has been available here; see *Hardware still to be tested* for the
+two things worth checking first.
 
 The transport is Windows-only and needs a machine with Bluetooth LE. It is built against the Windows SDK's
 C++/WinRT headers; if the build machine has no Windows 10/11 SDK carrying those, the plug-in still builds
@@ -489,7 +517,7 @@ Blueprint exposes only the Unreal-oriented `JSL4U*` API. The old `Jsl*` nodes, t
 Current nodes are grouped by responsibility:
 
 - **Events** — the latent **Wait For…** nodes.
-- **Controllers** — discovery, connection checks and complete controller identity.
+- **Controllers** — discovery, connection checks and complete controller identity. **JSL4U Get Switch 2 Sensors** also lives here: the battery voltage, temperature, magnetometer and underside mouse sensor that only the Switch 2 controllers carry. Motion is *not* there — accelerometer and gyroscope come from the Motion nodes, which every controller answers.
 - **Controller Assignment** and **Local Multiplayer** — controller-to-player routing and native Local Player creation.
 - **Joy-Con Pairing** — joining and separating Joy-Cons, and resolving a pair from either half.
 - **Input State**, **Motion** and **Touchpad** — direct state queries for features not already better handled by Enhanced Input. The touchpad is bindable in Enhanced Input too — see [Touchpad](#touchpad).
@@ -552,14 +580,14 @@ No official Sony or Nintendo libraries were used in the development or testing o
 ## Planned future updates
 
 ### Plugin
-- **Bluetooth (BLE) support for the Switch 2 Pro Controller.** It currently works over USB only
 - Amplitude-accurate rumble on the Switch 2 Pro Controller, so force feedback effects that fade in or out don't come out as a flat buzz on it. Needs its amplitude channel reverse-engineering over USB
+- Charge-curve battery reporting for the Switch 2. The controller reports its cell voltage and nothing else, so the percentage is interpolated linearly between 3.0 V and 4.2 V — good enough for a bar, too coarse for a number, and it will read low under a heavy rumble
 
 ### Hardware still to be tested
 These are implemented but unverified, purely because no unit has been available. Reports from anyone who
 owns one are very welcome.
 
-- **Nintendo Switch 2 Joy-Con** — not implemented. `EJSL4UControllerType` reserves `Joy-Con 2 (L)` and `Joy-Con 2 (R)`, but nothing produces them yet: their product ids are not enumerated and there is no parser for their reports
+- **Nintendo Switch 2 Joy-Con** — implemented but never run against hardware. They connect over Bluetooth exactly as the Pro Controller 2 does (hold SYNC once, then any button), report as `Joy-Con 2 (L)` / `Joy-Con 2 (R)`, and join into a pair with the same chords as a Switch 1 Joy-Con. Two things to watch when one is first tested: whether a detached half's **motion axes point the right way** (the per-half sign corrections are assumed from the Switch 1 Joy-Cons, not measured), and whether either half reports a **stuck ZL/ZR** (which would mean the input-mode selection the plug-in sends at connect was refused — it is logged as a warning when that happens)
 - **Nintendo Switch Pro Controller (Switch 1)** — untested since the Unreal Engine 5.8 overhaul. Its right stick's Y axis was the one family never sign-normalised, which is now fixed in the parser and wants confirming on hardware
 - **Xbox and other XInput pads** — mixing them with JoyShock controllers works, but a *wireless* Xbox pad appears to consume more than one player slot, so the next JoyShock controller lands a number further out than expected. A pad connected by cable does not do this. Unconfirmed; Verbose logging now names whatever is holding each skipped slot
 - **DualSense battery reporting** — the report offsets come from public reverse-engineering rather than measurement, and are marked as unverified in the code. The DualShock 4 equivalents were checked against DS4Windows

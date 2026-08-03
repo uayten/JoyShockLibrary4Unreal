@@ -150,9 +150,33 @@ public:
 	std::atomic<bool> battery_charging{ false };
 
 	// Charge as a percentage, or -1 where the hardware does not report one finely enough to be worth
-	// quoting. Only the Sony controllers fill this: a Switch controller reports five states, and turning
-	// those into "75%" would be inventing digits the hardware never measured.
+	// quoting. The Sony controllers and the Switch 2 fill this; a Switch 1 controller reports five states,
+	// and turning those into "75%" would be inventing digits the hardware never measured.
 	std::atomic<int32> battery_percent{ -1 };
+
+	// Sensors only the Switch 2 controllers carry, kept apart from imu_state because they are not motion
+	// and nothing outside this family reports them. All are written by the polling thread and read by the
+	// game thread, hence atomic.
+	std::atomic<float> sw2_battery_volts{ 0.f };
+	std::atomic<float> sw2_temperature_celsius{ 0.f };
+	std::atomic<int32> sw2_magnetometer_x{ 0 };
+	std::atomic<int32> sw2_magnetometer_y{ 0 };
+	std::atomic<int32> sw2_magnetometer_z{ 0 };
+	// The optical sensor in the controller's underside, used for mouse mode. Coordinates are the sensor's
+	// own accumulating position, not a per-frame delta; roughness and distance are its read of the surface
+	// it is on, and are what tell you whether it is being used as a mouse at all.
+	std::atomic<int32> sw2_mouse_x{ 0 };
+	std::atomic<int32> sw2_mouse_y{ 0 };
+	std::atomic<int32> sw2_mouse_roughness{ 0 };
+	std::atomic<int32> sw2_mouse_distance{ 0 };
+
+	// Input suppression for the moment a controller arrives. The button that woke a Bluetooth controller is
+	// still held when its first reports come in, so without this it reaches the game as a press -- and on a
+	// Joy-Con the wake button is usually SL/SR or a shoulder, which is exactly what the grip chords watch.
+	// Cleared by the first report with nothing held, or by the deadline, whichever comes first: a player
+	// genuinely holding a button at connect must not be locked out for good.
+	bool input_settled = false;
+	std::chrono::steady_clock::time_point input_settle_deadline;
 
 	int32 global_count = 0;
 
@@ -184,9 +208,36 @@ public:
 	ControllerType controller_type = ControllerType::n_switch;
 	bool is_usb = false;
 
-	// Nintendo Switch 2 Pro Controller (PID 0x2069). Its protocol differs from the Switch 1: commands
-	// (init, SPI reads, rumble) go over its WinUSB bulk interface rather than HID.
-	bool is_switch2_pro = false;
+	// Any Switch 2 controller -- the Pro Controller 2 or either Joy-Con 2. They share one protocol, which
+	// differs from the Switch 1's: over a cable, commands (init, SPI reads, rumble) go over the controller's
+	// WinUSB bulk interface rather than HID; over the radio they are GATT writes. Which of the three this is
+	// comes from left_right, exactly as it does for the Switch 1 controllers.
+	bool is_switch2 = false;
+
+	// A single Joy-Con 2 rather than a whole controller. What actually differs is what it has: one stick,
+	// half the buttons, a pair of rail buttons, and a gyro on a different range.
+	bool is_switch2_joycon() const { return is_switch2 && (left_right == 1 || left_right == 2); }
+
+	// The JS_TYPE_* value this device reports. Only meaningful for the Switch family; the Sony controllers
+	// have a type of their own and never reach this.
+	int32 switch_legacy_type() const
+	{
+		if (!is_switch2)
+		{
+			return left_right;
+		}
+		switch (left_right)
+		{
+		case 1:  return JS_TYPE_JOYCON2_LEFT;
+		case 2:  return JS_TYPE_JOYCON2_RIGHT;
+		default: return JS_TYPE_PRO_CONTROLLER_2;
+		}
+	}
+
+	// Degrees per second per raw gyro LSB. The Switch 2's two shapes do not share a sensor range: the Pro
+	// Controller 2 reads 14.2857 LSB/dps (the Switch 1's 936/13371) while a Joy-Con 2 reads 16.384, so using
+	// one figure for both makes the other's motion off by 15%.
+	float switch2_gyro_scale() const { return is_switch2_joycon() ? (1.0f / 16.384f) : (936.0f / 13371.0f); }
 
 	// WinUSB handles for the Switch 2 command interface (void* keeps Windows types out of this header).
 	// The interface is released after a short idle period so a multi-process Standalone session can take
@@ -245,6 +296,13 @@ public:
 	bool delete_on_finish = false;
 	bool remove_on_finish = true;
 	std::thread* thread = nullptr;
+
+	// Set by the polling thread as the last thing it does, when it is leaving without freeing this device --
+	// i.e. when something else owns it and is waiting to. std::thread cannot be joined with a deadline, and
+	// a thread wedged in a blocking HID write must not be able to hold the editor open forever, so shutdown
+	// waits on this instead of on a join it could never take back. Atomic because it is the handoff between
+	// the polling thread and whoever is waiting for it.
+	std::atomic<bool> thread_exited{ false };
 
 	// Set by the poll thread the first time this device delivers a real input report, and never cleared.
 	// Until then the device is only "enumerable", not proven: a controller that has been powered off can

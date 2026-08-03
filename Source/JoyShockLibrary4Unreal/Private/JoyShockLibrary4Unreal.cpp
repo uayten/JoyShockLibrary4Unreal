@@ -114,7 +114,13 @@ void FJoyShockLibrary4UnrealModule::StartupModule()
 
 		Switch2Ble::SetDiscoveryCallback([]()
 		{
-			FJoyShockLibrary4UnrealModule::GetInstance().RequestConnectDevices();
+			// Guarded because this runs on a radio thread, which knows nothing about the engine's lifetime:
+			// an advertisement can arrive at any moment, including after the module has gone. GetInstance
+			// would load the module back in to answer that.
+			if (FJoyShockLibrary4UnrealModule::IsAvailable())
+			{
+				FJoyShockLibrary4UnrealModule::GetInstance().RequestConnectDevices();
+			}
 		});
 		Switch2Ble::StartScan();
 	});
@@ -130,12 +136,23 @@ void FJoyShockLibrary4UnrealModule::ShutdownModule()
 		FPlatformProcess::Sleep(0.001f);
 	}
 
-	// Stop the Bluetooth scan and drop any radio links. Unlike the HID devices, these hold WinRT objects
-	// whose callbacks fire on their own threads, so they have to be torn down before the module goes.
+	// Then stop the controllers themselves, before anything they use goes away. Their polling threads own a
+	// hidapi handle or a Bluetooth connection each, and call back into this module; leaving them running
+	// while the rest of this function frees those was the crash on closing the editor with a controller on
+	// the radio, because the Bluetooth teardown below freed the very object each thread was asleep inside.
+	const bool bAllDevicesStopped = JslShutdownAllDevices();
+
+	// Now the radio: stop scanning, drop the discovery callback into this module, and release any connection
+	// no controller claimed. By this point every controller has handed its own connection back, so this is
+	// normally just the scan. Unlike the HID devices these hold WinRT objects whose callbacks fire on their
+	// own threads, so they have to be torn down before the module goes.
 	Switch2Ble::Shutdown();
 
 #if PLATFORM_WINDOWS
-	if (hidapiDllHandle)
+	// Only once nothing can still be inside it. A polling thread that outran the wait above is still holding
+	// a hidapi handle, and unloading the library under it would turn a leak into an access violation on the
+	// way out -- so the leak stands, and the process reclaims it a moment later.
+	if (hidapiDllHandle && bAllDevicesStopped)
 	{
 		FPlatformProcess::FreeDllHandle(hidapiDllHandle);
 		hidapiDllHandle = nullptr;

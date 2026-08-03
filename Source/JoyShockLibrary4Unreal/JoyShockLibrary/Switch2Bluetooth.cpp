@@ -116,6 +116,10 @@ public:
 	// The session is what actually holds the radio link up. Without one WinRT is free to drop the
 	// connection the moment nothing is being read, and the controller goes quiet mid-game.
 	GattSession Session{ nullptr };
+	// The connection-interval request, which is only in force while this object is alive -- releasing it is
+	// how the request is withdrawn, so it is held for the life of the connection rather than dropped after
+	// the call that made it. See the request in Connect.
+	BluetoothLEPreferredConnectionParametersRequest ConnectionParametersRequest{ nullptr };
 	GattCharacteristic InputCharacteristic{ nullptr };
 	GattCharacteristic CommandCharacteristic{ nullptr };
 	GattCharacteristic CommandResponseCharacteristic{ nullptr };
@@ -194,8 +198,42 @@ namespace
 	TMap<uint64, double> GSuppressedUntil;
 	TFunction<void()> GOnDiscovered;
 
+	// Connections are shared-owned, even though the interface hands out a raw pointer. The pointer is a
+	// handle: its holder (a controller's polling thread) may be blocked inside a read for a full second,
+	// while a completely different thread -- module shutdown, or the controller being turned off -- decides
+	// the connection is over. Reference counting is what makes those two safe to overlap. Every entry point
+	// resolves the handle back to a reference and holds it for the duration of the call, so a connection
+	// cannot be freed under a caller that is still inside it; the last holder to let go is what destroys it.
+	//
+	// This is not theoretical tidiness: it is the editor's shutdown crash. ShutdownModule dropped every
+	// connection while the polling threads were still waiting on them, which freed the event a thread was
+	// sleeping on and then the object around it, and left the controller's JoyShock holding a pointer it
+	// would go on to disconnect a second time.
+	using FConnectionPtr = TSharedPtr<FSwitch2BleConnection, ESPMode::ThreadSafe>;
+	using FConnectionWeak = TWeakPtr<FSwitch2BleConnection, ESPMode::ThreadSafe>;
+
 	FCriticalSection GConnectionLock;
-	TArray<FSwitch2BleConnection*> GConnections;
+	TArray<FConnectionPtr> GConnections;
+
+	// Turns a handle back into a reference, or null when the connection has already been disconnected --
+	// which is what makes a call on a stale handle a no-op instead of a use-after-free.
+	FConnectionPtr PinConnection(const FSwitch2BleConnection* Connection)
+	{
+		if (Connection == nullptr)
+		{
+			return nullptr;
+		}
+
+		FScopeLock Lock(&GConnectionLock);
+		for (const FConnectionPtr& Candidate : GConnections)
+		{
+			if (Candidate.Get() == Connection)
+			{
+				return Candidate;
+			}
+		}
+		return nullptr;
+	}
 }
 
 namespace Switch2Ble
@@ -401,7 +439,7 @@ FSwitch2BleConnection* Connect(uint64 Address)
 		}
 	};
 
-	TUniquePtr<FSwitch2BleConnection> Connection = MakeUnique<FSwitch2BleConnection>();
+	FConnectionPtr Connection = MakeShared<FSwitch2BleConnection, ESPMode::ThreadSafe>();
 	Connection->Address = Address;
 
 	try
@@ -430,6 +468,27 @@ FSwitch2BleConnection* Connect(uint64 Address)
 		if (Connection->Session != nullptr)
 		{
 			Connection->Session.MaintainConnection(true);
+		}
+
+		// Ask for the shortest connection interval the radio will give us. This is what decides the polling
+		// rate: a BLE peripheral can only speak once per connection interval, and Windows' default for a
+		// link it was not told anything about is tens of milliseconds -- which turns a controller that has
+		// input ready every frame into one heard from a handful of times a second. Throughput-optimised asks
+		// for 7.5ms, and the controller then streams at the rate its reports are actually produced.
+		//
+		// The request lives as long as the object it returns, so it is stored on the connection rather than
+		// discarded here: letting it go is how the request is cancelled, and the interval would fall back.
+		// Not available on every Windows version, and the radio is free to refuse -- both cost latency and
+		// nothing else, hence the plain catch.
+		try
+		{
+			Connection->ConnectionParametersRequest = Connection->Device.RequestPreferredConnectionParameters(
+				BluetoothLEPreferredConnectionParameters::ThroughputOptimized());
+		}
+		catch (const winrt::hresult_error&)
+		{
+			UE_LOG(LogSwitch2Bluetooth, Log,
+				TEXT("Device %012llX kept the default connection interval; input may arrive more slowly."), Address);
 		}
 
 		auto FindCharacteristic = [&Service](const winrt::guid& Uuid) -> GattCharacteristic
@@ -467,41 +526,67 @@ FSwitch2BleConnection* Connect(uint64 Address)
 			Connection->VibrationCharacteristic = FindCharacteristic(VibrationJoyConRUuid);
 		}
 
-		FSwitch2BleConnection* Raw = Connection.Get();
+		// The handlers below hold a weak reference rather than the connection itself, and do nothing if they
+		// cannot take a strong one. Removing a handler does not wait for one that is already running on a
+		// radio thread, so teardown and a notification genuinely do overlap; pinning is what decides the race
+		// -- either the handler gets there first and keeps the connection alive for its duration, or it
+		// arrives too late and finds nothing to write to. It also makes the failure paths below safe to
+		// return from with handlers still attached.
+		//
+		// Weak, not strong: a handler that owned the connection would keep it alive for as long as WinRT
+		// held the delegate, which outlasts the disconnect.
+		const FConnectionWeak Weak = Connection;
 
 		Connection->ConnectionStatusToken = Connection->Device.ConnectionStatusChanged(
-			[Raw](const BluetoothLEDevice& Sender, const winrt::Windows::Foundation::IInspectable&)
+			[Weak](const BluetoothLEDevice& Sender, const winrt::Windows::Foundation::IInspectable&)
 			{
+				const FConnectionPtr Pinned = Weak.Pin();
+				if (!Pinned.IsValid())
+				{
+					return;
+				}
 				if (Sender.ConnectionStatus() == BluetoothConnectionStatus::Disconnected)
 				{
-					Raw->MarkDisconnected();
+					Pinned->MarkDisconnected();
 				}
 			});
 
 		Connection->ResponseToken = Connection->CommandResponseCharacteristic.ValueChanged(
-			[Raw](const GattCharacteristic&, const GattValueChangedEventArgs& Args)
+			[Weak](const GattCharacteristic&, const GattValueChangedEventArgs& Args)
 			{
-				FScopeLock ResponseLock(&Raw->ResponseLock);
-				Raw->Response = BufferToArray(Args.CharacteristicValue());
-				Raw->ResponseEvent->Trigger();
+				const FConnectionPtr Pinned = Weak.Pin();
+				if (!Pinned.IsValid())
+				{
+					return;
+				}
+
+				FScopeLock ResponseLock(&Pinned->ResponseLock);
+				Pinned->Response = BufferToArray(Args.CharacteristicValue());
+				Pinned->ResponseEvent->Trigger();
 			});
 
 		Connection->InputToken = Connection->InputCharacteristic.ValueChanged(
-			[Raw](const GattCharacteristic&, const GattValueChangedEventArgs& Args)
+			[Weak](const GattCharacteristic&, const GattValueChangedEventArgs& Args)
 			{
+				const FConnectionPtr Pinned = Weak.Pin();
+				if (!Pinned.IsValid())
+				{
+					return;
+				}
+
 				TArray<uint8> Report = BufferToArray(Args.CharacteristicValue());
 				if (Report.Num() == 0)
 				{
 					return;
 				}
 
-				FScopeLock InputLock(&Raw->InputLock);
-				if (Raw->InputQueue.Num() >= FSwitch2BleConnection::MaxQueuedInputReports)
+				FScopeLock InputLock(&Pinned->InputLock);
+				if (Pinned->InputQueue.Num() >= FSwitch2BleConnection::MaxQueuedInputReports)
 				{
-					Raw->InputQueue.RemoveAt(0, 1, EAllowShrinking::No);
+					Pinned->InputQueue.RemoveAt(0, 1, EAllowShrinking::No);
 				}
-				Raw->InputQueue.Add(MoveTemp(Report));
-				Raw->InputEvent->Trigger();
+				Pinned->InputQueue.Add(MoveTemp(Report));
+				Pinned->InputEvent->Trigger();
 			});
 
 		// Subscribe to the response channel before input: the init commands that follow a connection are
@@ -527,12 +612,14 @@ FSwitch2BleConnection* Connect(uint64 Address)
 
 		{
 			FScopeLock ConnectionsLock(&GConnectionLock);
-			GConnections.Add(Raw);
+			GConnections.Add(Connection);
 		}
 
 		UE_LOG(LogSwitch2Bluetooth, Log, TEXT("Connected to Switch 2 controller %012llX over Bluetooth."), Address);
 		bConnected = true;
-		return Connection.Release();
+		// The list above owns the connection from here; the caller gets a handle into it, which stays valid
+		// until it disconnects.
+		return Connection.Get();
 	}
 	catch (const winrt::hresult_error& Error)
 	{
@@ -544,65 +631,92 @@ FSwitch2BleConnection* Connect(uint64 Address)
 
 void Disconnect(FSwitch2BleConnection* Connection)
 {
-	if (Connection == nullptr)
+	// Taking the connection out of the list is what claims it: whichever caller does that owns the teardown,
+	// and any other -- a second Disconnect on the same handle, which is exactly what a JoyShock destructor
+	// does after shutdown has already dropped its connection -- finds nothing and returns.
+	FConnectionPtr Owned;
+	{
+		FScopeLock ConnectionsLock(&GConnectionLock);
+		for (int32 Index = 0; Index < GConnections.Num(); Index++)
+		{
+			if (GConnections[Index].Get() == Connection)
+			{
+				Owned = MoveTemp(GConnections[Index]);
+				GConnections.RemoveAt(Index);
+				break;
+			}
+		}
+	}
+
+	if (!Owned.IsValid())
 	{
 		return;
 	}
 
 	{
-		FScopeLock ConnectionsLock(&GConnectionLock);
-		GConnections.Remove(Connection);
-	}
-	{
 		// Offer this controller again the next time it advertises: it has just become available.
 		FScopeLock ScanLock(&GScanLock);
-		GSuppressedUntil.Remove(Connection->Address);
+		GSuppressedUntil.Remove(Owned->Address);
 	}
 
-	Connection->MarkDisconnected();
+	// Before the teardown below, so anyone blocked in a read or waiting on a command wakes up and stops
+	// using this connection now rather than at the end of their timeout.
+	Owned->MarkDisconnected();
 
 	try
 	{
-		// Handlers are removed before the objects they capture go away: a notification arriving during
-		// teardown would otherwise run against a half-destroyed connection.
-		if (Connection->InputCharacteristic != nullptr && Connection->InputToken)
+		// Handlers are removed first so no new notification is delivered. One already running keeps the
+		// connection alive through its weak reference, which is what makes this safe without waiting for it.
+		if (Owned->InputCharacteristic != nullptr && Owned->InputToken)
 		{
-			Connection->InputCharacteristic.ValueChanged(Connection->InputToken);
+			Owned->InputCharacteristic.ValueChanged(Owned->InputToken);
 		}
-		if (Connection->CommandResponseCharacteristic != nullptr && Connection->ResponseToken)
+		if (Owned->CommandResponseCharacteristic != nullptr && Owned->ResponseToken)
 		{
-			Connection->CommandResponseCharacteristic.ValueChanged(Connection->ResponseToken);
+			Owned->CommandResponseCharacteristic.ValueChanged(Owned->ResponseToken);
 		}
-		if (Connection->Device != nullptr && Connection->ConnectionStatusToken)
+		if (Owned->Device != nullptr && Owned->ConnectionStatusToken)
 		{
-			Connection->Device.ConnectionStatusChanged(Connection->ConnectionStatusToken);
+			Owned->Device.ConnectionStatusChanged(Owned->ConnectionStatusToken);
 		}
-		if (Connection->Session != nullptr)
+		if (Owned->ConnectionParametersRequest != nullptr)
 		{
-			Connection->Session.MaintainConnection(false);
-			Connection->Session.Close();
+			// Withdraws the short-interval request, so the radio is not left holding bandwidth for a
+			// controller that has gone.
+			Owned->ConnectionParametersRequest.Close();
+			Owned->ConnectionParametersRequest = nullptr;
 		}
-		if (Connection->Device != nullptr)
+		if (Owned->Session != nullptr)
 		{
-			Connection->Device.Close();
+			Owned->Session.MaintainConnection(false);
+			Owned->Session.Close();
+		}
+		if (Owned->Device != nullptr)
+		{
+			Owned->Device.Close();
 		}
 	}
 	catch (const winrt::hresult_error&)
 	{
 	}
 
-	delete Connection;
+	// Owned goes out of scope here. The memory is freed at that point only if nothing else is still inside
+	// this connection; a polling thread mid-read holds the last reference and frees it when it returns.
 }
 
 bool IsConnected(const FSwitch2BleConnection* Connection)
 {
-	return Connection != nullptr && Connection->bConnected.load();
+	const FConnectionPtr Pinned = PinConnection(Connection);
+	return Pinned.IsValid() && Pinned->bConnected.load();
 }
 
 bool SendCommand(FSwitch2BleConnection* Connection, uint8 CommandId, uint8 SubcommandId,
 	const uint8* Data, int32 DataLength, TArray<uint8>* OutResponse, int32 TimeoutMs)
 {
-	if (!IsConnected(Connection) || Connection->CommandCharacteristic == nullptr)
+	// Pinned for the whole exchange, which includes a wait of up to TimeoutMs. Without it a controller that
+	// disconnected mid-command would be freed while this thread is still inside its response event.
+	const FConnectionPtr Pinned = PinConnection(Connection);
+	if (!Pinned.IsValid() || !Pinned->bConnected.load() || Pinned->CommandCharacteristic == nullptr)
 	{
 		return false;
 	}
@@ -624,17 +738,17 @@ bool SendCommand(FSwitch2BleConnection* Connection, uint8 CommandId, uint8 Subco
 
 	// One command at a time: the response carries no request id, so a second command in flight would make
 	// the two answers indistinguishable.
-	FScopeLock CommandLock(&Connection->CommandLock);
+	FScopeLock CommandLock(&Pinned->CommandLock);
 
 	{
-		FScopeLock ResponseLock(&Connection->ResponseLock);
-		Connection->Response.Reset();
+		FScopeLock ResponseLock(&Pinned->ResponseLock);
+		Pinned->Response.Reset();
 	}
-	Connection->ResponseEvent->Reset();
+	Pinned->ResponseEvent->Reset();
 
 	try
 	{
-		const GattCommunicationStatus Status = Connection->CommandCharacteristic.WriteValueAsync(
+		const GattCommunicationStatus Status = Pinned->CommandCharacteristic.WriteValueAsync(
 			ArrayToBuffer(Packet.GetData(), Packet.Num())).get();
 		if (Status != GattCommunicationStatus::Success)
 		{
@@ -646,28 +760,55 @@ bool SendCommand(FSwitch2BleConnection* Connection, uint8 CommandId, uint8 Subco
 		return false;
 	}
 
-	if (!Connection->ResponseEvent->Wait(FMath::Max(TimeoutMs, 0)))
+	if (!Pinned->ResponseEvent->Wait(FMath::Max(TimeoutMs, 0)))
 	{
 		return false;
 	}
 
-	FScopeLock ResponseLock(&Connection->ResponseLock);
+	FScopeLock ResponseLock(&Pinned->ResponseLock);
 	// Status byte 0x01 is the controller's "accepted". Anything else -- including the empty response left
 	// behind when the wait was woken by a disconnect -- is a failure.
-	if (Connection->Response.Num() < 8 || Connection->Response[0] != CommandId || Connection->Response[1] != 0x01)
+	if (Pinned->Response.Num() < 8 || Pinned->Response[0] != CommandId || Pinned->Response[1] != 0x01)
 	{
 		return false;
 	}
 	if (OutResponse != nullptr)
 	{
-		OutResponse->Append(Connection->Response.GetData() + 8, Connection->Response.Num() - 8);
+		OutResponse->Append(Pinned->Response.GetData() + 8, Pinned->Response.Num() - 8);
 	}
 	return true;
 }
 
+bool SendRawCommand(FSwitch2BleConnection* Connection, const uint8* Data, int32 Length)
+{
+	const FConnectionPtr Pinned = PinConnection(Connection);
+	if (!Pinned.IsValid() || !Pinned->bConnected.load() || Pinned->CommandCharacteristic == nullptr
+		|| Data == nullptr || Length <= 0)
+	{
+		return false;
+	}
+
+	// Serialised against SendCommand even though nothing is awaited here: the controller answers on one
+	// response channel, and slipping an unheadered write between a command and its acknowledgement would
+	// leave that acknowledgement looking like the answer to the wrong thing.
+	FScopeLock CommandLock(&Pinned->CommandLock);
+
+	try
+	{
+		return Pinned->CommandCharacteristic.WriteValueAsync(ArrayToBuffer(Data, Length)).get()
+			== GattCommunicationStatus::Success;
+	}
+	catch (const winrt::hresult_error&)
+	{
+		return false;
+	}
+}
+
 bool SendVibration(FSwitch2BleConnection* Connection, const uint8* Payload, int32 Length)
 {
-	if (!IsConnected(Connection) || Connection->VibrationCharacteristic == nullptr || Length <= 0)
+	const FConnectionPtr Pinned = PinConnection(Connection);
+	if (!Pinned.IsValid() || !Pinned->bConnected.load()
+		|| Pinned->VibrationCharacteristic == nullptr || Length <= 0)
 	{
 		return false;
 	}
@@ -682,7 +823,7 @@ bool SendVibration(FSwitch2BleConnection* Connection, const uint8* Payload, int3
 		//
 		// The completion handler is not optional: an async operation whose failure nobody observes raises
 		// its exception on a WinRT thread, where there is no catch to meet it.
-		auto Operation = Connection->VibrationCharacteristic.WriteValueAsync(
+		auto Operation = Pinned->VibrationCharacteristic.WriteValueAsync(
 			ArrayToBuffer(Payload, Length), GattWriteOption::WriteWithoutResponse);
 		Operation.Completed([](const winrt::Windows::Foundation::IAsyncOperation<GattCommunicationStatus>&,
 			winrt::Windows::Foundation::AsyncStatus) {});
@@ -696,7 +837,11 @@ bool SendVibration(FSwitch2BleConnection* Connection, const uint8* Payload, int3
 
 int32 ReadInputReport(FSwitch2BleConnection* Connection, uint8* OutBuffer, int32 MaxLength, int32 TimeoutMs)
 {
-	if (Connection == nullptr)
+	// This is the call that matters most: the polling thread sits in it for a second at a time, which is the
+	// window shutdown used to free the connection in. The reference below keeps it alive until the read
+	// returns, so the worst a concurrent disconnect can do is end the wait early with -1.
+	const FConnectionPtr Pinned = PinConnection(Connection);
+	if (!Pinned.IsValid())
 	{
 		return -1;
 	}
@@ -704,11 +849,11 @@ int32 ReadInputReport(FSwitch2BleConnection* Connection, uint8* OutBuffer, int32
 	for (;;)
 	{
 		{
-			FScopeLock InputLock(&Connection->InputLock);
-			if (Connection->InputQueue.Num() > 0)
+			FScopeLock InputLock(&Pinned->InputLock);
+			if (Pinned->InputQueue.Num() > 0)
 			{
-				const TArray<uint8> Report = MoveTemp(Connection->InputQueue[0]);
-				Connection->InputQueue.RemoveAt(0, 1, EAllowShrinking::No);
+				const TArray<uint8> Report = MoveTemp(Pinned->InputQueue[0]);
+				Pinned->InputQueue.RemoveAt(0, 1, EAllowShrinking::No);
 				const int32 Length = FMath::Min(Report.Num(), MaxLength);
 				FMemory::Memcpy(OutBuffer, Report.GetData(), Length);
 				return Length;
@@ -717,12 +862,12 @@ int32 ReadInputReport(FSwitch2BleConnection* Connection, uint8* OutBuffer, int32
 
 		// Checked after the queue, not before: reports already delivered are worth reading out even once
 		// the link has dropped.
-		if (!Connection->bConnected.load())
+		if (!Pinned->bConnected.load())
 		{
 			return -1;
 		}
 
-		if (!Connection->InputEvent->Wait(FMath::Max(TimeoutMs, 0)))
+		if (!Pinned->InputEvent->Wait(FMath::Max(TimeoutMs, 0)))
 		{
 			return 0;
 		}
@@ -774,14 +919,23 @@ void Shutdown()
 {
 	StopScan();
 
-	TArray<FSwitch2BleConnection*> Remaining;
+	// Dropped explicitly, and after the watcher is stopped rather than before. The callback reaches back
+	// into the plugin module to start an enumeration pass, so an advertisement that arrives while the module
+	// is being torn down would call into it on a radio thread on the way out. StopScan does not clear this
+	// on its own because a scan may legitimately be stopped and restarted within a session.
+	{
+		FScopeLock ScanLock(&GScanLock);
+		GOnDiscovered = nullptr;
+	}
+
+	TArray<FConnectionPtr> Remaining;
 	{
 		FScopeLock ConnectionsLock(&GConnectionLock);
 		Remaining = GConnections;
 	}
-	for (FSwitch2BleConnection* Connection : Remaining)
+	for (const FConnectionPtr& Connection : Remaining)
 	{
-		Disconnect(Connection);
+		Disconnect(Connection.Get());
 	}
 }
 
@@ -802,6 +956,7 @@ namespace Switch2Ble
 	void Disconnect(FSwitch2BleConnection*) {}
 	bool IsConnected(const FSwitch2BleConnection*) { return false; }
 	bool SendCommand(FSwitch2BleConnection*, uint8, uint8, const uint8*, int32, TArray<uint8>*, int32) { return false; }
+	bool SendRawCommand(FSwitch2BleConnection*, const uint8*, int32) { return false; }
 	bool SendVibration(FSwitch2BleConnection*, const uint8*, int32) { return false; }
 	int32 ReadInputReport(FSwitch2BleConnection*, uint8*, int32, int32) { return -1; }
 	bool Bond(FSwitch2BleConnection*, uint64) { return false; }

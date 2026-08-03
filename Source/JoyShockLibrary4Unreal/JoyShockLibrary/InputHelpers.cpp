@@ -12,10 +12,47 @@ static uint8_t BatteryLevelFromPercent(int32 Percent)
 	return Percent >= 80 ? 4 : Percent >= 50 ? 3 : Percent >= 25 ? 2 : Percent >= 10 ? 1 : 0;
 }
 
+// Holds a controller's buttons at rest for the moment it arrives.
+//
+// A controller that has just connected is usually still holding the button that woke it -- over Bluetooth
+// that press IS the reason it is here -- and reporting that frame delivers it as if the player had made it.
+// On a Joy-Con that is worse than a stray press: the wake button is typically a shoulder or a rail button,
+// which is exactly what the grip chords watch, so a controller could join or split a pair merely by being
+// switched on.
+//
+// So the buttons are forced to rest until a report arrives with nothing held, or until a short deadline
+// passes -- the deadline being what keeps a player who genuinely is holding a button at connect from being
+// locked out for good. Once the gate lifts, the still-held button reads as a fresh press, which is the
+// right answer for one the player is deliberately holding.
+//
+// Only the buttons: the report is still published, so the controller is announced to the engine on its
+// first frame as before rather than a second late, and its sticks and motion are live throughout. The
+// previous state is blanked alongside the current one so lifting the gate cannot look like a release.
+static void settle_input(JoyShock* jc)
+{
+	if (jc->input_settled)
+	{
+		return;
+	}
+
+	if (jc->simple_state.buttons == 0 || std::chrono::steady_clock::now() >= jc->input_settle_deadline)
+	{
+		jc->input_settled = true;
+		return;
+	}
+
+	jc->simple_state.buttons = 0;
+	jc->simple_state.lTrigger = 0.f;
+	jc->simple_state.rTrigger = 0.f;
+	jc->last_simple_state.buttons = 0;
+	jc->last_simple_state.lTrigger = 0.f;
+	jc->last_simple_state.rTrigger = 0.f;
+}
+
 bool handle_input(JoyShock* jc, uint8_t* packet, int32 len, bool &hasIMU) {
 	hasIMU = true;
 	if (packet[0] == 0) return false; // ignore non-responses
-	if (jc->controller_type == ControllerType::n_switch && !jc->is_switch2_pro)
+	if (jc->controller_type == ControllerType::n_switch && !jc->is_switch2)
 	{
 		// Reject short/unknown Switch reports before touching last/current state. Otherwise a command
 		// response can look like a complete zeroed input frame and synthesize releases on every key.
@@ -60,87 +97,187 @@ bool handle_input(JoyShock* jc, uint8_t* packet, int32 len, bool &hasIMU) {
 		}
 	}
 
-	// Nintendo Switch 2 Pro Controller: its own 64-byte report (id 0x05), decoded from raw dumps + a USB
-	// capture of Steam. Its protocol differs from the Switch 1 controllers, so it gets a dedicated parser.
-	if (jc->is_switch2_pro)
+	// The Nintendo Switch 2 controllers: their own 64-byte report (id 0x05), decoded from raw dumps + a USB
+	// capture of Steam. The protocol differs from the Switch 1's, so the family gets a dedicated parser.
+	//
+	// One report layout serves all three shapes -- Pro Controller 2, Joy-Con 2 (L) and Joy-Con 2 (R). A
+	// controller simply leaves at zero every field it has no hardware for, which is why this reads as one
+	// decoder with per-half filtering rather than three parsers. The filtering is not belt-and-braces: the
+	// halves' button sets must stay disjoint for a joined pair to combine into one player, which is the
+	// contract the interface's pairing code is written against.
+	if (jc->is_switch2)
 	{
 		if (packet[0] != 0x05 || len < 17)
 		{
 			return false;
 		}
 
-		const uint8_t b5 = packet[5]; // face buttons + right shoulders
-		const uint8_t b6 = packet[6]; // system buttons + stick clicks + "C"
-		const uint8_t b7 = packet[7]; // d-pad + left shoulders
-		const uint8_t b8 = packet[8]; // rear grip buttons GL/GR
+		// The button field is one little-endian 32-bit word at bytes 5-8. Its top six bits are not buttons:
+		// a Joy-Con reports status there, and reading them as input is what makes one stream a permanently
+		// held ZL/ZR (the Left half's bit 23 in particular).
+		const uint32_t rawButtons = (uint32_t)packet[5] | ((uint32_t)packet[6] << 8)
+			| ((uint32_t)packet[7] << 16) | ((uint32_t)packet[8] << 24);
+		const uint32_t sw2 = rawButtons & 0x03FFFFFF;
+
+		// Named for the controller's own layout rather than JSL's, so the mapping below reads as a
+		// translation instead of as two sets of magic numbers. SL and SR appear twice because they are
+		// physically different buttons -- the rail buttons on each half -- that JSL folds onto one pair.
+		enum : uint32_t
+		{
+			SW2_Y        = 0x00000001, SW2_X       = 0x00000002, SW2_B        = 0x00000004, SW2_A     = 0x00000008,
+			SW2_SR_RIGHT = 0x00000010, SW2_SL_RIGHT= 0x00000020, SW2_R        = 0x00000040, SW2_ZR    = 0x00000080,
+			SW2_MINUS    = 0x00000100, SW2_PLUS    = 0x00000200, SW2_RCLICK   = 0x00000400, SW2_LCLICK= 0x00000800,
+			SW2_HOME     = 0x00001000, SW2_CAPTURE = 0x00002000, SW2_C        = 0x00004000,
+			SW2_DOWN     = 0x00010000, SW2_UP      = 0x00020000, SW2_RIGHT    = 0x00040000, SW2_LEFT  = 0x00080000,
+			SW2_SR_LEFT  = 0x00100000, SW2_SL_LEFT = 0x00200000, SW2_L        = 0x00400000, SW2_ZL    = 0x00800000,
+			SW2_GR       = 0x01000000, SW2_GL      = 0x02000000,
+		};
+
+		const bool bLeftHalf = jc->left_right == 1;
+		const bool bRightHalf = jc->left_right == 2;
+		const bool bWhole = !bLeftHalf && !bRightHalf;
 
 		int32 buttons = 0;
-		if (b5 & 0x08) buttons |= JSMASK_E;      // A (right)
-		if (b5 & 0x04) buttons |= JSMASK_S;      // B (bottom)
-		if (b5 & 0x02) buttons |= JSMASK_N;      // X (top)
-		if (b5 & 0x01) buttons |= JSMASK_W;      // Y (left)
-		if (b5 & 0x40) buttons |= JSMASK_R;
-		if (b5 & 0x80) buttons |= JSMASK_ZR;
-		if (b6 & 0x01) buttons |= JSMASK_MINUS;
-		if (b6 & 0x02) buttons |= JSMASK_PLUS;
-		if (b6 & 0x04) buttons |= JSMASK_RCLICK;
-		if (b6 & 0x08) buttons |= JSMASK_LCLICK;
-		if (b6 & 0x10) buttons |= JSMASK_HOME;
-		if (b6 & 0x20) buttons |= JSMASK_CAPTURE;
-		if (b6 & 0x40) buttons |= JSMASK_C;      // "C" (GameChat) button
-		if (b7 & 0x02) buttons |= JSMASK_UP;
-		if (b7 & 0x01) buttons |= JSMASK_DOWN;
-		if (b7 & 0x08) buttons |= JSMASK_LEFT;
-		if (b7 & 0x04) buttons |= JSMASK_RIGHT;
-		if (b7 & 0x40) buttons |= JSMASK_L;
-		if (b7 & 0x80) buttons |= JSMASK_ZL;
-		if (b8 & 0x02) buttons |= JSMASK_GL;     // GL rear grip button
-		if (b8 & 0x01) buttons |= JSMASK_GR;     // GR rear grip button
+		// Everything on the right-hand side of a controller: the face buttons, the right shoulders, and the
+		// system buttons that live on that half.
+		if (bWhole || bRightHalf)
+		{
+			if (sw2 & SW2_A) buttons |= JSMASK_E;      // A sits right
+			if (sw2 & SW2_B) buttons |= JSMASK_S;      // B sits bottom
+			if (sw2 & SW2_X) buttons |= JSMASK_N;      // X sits top
+			if (sw2 & SW2_Y) buttons |= JSMASK_W;      // Y sits left
+			if (sw2 & SW2_R) buttons |= JSMASK_R;
+			if (sw2 & SW2_ZR) buttons |= JSMASK_ZR;
+			if (sw2 & SW2_PLUS) buttons |= JSMASK_PLUS;
+			if (sw2 & SW2_RCLICK) buttons |= JSMASK_RCLICK;
+			if (sw2 & SW2_HOME) buttons |= JSMASK_HOME;
+			if (sw2 & SW2_C) buttons |= JSMASK_C;      // "C" (GameChat)
+		}
+		// And everything on the left: d-pad, left shoulders, and its system buttons.
+		if (bWhole || bLeftHalf)
+		{
+			if (sw2 & SW2_UP) buttons |= JSMASK_UP;
+			if (sw2 & SW2_DOWN) buttons |= JSMASK_DOWN;
+			if (sw2 & SW2_LEFT) buttons |= JSMASK_LEFT;
+			if (sw2 & SW2_RIGHT) buttons |= JSMASK_RIGHT;
+			if (sw2 & SW2_L) buttons |= JSMASK_L;
+			if (sw2 & SW2_ZL) buttons |= JSMASK_ZL;
+			if (sw2 & SW2_MINUS) buttons |= JSMASK_MINUS;
+			if (sw2 & SW2_LCLICK) buttons |= JSMASK_LCLICK;
+			if (sw2 & SW2_CAPTURE) buttons |= JSMASK_CAPTURE;
+		}
+		// The rear grip buttons exist only on the Pro Controller 2.
+		if (bWhole)
+		{
+			if (sw2 & SW2_GL) buttons |= JSMASK_GL;
+			if (sw2 & SW2_GR) buttons |= JSMASK_GR;
+		}
+		// A detached Joy-Con's rail buttons. Each half reports its own pair in its own bits, and both fold
+		// onto JSL's single SL/SR -- the same convention the Switch 1 Joy-Cons already use, which is what
+		// lets the SL+SR separation chord work unchanged for both generations.
+		if (bLeftHalf)
+		{
+			if (sw2 & SW2_SL_LEFT) buttons |= JSMASK_SL;
+			if (sw2 & SW2_SR_LEFT) buttons |= JSMASK_SR;
+		}
+		else if (bRightHalf)
+		{
+			if (sw2 & SW2_SL_RIGHT) buttons |= JSMASK_SL;
+			if (sw2 & SW2_SR_RIGHT) buttons |= JSMASK_SR;
+		}
 
 		jc->simple_state.buttons = buttons;
 
 		// Sticks: two 12-bit axes packed into 3 bytes each (same layout as the Switch 1), centre ~0x800.
+		// Both slots are always present; a Joy-Con fills only the one for its side and leaves the other at
+		// rest, so each half is read from the slot it actually writes.
 		const uint16_t lx = packet[11] | ((packet[12] & 0x0F) << 8);
 		const uint16_t ly = (packet[12] >> 4) | (packet[13] << 4);
 		const uint16_t rx = packet[14] | ((packet[15] & 0x0F) << 8);
 		const uint16_t ry = (packet[15] >> 4) | (packet[16] << 4);
 
-		// Use the factory calibration read over SPI during init when available; fall back to fixed
-		// centre/range otherwise.
+		// Use the calibration read during init when available; fall back to fixed centre/range otherwise.
 		auto normStickFallback = [](uint16_t raw) -> float
 		{
 			const float value = ((int32)raw - 2048) / 1800.0f;
 			return value < -1.0f ? -1.0f : (value > 1.0f ? 1.0f : value);
 		};
-		if (jc->stick_cal_x_l[2] != 0)
+		if (!bRightHalf)
 		{
-			jc->CalcAnalogStick2(jc->simple_state.stickLX, jc->simple_state.stickLY, lx, ly, jc->stick_cal_x_l, jc->stick_cal_y_l);
-			jc->CalcAnalogStick2(jc->simple_state.stickRX, jc->simple_state.stickRY, rx, ry, jc->stick_cal_x_r, jc->stick_cal_y_r);
+			if (jc->stick_cal_x_l[2] != 0)
+			{
+				jc->CalcAnalogStick2(jc->simple_state.stickLX, jc->simple_state.stickLY, lx, ly,
+					jc->stick_cal_x_l, jc->stick_cal_y_l);
+			}
+			else
+			{
+				jc->simple_state.stickLX = normStickFallback(lx);
+				jc->simple_state.stickLY = normStickFallback(ly);
+			}
 		}
-		else
+		if (!bLeftHalf)
 		{
-			jc->simple_state.stickLX = normStickFallback(lx);
-			jc->simple_state.stickLY = normStickFallback(ly);
-			jc->simple_state.stickRX = normStickFallback(rx);
-			jc->simple_state.stickRY = normStickFallback(ry);
+			if (jc->stick_cal_x_r[2] != 0)
+			{
+				jc->CalcAnalogStick2(jc->simple_state.stickRX, jc->simple_state.stickRY, rx, ry,
+					jc->stick_cal_x_r, jc->stick_cal_y_r);
+			}
+			else
+			{
+				jc->simple_state.stickRX = normStickFallback(rx);
+				jc->simple_state.stickRY = normStickFallback(ry);
+			}
+			// The right slot's Y axis is reported inverted relative to the left one's (confirmed on a Pro
+			// Controller 2), so negate it to make up positive on both sticks.
+			jc->simple_state.stickRY = -jc->simple_state.stickRY;
 		}
-		// The right stick's Y axis is reported inverted relative to the left stick's (confirmed on
-		// hardware), so negate it to make up positive on both sticks.
-		jc->simple_state.stickRY = -jc->simple_state.stickRY;
 
 		// Switch controllers only report ZL/ZR digitally; surface them as full triggers when pressed.
 		jc->simple_state.lTrigger = (buttons & JSMASK_ZL) ? 1.0f : 0.0f;
 		jc->simple_state.rTrigger = (buttons & JSMASK_ZR) ? 1.0f : 0.0f;
 
+		// Battery, as the cell's terminal voltage in millivolts. There is no charge percentage in the
+		// report, so one is interpolated across the usable span of a single lithium cell -- 3.0V empty to
+		// 4.2V full. That is a coarse stand-in for a real discharge curve (voltage sags under load and
+		// recovers at rest), so it is worth reading as a bar rather than as a number.
+		if (len >= 36)
+		{
+			const int32 millivolts = packet[32] | (packet[33] << 8);
+			if (millivolts >= 2500 && millivolts <= 5000)
+			{
+				jc->sw2_battery_volts.store(millivolts / 1000.0f);
+				const int32 percent = FMath::Clamp((millivolts - 3000) * 100 / 1200, 0, 100);
+				jc->battery_percent.store(percent);
+				jc->battery_level.store(BatteryLevelFromPercent(percent));
+			}
+		}
+
+		// The remaining sensors. None of these is motion, and nothing outside this family reports them, so
+		// they are published on their own rather than folded into the IMU state.
+		if (len >= 32)
+		{
+			jc->sw2_mouse_x.store(packet[17] | (packet[18] << 8));
+			jc->sw2_mouse_y.store(packet[19] | (packet[20] << 8));
+			jc->sw2_mouse_roughness.store(packet[21] | (packet[22] << 8));
+			jc->sw2_mouse_distance.store(packet[23] | (packet[24] << 8));
+			jc->sw2_magnetometer_x.store(uint16_to_int16(packet[26] | (packet[27] << 8) & 0xFF00));
+			jc->sw2_magnetometer_y.store(uint16_to_int16(packet[28] | (packet[29] << 8) & 0xFF00));
+			jc->sw2_magnetometer_z.store(uint16_to_int16(packet[30] | (packet[31] << 8) & 0xFF00));
+		}
+		if (len >= 49)
+		{
+			jc->sw2_temperature_celsius.store(25.0f + (packet[47] | (packet[48] << 8)) / 127.0f);
+		}
+
 		// IMU: int16 LE triplets at bytes 49-54 (accel) and 55-60 (gyro), one sample per report. Bytes
 		// 61-62 are always zero (padding) -- reading the gyro from 57 leaves one axis permanently dead.
 		// The gyro's word order differs from the accelerometer's: physical pitch was measured (on
 		// hardware) in the third gyro word, so the assignment below is (yaw, roll, pitch).
-		// Scales follow the Switch 1 defaults (~1g = 4096 LSB for accel; 936/13371 dps per LSB for gyro).
+		// Accel is ~1g = 4096 LSB on every shape; the gyro's range is not shared, hence the per-shape scale.
 		if (len >= 61)
 		{
 			const float accScale = 1.0f / 4096.0f;
-			const float gyroScale = 936.0f / 13371.0f;
+			const float gyroScale = jc->switch2_gyro_scale();
 
 			const float aw0 = (float)uint16_to_int16(packet[49] | (packet[50] << 8) & 0xFF00);
 			const float aw1 = (float)uint16_to_int16(packet[51] | (packet[52] << 8) & 0xFF00);
@@ -161,6 +298,25 @@ bool handle_input(JoyShock* jc, uint8_t* packet, int32 len, bool &hasIMU) {
 			imu_state.gyroY = gw2 * gyroScale;
 			imu_state.gyroZ = -gw1 * gyroScale;
 
+			// A detached Joy-Con is held rotated relative to the whole controller, so its sensor axes need
+			// the same corrections the Switch 1 halves take: the left one turned about Z, the right one
+			// turned the other way. UNVERIFIED on hardware -- carried over from the Switch 1 Joy-Cons on the
+			// grounds that the shells and sensor mountings are the same shape. If a Joy-Con 2's gyro turns
+			// the wrong way or its gravity points sideways, this is the block to correct, and nothing else
+			// depends on it.
+			if (bLeftHalf)
+			{
+				imu_state.gyroZ = -imu_state.gyroZ;
+			}
+			else if (bRightHalf)
+			{
+				imu_state.gyroX = -imu_state.gyroX;
+				imu_state.gyroY = -imu_state.gyroY;
+				imu_state.gyroZ = -imu_state.gyroZ;
+				imu_state.accelX = -imu_state.accelX;
+				imu_state.accelY = -imu_state.accelY;
+			}
+
 			jc->modifying_lock.Lock();
 			jc->push_sensor_samples(imu_state.gyroX, imu_state.gyroY, imu_state.gyroZ,
 				imu_state.accelX, imu_state.accelY, imu_state.accelZ, jc->delta_time);
@@ -174,6 +330,7 @@ bool handle_input(JoyShock* jc, uint8_t* packet, int32 len, bool &hasIMU) {
 			hasIMU = false;
 		}
 
+		settle_input(jc);
 		return true;
 	}
 
@@ -762,5 +919,6 @@ bool handle_input(JoyShock* jc, uint8_t* packet, int32 len, bool &hasIMU) {
 		jc->imu_state = imu_state;
 	}
 
+	settle_input(jc);
 	return true;
 }
