@@ -1673,8 +1673,8 @@ bool FJoyShockInterface::SetJoyConHorizontal(int32 Handle, bool bHorizontal)
 		FScopeLock ContainerLock(&ControllerContainerLock);
 		FControllerState* State = ControllerStateByDeviceHandle.Find(Handle);
 		if (State == nullptr || !State->bIsConnected
-			|| (State->HardwareDeviceIdentifier != TEXT("JoyConLeft")
-				&& State->HardwareDeviceIdentifier != TEXT("JoyConRight")))
+			|| (!IsJoyConLeftIdentifier(State->HardwareDeviceIdentifier)
+				&& !IsJoyConRightIdentifier(State->HardwareDeviceIdentifier)))
 		{
 			return false;
 		}
@@ -1721,7 +1721,7 @@ bool FJoyShockInterface::GetJoyConGrip(int32 Handle, bool& bOutHorizontal, bool&
 	}
 
 	const bool bIsLeft = IsJoyConLeftIdentifier(State->HardwareDeviceIdentifier);
-	if (!bIsLeft && State->HardwareDeviceIdentifier != TEXT("JoyConRight"))
+	if (!bIsLeft && !IsJoyConRightIdentifier(State->HardwareDeviceIdentifier))
 	{
 		return false;
 	}
