@@ -55,7 +55,15 @@ public class JoyShockLibrary4Unreal : ModuleRules
 	public JoyShockLibrary4Unreal(ReadOnlyTargetRules Target) : base(Target)
 	{
 		PCHUsage = ModuleRules.PCHUsageMode.UseExplicitOrSharedPCHs;
-		
+
+		// Stated rather than inherited, because what a module inherits is the TARGET's standard -- and a
+		// project whose .Target.cs still has DefaultBuildSettings below V4 gets C++17 there, which UE 5.8
+		// refuses outright ("CppStandardVersion.Cpp17 is no longer supported"). That is a setting in the
+		// game's target, not in this plugin, but it is this plugin's name in the error, and a plugin should
+		// not stop building because of how old the project around it is. C++/WinRT needs C++17 at minimum
+		// anyway, and the engine needs C++20.
+		CppStandard = CppStandardVersion.Cpp20;
+
 		PublicIncludePaths.AddRange(
 			new string[]
 			{
