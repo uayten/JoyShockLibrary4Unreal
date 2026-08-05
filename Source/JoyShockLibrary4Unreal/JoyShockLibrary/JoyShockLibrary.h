@@ -663,6 +663,9 @@ struct JOYSHOCKLIBRARY4UNREAL_API FJSL4USwitch2Sensors
 	UPROPERTY(BlueprintReadOnly)
 	float BatteryVolts = 0.f;
 
+	// Treat as unconfirmed. A pair on the same desk at the same room temperature read 25 and 36, and the 25
+	// is exactly the constant this is offset from -- so that half's raw field was zero, and the offset is a
+	// guess that has never been checked against a thermometer. Fine as a curiosity, not as a measurement.
 	UPROPERTY(BlueprintReadOnly)
 	float TemperatureCelsius = 0.f;
 
@@ -672,14 +675,23 @@ struct JOYSHOCKLIBRARY4UNREAL_API FJSL4USwitch2Sensors
 	UPROPERTY(BlueprintReadOnly)
 	FVector Magnetometer = FVector::ZeroVector;
 
-	// The optical sensor in the controller's underside, the one the console uses for mouse mode. The
-	// position accumulates as the controller is slid over a surface rather than resetting each frame, so
-	// take differences between reads for a delta.
+	// The optical sensor in the controller's underside, the one the console uses for mouse mode.
+	//
+	// An absolute position, not a per-frame delta: it runs from 0 at the top-left to 65535 and then wraps
+	// back to 0, on both axes, and it is always a whole number despite the float. Which means a delta is a
+	// subtraction that has to survive that wrap -- plain "now minus last" reports a jump of ±65536 every
+	// time an axis rolls over. Measured on hardware at roughly 12000 units per length of a Pro Controller,
+	// with no acceleration curve of the sensor's own.
 	UPROPERTY(BlueprintReadOnly)
 	FVector2D MousePosition = FVector2D::ZeroVector;
 
 	// The sensor's read of the surface under it. Distance rises as the controller is lifted, so these are
 	// what tell you whether it is actually being used as a mouse rather than held in the air.
+	//
+	// Measured on a Joy-Con 2: roughness is about 4600 in the air, 4380 on a mousepad, 2500 on a bare desk
+	// and 2000 on cloth. Distance sits near 3000 in the air, starts falling about 5 mm from a surface, and
+	// rests at 140-150 against one -- a threshold on it is a fair way to decide the controller is being
+	// used as a mouse at all.
 	UPROPERTY(BlueprintReadOnly)
 	int32 MouseRoughness = 0;
 
