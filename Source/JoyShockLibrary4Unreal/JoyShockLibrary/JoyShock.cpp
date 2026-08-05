@@ -1212,51 +1212,103 @@ bool JoyShock::init_switch2_bluetooth() {
 		v1 = static_cast<uint16_t>((p[1] >> 4) | (p[2] << 4));
 	};
 
-	// The player's own calibration is preferred over the factory's, and this is not a nicety: a controller
-	// whose sticks drifted far enough for its owner to have run the console's correction screen is exactly
-	// the one whose factory centres are now wrong. The user region is separate and starts out erased, which
-	// reads back as all-ones -- that is how "never calibrated" is told from a real reading, and why the
-	// probe has to look at the bytes rather than just at whether the read succeeded.
-	auto ReadStickCal = [this, &Unpack12](uint32 userAddress, uint32 factoryAddress,
-		uint16_t* calX, uint16_t* calY, const TCHAR* label)
+	// One address, parsed and judged. A block that is blank or erased parses into numbers perfectly happily
+	// -- an erased one into a centre of 4095, which then reads as a stick jammed to one side, and a blank
+	// one into a zero range that would divide by zero -- so what comes back is checked as a description of
+	// a stick, not merely for whether the read succeeded. Anything rejected leaves the slot untouched,
+	// which the parser already understands as "no calibration, use the fixed centre".
+	auto ReadStickCalFrom = [this, &Unpack12](uint32 address, uint16_t* calX, uint16_t* calY,
+		const TCHAR* label, const TCHAR* source)
 	{
 		TArray<uint8> Cal;
-		const TCHAR* source = TEXT("user");
-		const bool bHasUser = read_sw2_ble_memory(userAddress, 9, Cal) && Cal.Num() >= 9
-			&& !(Cal[0] == 0xFF && Cal[1] == 0xFF && Cal[2] == 0xFF);
-		if (!bHasUser)
+		if (!read_sw2_ble_memory(address, 9, Cal) || Cal.Num() < 9)
 		{
-			Cal.Reset();
-			source = TEXT("factory");
-			if (!read_sw2_ble_memory(factoryAddress, 9, Cal) || Cal.Num() < 9)
-			{
-				return false;
-			}
+			return false;
+		}
+
+		// An erased region reads back as all-ones. That is the ordinary state of a user block on a
+		// controller nobody has ever recalibrated, so it is refused quietly -- it is not a fault worth a
+		// line in the log on every connect.
+		if (Cal[0] == 0xFF && Cal[1] == 0xFF && Cal[2] == 0xFF)
+		{
+			return false;
 		}
 
 		uint16_t cx, cy, rxa, rya, rxb, ryb;
 		Unpack12(Cal.GetData(), cx, cy);
 		Unpack12(Cal.GetData() + 3, rxa, rya);
 		Unpack12(Cal.GetData() + 6, rxb, ryb);
-		calX[1] = cx; calX[2] = cx + rxa; calX[0] = cx - rxb;
-		calY[1] = cy; calY[2] = cy + rya; calY[0] = cy - ryb;
+
+		// Assembled aside and only committed once it passes, so a rejected block cannot leave a half-written
+		// calibration behind for the next address to be tried on top of.
+		const uint16_t candidateX[3] = { static_cast<uint16_t>(cx - rxb), cx, static_cast<uint16_t>(cx + rxa) };
+		const uint16_t candidateY[3] = { static_cast<uint16_t>(cy - ryb), cy, static_cast<uint16_t>(cy + rya) };
+
+		// A 12-bit axis: the centre sits near the middle of the scale, and each direction of travel is some
+		// real distance without spanning the whole of it. Written as one test over both axes because a
+		// calibration is only usable if all four directions are.
+		auto AxisIsPlausible = [](const uint16_t* cal)
+		{
+			return cal[1] >= 1000 && cal[1] <= 3000
+				&& cal[2] > cal[1] + 200 && cal[2] - cal[1] <= 2048
+				&& cal[0] + 200 < cal[1] && cal[1] - cal[0] <= 2048;
+		};
+		if (!AxisIsPlausible(candidateX) || !AxisIsPlausible(candidateY))
+		{
+			UE_LOG(LogJoyShockLibrary, Log,
+				TEXT("SW2 %s stick cal (%s) at 0x%06X describes no stick "
+					 "(centre (%d, %d), min (%d, %d), max (%d, %d)); ignored.\n"),
+				label, source, address,
+				candidateX[1], candidateY[1], candidateX[0], candidateY[0], candidateX[2], candidateY[2]);
+			return false;
+		}
+
+		calX[0] = candidateX[0]; calX[1] = candidateX[1]; calX[2] = candidateX[2];
+		calY[0] = candidateY[0]; calY[1] = candidateY[1]; calY[2] = candidateY[2];
 
 		UE_LOG(LogJoyShockLibrary, Log,
-			TEXT("SW2 %s stick cal (%s): centre (%d, %d), min (%d, %d), max (%d, %d)\n"),
-			label, source, calX[1], calY[1], calX[0], calY[0], calX[2], calY[2]);
+			TEXT("SW2 %s stick cal (%s at 0x%06X): centre (%d, %d), min (%d, %d), max (%d, %d)\n"),
+			label, source, address, calX[1], calY[1], calX[0], calY[0], calX[2], calY[2]);
 		return true;
 	};
 
-	// A Joy-Con has one stick, and it is always the FIRST calibration block whichever half it is -- the
-	// blocks are per stick on the controller, not per side of a pair. Which of the plugin's two slots it
-	// fills is decided by the half, matching where the parser reads that half's stick from.
+	// The player's own calibration is preferred over the factory's, and this is not a nicety: a controller
+	// whose sticks drifted far enough for its owner to have run the console's correction screen is exactly
+	// the one whose factory centres are now wrong. The user region is separate and starts out erased, so
+	// most controllers fall through to the factory copy -- as does one whose user block holds something
+	// unusable, which is why this is a fall-through rather than a choice made up front.
+	auto ReadStickCal = [&ReadStickCalFrom](uint32 userAddress, uint32 factoryAddress,
+		uint16_t* calX, uint16_t* calY, const TCHAR* label)
+	{
+		return ReadStickCalFrom(userAddress, calX, calY, label, TEXT("user"))
+			|| ReadStickCalFrom(factoryAddress, calX, calY, label, TEXT("factory"));
+	};
+
+	// A Joy-Con has one stick, and which of the two calibration blocks holds it is not something this has
+	// seen on hardware. The half's own side is tried first -- the left half from the left blocks, which is
+	// where its calibration demonstrably is -- and the other side second, so a Joy-Con that stores its one
+	// stick in the first block either way still finds it.
+	//
+	// Getting this wrong is not a small error: with no calibration the parser falls back to a fixed range
+	// tuned for the Pro Controller 2, and a Joy-Con's shorter travel then reaches only about half of full
+	// deflection. That is exactly how it was reported on a Joy-Con 2 (R), whose stick was being looked for
+	// in the left half's blocks.
 	if (is_switch2_joycon())
 	{
 		const bool bLeft = left_right == 1;
-		ReadStickCal(0x1FC042, 0x0130A8,
-			bLeft ? stick_cal_x_l : stick_cal_x_r,
-			bLeft ? stick_cal_y_l : stick_cal_y_r,
-			bLeft ? TEXT("left") : TEXT("right"));
+		uint16_t* calX = bLeft ? stick_cal_x_l : stick_cal_x_r;
+		uint16_t* calY = bLeft ? stick_cal_y_l : stick_cal_y_r;
+		const TCHAR* label = bLeft ? TEXT("left") : TEXT("right");
+
+		const uint32 OwnUser = bLeft ? 0x1FC042 : 0x1FC062;
+		const uint32 OwnFactory = bLeft ? 0x0130A8 : 0x0130E8;
+		const uint32 OtherUser = bLeft ? 0x1FC062 : 0x1FC042;
+		const uint32 OtherFactory = bLeft ? 0x0130E8 : 0x0130A8;
+
+		if (!ReadStickCal(OwnUser, OwnFactory, calX, calY, label))
+		{
+			ReadStickCal(OtherUser, OtherFactory, calX, calY, label);
+		}
 	}
 	else
 	{

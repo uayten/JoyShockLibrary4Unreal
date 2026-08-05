@@ -229,7 +229,17 @@ bool handle_input(JoyShock* jc, uint8_t* packet, int32 len, bool &hasIMU) {
 			}
 			// The right slot's Y axis is reported inverted relative to the left one's (confirmed on a Pro
 			// Controller 2), so negate it to make up positive on both sticks.
-			jc->simple_state.stickRY = -jc->simple_state.stickRY;
+			//
+			// Only on a whole controller. A right Joy-Con's stick is normalised once, in FJoyShockInterface,
+			// exactly as the Switch 1 right half's is -- the note on the Switch 1 Pro's branch further down
+			// spells out why the two places must not both do it. Doing it here as well cancelled out, which
+			// is what sent a Joy-Con 2 (R) up as down in the vertical grip and left as right in the
+			// horizontal one (reported on hardware; the left half was unaffected because it never reaches
+			// this branch).
+			if (bWhole)
+			{
+				jc->simple_state.stickRY = -jc->simple_state.stickRY;
+			}
 		}
 
 		// Switch controllers only report ZL/ZR digitally; surface them as full triggers when pressed.
