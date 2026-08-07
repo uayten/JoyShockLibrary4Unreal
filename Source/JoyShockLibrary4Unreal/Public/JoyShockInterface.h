@@ -242,7 +242,7 @@ private:
 	
 	void ProcessButtons(int32 CurrentButtons, int32 PreviousButtons, FPlatformUserId PlatformUser, FInputDeviceId InputDevice);
 	void ProcessAnalogInputs(const FJoyShockState& SimpleState, const FJoyShockState& PreviousSimpleState,
-		bool bJoyConLeft, bool bJoyConRight, bool bDualShock4, bool bHorizontal, bool bWasHorizontal,
+		bool bJoyConLeft, bool bJoyConRight, bool bSonyPad, bool bHorizontal, bool bWasHorizontal,
 		FPlatformUserId PlatformUser, FInputDeviceId InputDevice);
 	// Dispatches this device's neutral state -- releases for every held button, zeroes for every off-centre
 	// axis and trigger, ends for every active touch, and zeroed motion -- then clears its cached state.
