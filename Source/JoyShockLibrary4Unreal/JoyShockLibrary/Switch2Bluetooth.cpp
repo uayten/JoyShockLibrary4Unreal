@@ -138,9 +138,20 @@ public:
 	TArray<TArray<uint8>> InputQueue;
 	FEvent* InputEvent = nullptr;
 
-	// The most recent command response, and the event the sender waits on.
+	// Command responses, and the event the sender waits on.
+	//
+	// A queue rather than a single slot, because "the notification that arrived" and "the answer to what was
+	// asked" are not the same thing. A memory read is answered with more than one notification -- an
+	// acknowledgement and then the data -- and the sender used to wake on whichever landed first, decide it
+	// was the answer, and fail the read when it turned out to be the eight-byte ack. Which of the two won
+	// depended on thread scheduling against a controller streaming input every 7.5ms, so the same read
+	// worked or failed from one connect to the next. A late answer to a command that already timed out
+	// poisoned the next command the same way.
+	//
+	// Bounded like the input queue: a stale answer nobody claimed is worth less than a fresh one.
+	static constexpr int32 MaxQueuedResponses = 8;
 	FCriticalSection ResponseLock;
-	TArray<uint8> Response;
+	TArray<TArray<uint8>> ResponseQueue;
 	FEvent* ResponseEvent = nullptr;
 
 	// Commands are strictly serialised; see SendCommand.
@@ -561,7 +572,11 @@ FSwitch2BleConnection* Connect(uint64 Address)
 				}
 
 				FScopeLock ResponseLock(&Pinned->ResponseLock);
-				Pinned->Response = BufferToArray(Args.CharacteristicValue());
+				if (Pinned->ResponseQueue.Num() >= FSwitch2BleConnection::MaxQueuedResponses)
+				{
+					Pinned->ResponseQueue.RemoveAt(0);
+				}
+				Pinned->ResponseQueue.Add(BufferToArray(Args.CharacteristicValue()));
 				Pinned->ResponseEvent->Trigger();
 			});
 
@@ -711,7 +726,7 @@ bool IsConnected(const FSwitch2BleConnection* Connection)
 }
 
 bool SendCommand(FSwitch2BleConnection* Connection, uint8 CommandId, uint8 SubcommandId,
-	const uint8* Data, int32 DataLength, TArray<uint8>* OutResponse, int32 TimeoutMs)
+	const uint8* Data, int32 DataLength, TArray<uint8>* OutResponse, int32 MinResponseBytes, int32 TimeoutMs)
 {
 	// Pinned for the whole exchange, which includes a wait of up to TimeoutMs. Without it a controller that
 	// disconnected mid-command would be freed while this thread is still inside its response event.
@@ -741,8 +756,11 @@ bool SendCommand(FSwitch2BleConnection* Connection, uint8 CommandId, uint8 Subco
 	FScopeLock CommandLock(&Pinned->CommandLock);
 
 	{
+		// Anything still queued belongs to an earlier exchange -- an answer that arrived after its sender
+		// gave up. Dropped here rather than examined, because the only thing it can do now is be mistaken
+		// for this command's answer.
 		FScopeLock ResponseLock(&Pinned->ResponseLock);
-		Pinned->Response.Reset();
+		Pinned->ResponseQueue.Reset();
 	}
 	Pinned->ResponseEvent->Reset();
 
@@ -760,23 +778,49 @@ bool SendCommand(FSwitch2BleConnection* Connection, uint8 CommandId, uint8 Subco
 		return false;
 	}
 
-	if (!Pinned->ResponseEvent->Wait(FMath::Max(TimeoutMs, 0)))
+	// Wait for an answer that fits what was asked, not merely for the next notification. Status byte 0x01 is
+	// the controller's "accepted"; MinResponseBytes is how a caller expecting a payload says that the
+	// acknowledgement alone does not answer it. Anything else on the channel -- the ack that precedes a
+	// memory read's data, a late answer to a command that already gave up -- is discarded and the wait
+	// resumes on what is left of the deadline.
+	const double Deadline = FPlatformTime::Seconds() + FMath::Max(TimeoutMs, 0) / 1000.0;
+	for (;;)
 	{
-		return false;
-	}
+		{
+			FScopeLock ResponseLock(&Pinned->ResponseLock);
+			for (int32 Index = 0; Index < Pinned->ResponseQueue.Num(); ++Index)
+			{
+				const TArray<uint8>& Candidate = Pinned->ResponseQueue[Index];
+				if (Candidate.Num() < FMath::Max(8, MinResponseBytes)
+					|| Candidate[0] != CommandId || Candidate[1] != 0x01)
+				{
+					continue;
+				}
 
-	FScopeLock ResponseLock(&Pinned->ResponseLock);
-	// Status byte 0x01 is the controller's "accepted". Anything else -- including the empty response left
-	// behind when the wait was woken by a disconnect -- is a failure.
-	if (Pinned->Response.Num() < 8 || Pinned->Response[0] != CommandId || Pinned->Response[1] != 0x01)
-	{
-		return false;
+				if (OutResponse != nullptr)
+				{
+					OutResponse->Append(Candidate.GetData() + 8, Candidate.Num() - 8);
+				}
+				Pinned->ResponseQueue.RemoveAt(0, Index + 1);
+				return true;
+			}
+			Pinned->ResponseQueue.Reset();
+		}
+
+		// Checked after the drain, so an answer that arrived just before the link dropped is still taken.
+		if (!Pinned->bConnected.load())
+		{
+			return false;
+		}
+
+		const double RemainingSeconds = Deadline - FPlatformTime::Seconds();
+		if (RemainingSeconds <= 0.0)
+		{
+			return false;
+		}
+
+		Pinned->ResponseEvent->Wait(FMath::Max(1, FMath::CeilToInt(RemainingSeconds * 1000.0)));
 	}
-	if (OutResponse != nullptr)
-	{
-		OutResponse->Append(Pinned->Response.GetData() + 8, Pinned->Response.Num() - 8);
-	}
-	return true;
 }
 
 bool SendRawCommand(FSwitch2BleConnection* Connection, const uint8* Data, int32 Length)
@@ -955,7 +999,7 @@ namespace Switch2Ble
 	FSwitch2BleConnection* Connect(uint64) { return nullptr; }
 	void Disconnect(FSwitch2BleConnection*) {}
 	bool IsConnected(const FSwitch2BleConnection*) { return false; }
-	bool SendCommand(FSwitch2BleConnection*, uint8, uint8, const uint8*, int32, TArray<uint8>*, int32) { return false; }
+	bool SendCommand(FSwitch2BleConnection*, uint8, uint8, const uint8*, int32, TArray<uint8>*, int32, int32) { return false; }
 	bool SendRawCommand(FSwitch2BleConnection*, const uint8*, int32) { return false; }
 	bool SendVibration(FSwitch2BleConnection*, const uint8*, int32) { return false; }
 	int32 ReadInputReport(FSwitch2BleConnection*, uint8*, int32, int32) { return -1; }

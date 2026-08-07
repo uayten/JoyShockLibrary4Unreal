@@ -70,8 +70,14 @@ namespace Switch2Ble
 	// Sends one command and waits for the controller's acknowledgement, which is how a command reports
 	// whether it was accepted. Commands are serialised: the response characteristic carries no request id,
 	// so two commands in flight could not be told apart.
+	//
+	// MinResponseBytes is for a caller that wants a payload rather than just a yes. A memory read is
+	// answered with more than one notification, and the acknowledgement -- eight bytes, correct command id,
+	// status accepted -- passes every test a payload does except being the payload. Saying how much is
+	// expected is what lets the ack be recognised as not the answer and the wait continue.
 	bool SendCommand(FSwitch2BleConnection* Connection, uint8 CommandId, uint8 SubcommandId,
-		const uint8* Data, int32 DataLength, TArray<uint8>* OutResponse = nullptr, int32 TimeoutMs = 1000);
+		const uint8* Data, int32 DataLength, TArray<uint8>* OutResponse = nullptr,
+		int32 MinResponseBytes = 0, int32 TimeoutMs = 1000);
 
 	// Writes bytes to the command characteristic exactly as given, with no header and no acknowledgement.
 	// Almost everything the controller is told goes through SendCommand instead; this exists for the one

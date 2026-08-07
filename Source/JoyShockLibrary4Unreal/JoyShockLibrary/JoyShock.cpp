@@ -1090,8 +1090,7 @@ void JoyShock::release_sw2_command_interface_if_idle() {
 
 bool JoyShock::read_sw2_ble_memory(uint32 address, int32 length, TArray<uint8>& outData) {
 	// Memory read, command 0x02 subcommand 0x04: [length][0x7e][0][0][address, little-endian]. The reply
-	// echoes both back before the data, which is worth checking -- a mismatched echo means this is the
-	// answer to some earlier read, and parsing it as calibration would centre the sticks somewhere wrong.
+	// echoes both back before the data.
 	if (length <= 0 || length > 0x4F)
 	{
 		return false;
@@ -1106,24 +1105,50 @@ bool JoyShock::read_sw2_ble_memory(uint32 address, int32 length, TArray<uint8>& 
 	payload[6] = (address >> 16) & 0xFF;
 	payload[7] = (address >> 24) & 0xFF;
 
-	TArray<uint8> Response;
-	if (!Switch2Ble::SendCommand(ble_connection, 0x02, 0x04, payload, sizeof(payload), &Response))
+	// Three attempts. A read that comes back wrong is not a controller that cannot answer -- it is one
+	// answer lost on a radio that is also carrying an input report every 7.5ms -- and everything downstream
+	// of a failed read is a controller running on guessed calibration for as long as it stays connected.
+	// Cheap to ask again; expensive to be wrong until the player unplugs it.
+	FString Failure;
+	for (int32 Attempt = 0; Attempt < 3; ++Attempt)
 	{
-		return false;
-	}
-	if (Response.Num() < 8 + length || Response[0] != static_cast<uint8>(length))
-	{
-		return false;
+		TArray<uint8> Response;
+
+		// 8 + length: the header the controller echoes back, then the bytes asked for. Without saying so,
+		// the plain acknowledgement -- same command id, status accepted, eight bytes and no data -- answers
+		// this call, and the read fails on a reply that was never meant to be the reply.
+		if (!Switch2Ble::SendCommand(ble_connection, 0x02, 0x04, payload, sizeof(payload), &Response,
+			8 + length))
+		{
+			Failure = TEXT("no answer");
+			continue;
+		}
+		if (Response.Num() < 8 + length || Response[0] != static_cast<uint8>(length))
+		{
+			Failure = FString::Printf(TEXT("answer was %d bytes for a %d-byte read"), Response.Num(), length);
+			continue;
+		}
+
+		// The reply echoes the address before the data, which is worth checking: a mismatched echo means
+		// this is the answer to some earlier read, and parsing it as calibration would centre the sticks
+		// somewhere wrong.
+		const uint32 EchoedAddress = Response[4] | (Response[5] << 8) | (Response[6] << 16) | (static_cast<uint32>(Response[7]) << 24);
+		if (EchoedAddress != address)
+		{
+			Failure = FString::Printf(TEXT("answer echoed 0x%06X"), EchoedAddress);
+			continue;
+		}
+
+		outData.Append(Response.GetData() + 8, length);
+		return true;
 	}
 
-	const uint32 EchoedAddress = Response[4] | (Response[5] << 8) | (Response[6] << 16) | (static_cast<uint32>(Response[7]) << 24);
-	if (EchoedAddress != address)
-	{
-		return false;
-	}
-
-	outData.Append(Response.GetData() + 8, length);
-	return true;
+	// Logged here rather than left to the caller: a read that fails silently is invisible in the log except
+	// as the absence of a line that was expected, which is exactly how this went unnoticed on hardware.
+	UE_LOG(LogJoyShockLibrary, Warning,
+		TEXT("Controller %d: read of 0x%06X (%d bytes) failed three times (%s).\n"),
+		intHandle, address, length, *Failure);
+	return false;
 }
 
 bool JoyShock::init_switch2_bluetooth() {
@@ -1284,15 +1309,14 @@ bool JoyShock::init_switch2_bluetooth() {
 			|| ReadStickCalFrom(factoryAddress, calX, calY, label, TEXT("factory"));
 	};
 
-	// A Joy-Con has one stick, and which of the two calibration blocks holds it is not something this has
-	// seen on hardware. The half's own side is tried first -- the left half from the left blocks, which is
-	// where its calibration demonstrably is -- and the other side second, so a Joy-Con that stores its one
-	// stick in the first block either way still finds it.
+	// A Joy-Con has one stick, and it is in the FIRST calibration block whichever half it is: a Joy-Con 2
+	// (R) was seen on hardware reading its calibration out of 0x0130A8, the block a whole controller keeps
+	// its left stick in. The blocks are per stick on the controller, not per side of a pair. Which of the
+	// plugin's two slots that fills is decided by the half, matching where the parser reads it from.
 	//
-	// Getting this wrong is not a small error: with no calibration the parser falls back to a fixed range
-	// tuned for the Pro Controller 2, and a Joy-Con's shorter travel then reaches only about half of full
-	// deflection. That is exactly how it was reported on a Joy-Con 2 (R), whose stick was being looked for
-	// in the left half's blocks.
+	// The second side is still tried if the first says nothing, because one controller is not the whole
+	// range of them -- but in that order, so the common case costs one exchange rather than three. Over a
+	// radio this init has already proven flaky on, a wasted round trip is not free.
 	if (is_switch2_joycon())
 	{
 		const bool bLeft = left_right == 1;
@@ -1300,14 +1324,9 @@ bool JoyShock::init_switch2_bluetooth() {
 		uint16_t* calY = bLeft ? stick_cal_y_l : stick_cal_y_r;
 		const TCHAR* label = bLeft ? TEXT("left") : TEXT("right");
 
-		const uint32 OwnUser = bLeft ? 0x1FC042 : 0x1FC062;
-		const uint32 OwnFactory = bLeft ? 0x0130A8 : 0x0130E8;
-		const uint32 OtherUser = bLeft ? 0x1FC062 : 0x1FC042;
-		const uint32 OtherFactory = bLeft ? 0x0130E8 : 0x0130A8;
-
-		if (!ReadStickCal(OwnUser, OwnFactory, calX, calY, label))
+		if (!ReadStickCal(0x1FC042, 0x0130A8, calX, calY, label))
 		{
-			ReadStickCal(OtherUser, OtherFactory, calX, calY, label);
+			ReadStickCal(0x1FC062, 0x0130E8, calX, calY, label);
 		}
 	}
 	else
