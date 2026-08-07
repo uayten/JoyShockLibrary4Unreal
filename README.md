@@ -168,6 +168,14 @@ PIE keeps Slate focus separately for every local user. After creating a second p
 
 For a playable PIE viewport, call Unreal's standard **Set Focus to Game Viewport** node after the local players, possession, and mapping contexts have been set up. That node focuses the game viewport for all Slate users. Call it again when closing an in-game menu if that menu intentionally moved focus. The plugin does not force focus automatically, because doing so would break legitimate UI input modes.
 
+While testing in the editor, you probably also want this in the console:
+
+```
+Slate.EnableGamepadEditorNavigation false
+```
+
+It is **on** by default, and it lets a gamepad move the editor's own focus around — so a controller you are testing with is also tabbing through panels behind the viewport, and a stick flick can land somewhere you did not intend. With two controllers connected it is worse, because both are doing it. The setting is the editor's, not this plugin's, and it does not affect a packaged game.
+
 ## Input events
 
 For inputs that have an XInput equivalent (e.g. face buttons, triggers and sticks), simply adding JoyShockLibrary4Unreal to your project and enabling it will make Unreal recognize those inputs automatically for any compatible controller, with no code changes required.
@@ -496,8 +504,33 @@ A detached half behaves like a Switch 1 Joy-Con: it is its own controller, repor
 **L or ZL on the left half together with R or ZR on the right** to join, **SL+SR on either half** to
 separate. The Blueprint pairing nodes treat both generations identically.
 
-**Untested on hardware.** No Joy-Con 2 has been available here; see *Hardware still to be tested* for the
-two things worth checking first.
+Each half also carries the sensors the Switch 2 controllers have and nothing else does — magnetometer,
+temperature, and the optical mouse sensor in its underside — all on **JSL4U Get Switch 2 Sensors**.
+
+The mouse sensor reports an **absolute** position that runs 0..65535 on both axes and rolls over, which is
+about 80 cm of desk on a scale of roughly 12000 units per length of a Pro Controller. Subtracting one
+reading from an earlier one therefore reports a jump of a full 65536 every time it wraps. Two ways not to
+deal with that yourself:
+
+- **JoyShock Mouse L / Mouse R 2D-Axis (Switch 2)** are Enhanced Input keys, bound exactly like a
+  thumbstick. There are two because a joined pair really is two mice for one player — the console uses them
+  that way, and one axis would let one hand cancel the other. A detached half feeds only its own side; bind
+  both to the same Input Action if you want "whichever half is in use". The value is a delta in the
+  sensor's own counts, like Unreal's Mouse X / Mouse Y, so scale it in the mapping context.
+- **JSL4U Consume Switch 2 Mouse Delta** is the same movement as a Blueprint node, for a game not using
+  Enhanced Input for it. It consumes what it reports, so call it from one place. It keeps its own tally, so
+  using it does not take anything away from the axis keys.
+- **Mouse Travel**, on the sensors struct, is the movement accumulated instead of wrapped. It only grows,
+  so differences between reads are just differences, and every caller sees the same value.
+
+`Mouse Distance` is what tells you the controller is being used as a mouse at all: about 3000 in the air,
+falling from roughly 5 mm out, and 140–150 resting on a surface. `Mouse Roughness` reads the surface —
+about 4600 in the air, 4380 on a mousepad, 2500 on a bare desk, 2000 on cloth.
+
+**Tested on hardware once**, by a contributor with a pair, which found and fixed three faults. What is
+still unverified is the Bluetooth init's reliability: a controller whose calibration read fails falls back
+to a fixed stick range and reaches about two thirds of full deflection, which feels like a character that
+walks slower than everyone else's. If you see that, the log says which read failed and at what address.
 
 The transport is Windows-only and needs a machine with Bluetooth LE. It is built against the Windows SDK's
 C++/WinRT headers; if the build machine has no Windows 10/11 SDK carrying those, the plug-in still builds
@@ -517,7 +550,7 @@ Blueprint exposes only the Unreal-oriented `JSL4U*` API. The old `Jsl*` nodes, t
 Current nodes are grouped by responsibility:
 
 - **Events** — the latent **Wait For…** nodes.
-- **Controllers** — discovery, connection checks and complete controller identity. **JSL4U Get Switch 2 Sensors** also lives here: the battery voltage, temperature, magnetometer and underside mouse sensor that only the Switch 2 controllers carry. Motion is *not* there — accelerometer and gyroscope come from the Motion nodes, which every controller answers.
+- **Controllers** — discovery, connection checks and complete controller identity. **JSL4U Get Switch 2 Sensors** also lives here: the battery voltage, temperature, magnetometer and underside mouse sensor that only the Switch 2 controllers carry, along with **JSL4U Consume Switch 2 Mouse Delta**. Motion is *not* there — accelerometer and gyroscope come from the Motion nodes, which every controller answers.
 - **Controller Assignment** and **Local Multiplayer** — controller-to-player routing and native Local Player creation.
 - **Joy-Con Pairing** — joining and separating Joy-Cons, and resolving a pair from either half.
 - **Input State**, **Motion** and **Touchpad** — direct state queries for features not already better handled by Enhanced Input. The touchpad is bindable in Enhanced Input too — see [Touchpad](#touchpad).
@@ -587,14 +620,15 @@ No official Sony or Nintendo libraries were used in the development or testing o
 These are implemented but unverified, purely because no unit has been available. Reports from anyone who
 owns one are very welcome.
 
-- **Nintendo Switch 2 Joy-Con** — implemented but never run against hardware. They connect over Bluetooth exactly as the Pro Controller 2 does (hold SYNC once, then any button), report as `Joy-Con 2 (L)` / `Joy-Con 2 (R)`, and join into a pair with the same chords as a Switch 1 Joy-Con. Two things to watch when one is first tested: whether a detached half's **motion axes point the right way** (the per-half sign corrections are assumed from the Switch 1 Joy-Cons, not measured), and whether either half reports a **stuck ZL/ZR** (which would mean the input-mode selection the plug-in sends at connect was refused — it is logged as a warning when that happens)
+- **Nintendo Switch 2 Joy-Con, Bluetooth init reliability** — a first hardware session found the factory-data reads failing at connect, seemingly at random, on either half. The cause was the response channel taking the first notification to arrive as the answer, which for a memory read is often the acknowledgement rather than the data; that is fixed, and the reads now retry and log which address failed. What has not been re-tested is whether anything still fails after it. A controller whose calibration read fails is not dead — it falls back to a fixed stick range and reaches about two thirds of full deflection
 - **Nintendo Switch Pro Controller (Switch 1)** — untested since the Unreal Engine 5.8 overhaul. Its right stick's Y axis was the one family never sign-normalised, which is now fixed in the parser and wants confirming on hardware
 - **Xbox and other XInput pads** — mixing them with JoyShock controllers works, but a *wireless* Xbox pad appears to consume more than one player slot, so the next JoyShock controller lands a number further out than expected. A pad connected by cable does not do this. Unconfirmed; Verbose logging now names whatever is holding each skipped slot
 - **DualSense battery reporting** — the report offsets come from public reverse-engineering rather than measurement, and are marked as unverified in the code. The DualShock 4 equivalents were checked against DS4Windows
 - **DualSense touchpad Y range** — the DualSense normalises its touch coordinates with the DualShock 4's pad height, which the two do not share. If that is wrong, a finger at the bottom edge reads past 1.0 instead of reaching it. Easy to check with the demo's touchpad readout
 
 ### Demo level
-- **Controller models still missing from the on-screen mirror.** Only the Joy-Con pair, the Joy-Con grip, the DualShock 4 and the DualSense are modelled; everything else falls back to whatever the mirror is given. Needed: Nintendo Switch 2 Joy-Con, Nintendo Switch Pro Controller, Nintendo Switch 2 Pro Controller, and an Xbox pad for the controllers Unreal handles directly
+- **Controller models still missing from the on-screen mirror.** Only the Joy-Con pair, the Joy-Con grip, the DualShock 4 and the DualSense are modelled; everything else falls back to whatever the mirror is given. The Joy-Con 2 borrow the Switch 1 Joy-Con models, which are the same shape. Needed: Nintendo Switch Pro Controller, Nintendo Switch 2 Pro Controller, and an Xbox pad for the controllers Unreal handles directly
+- **A controller can arrive without its character responding.** Reported once with a Joy-Con 2: the mirror appears and the motion readouts work, but the pawn does not move. Stopping and re-playing fixes it, which is not an option in a packaged build. Not yet diagnosed; it is the demo's assignment path rather than the plug-in's, since the controller is visibly connected and reporting
 
 ## Credits
 - A massive thanks to JibbSmart for creating the original JoyShockLibrary plug-in, and for answering the questions I sent to his Twitter DMs. For the full credits of the original JoyShockLibrary, check out his [JoyShockLibrary](https://github.com/JibbSmart/JoyShockLibrary) repo.
