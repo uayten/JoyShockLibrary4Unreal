@@ -599,10 +599,21 @@ void FJoyShockInterface::SendControllerEvents()
 
 						// Y up, like every other axis this plugin publishes: the sensor counts downwards
 						// from the top-left, as a screen does.
-						MessageHandler->OnControllerAnalog(bMouseLeft ? MouseLeftXKeyName : MouseRightXKeyName,
-							PlatformUser, InputDevice, MouseDeltaX);
-						MessageHandler->OnControllerAnalog(bMouseLeft ? MouseLeftYKeyName : MouseRightYKeyName,
-							PlatformUser, InputDevice, -MouseDeltaY);
+						MouseDeltaY = -MouseDeltaY;
+
+						// Through the same dispatcher as every other axis, which sends while the value is
+						// off centre and once more when it comes back. Going straight to the message handler
+						// worked, but sent a zero every frame to every Joy-Con 2 for the rest of the session
+						// -- and put this one axis on a different path from all the others for no reason.
+						OnControllerAnalog(PlatformUser, InputDevice,
+							bMouseLeft ? MouseLeftXKeyName : MouseRightXKeyName,
+							MouseDeltaX, ControllerState.PreviousMouseDeltaX);
+						OnControllerAnalog(PlatformUser, InputDevice,
+							bMouseLeft ? MouseLeftYKeyName : MouseRightYKeyName,
+							MouseDeltaY, ControllerState.PreviousMouseDeltaY);
+
+						ControllerState.PreviousMouseDeltaX = MouseDeltaX;
+						ControllerState.PreviousMouseDeltaY = MouseDeltaY;
 					}
 				}
 

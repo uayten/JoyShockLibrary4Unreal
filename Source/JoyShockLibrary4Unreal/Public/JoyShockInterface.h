@@ -138,6 +138,12 @@ private:
 		bool bJoyConHorizontal = false;
 		bool bAnalogWasJoyConHorizontal = false;
 		bool bButtonsWereJoyConHorizontal = false;
+
+		// Last mouse delta sent to the engine, for the same reason every other axis keeps its previous
+		// value: the dispatcher sends while an axis is off centre and once more when it returns, and it
+		// needs the old value to know which. A mouse that stops moving is an axis returning to centre.
+		float PreviousMouseDeltaX = 0.f;
+		float PreviousMouseDeltaY = 0.f;
 		// Registration chords are control-management input, not gameplay input. After a transition, suppress
 		// those physical buttons until all of them are released so joining cannot also fire four actions.
 		int32 SuppressedGripButtons = 0;
