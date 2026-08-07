@@ -197,9 +197,16 @@ bool handle_input(JoyShock* jc, uint8_t* packet, int32 len, bool &hasIMU) {
 		const uint16_t ry = (packet[15] >> 4) | (packet[16] << 4);
 
 		// Use the calibration read during init when available; fall back to fixed centre/range otherwise.
-		auto normStickFallback = [](uint16_t raw) -> float
+		//
+		// The range is per shape, from calibration actually read off hardware: a Joy-Con 2's stick travels
+		// about 1200 counts from centre and a Pro Controller 2's about 1600. One figure for both is what
+		// made an uncalibrated Joy-Con reach two thirds of full deflection -- felt, correctly, as a
+		// character that walks slower than everyone else's. This is damage control, not calibration: it is
+		// only reached when the controller would not say what its own centres are.
+		const float fallbackRange = jc->is_switch2_joycon() ? 1200.0f : 1600.0f;
+		auto normStickFallback = [fallbackRange](uint16_t raw) -> float
 		{
-			const float value = ((int32)raw - 2048) / 1800.0f;
+			const float value = ((int32)raw - 2048) / fallbackRange;
 			return value < -1.0f ? -1.0f : (value > 1.0f ? 1.0f : value);
 		};
 		if (!bRightHalf)
