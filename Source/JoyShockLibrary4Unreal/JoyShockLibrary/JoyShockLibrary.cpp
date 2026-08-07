@@ -3471,9 +3471,52 @@ FJSL4USwitch2Sensors UJoyShockLibrary::JSL4UGetSwitch2Sensors(int64 ConnectionId
 	Sensors.Magnetometer = FVector(
 		jc->sw2_magnetometer_x.load(), jc->sw2_magnetometer_y.load(), jc->sw2_magnetometer_z.load());
 	Sensors.MousePosition = FVector2D(jc->sw2_mouse_x.load(), jc->sw2_mouse_y.load());
+	Sensors.MouseTravel = FVector2D(jc->sw2_mouse_travel_x.load(), jc->sw2_mouse_travel_y.load());
 	Sensors.MouseRoughness = jc->sw2_mouse_roughness.load();
 	Sensors.MouseDistance = jc->sw2_mouse_distance.load();
 	return Sensors;
+}
+
+FVector2D UJoyShockLibrary::JSL4UConsumeSwitch2MouseDelta(int64 ConnectionId)
+{
+	const int32 DeviceId = HandleForConnection(ConnectionId);
+	FJoyShockLibrary4UnrealModule& JSL4UModule = FJoyShockLibrary4UnrealModule::GetInstance();
+
+	std::shared_lock<std::shared_timed_mutex> lock(JSL4UModule._connectedLock);
+
+	JoyShock* jc = GetJoyShockFromHandle(DeviceId);
+	if (jc == nullptr || !jc->is_switch2)
+	{
+		return FVector2D::ZeroVector;
+	}
+
+	int64 DeltaX = 0;
+	int64 DeltaY = 0;
+	jc->consume_mouse_travel(jc->sw2_mouse_consumed_x, jc->sw2_mouse_consumed_y, DeltaX, DeltaY);
+	return FVector2D(DeltaX, DeltaY);
+}
+
+void UJoyShockLibrary::JslConsumeMouseAxisDelta(int32 deviceId, float& outDeltaX, float& outDeltaY)
+{
+	outDeltaX = 0.f;
+	outDeltaY = 0.f;
+
+	FJoyShockLibrary4UnrealModule& JSL4UModule = FJoyShockLibrary4UnrealModule::GetInstance();
+	std::shared_lock<std::shared_timed_mutex> lock(JSL4UModule._connectedLock);
+
+	JoyShock* jc = GetJoyShockFromHandle(deviceId);
+	if (jc == nullptr || !jc->is_switch2)
+	{
+		return;
+	}
+
+	// Its own baseline, separate from the Blueprint node's: both read the same travel, neither takes it
+	// from the other.
+	int64 DeltaX = 0;
+	int64 DeltaY = 0;
+	jc->consume_mouse_travel(jc->sw2_mouse_axis_x, jc->sw2_mouse_axis_y, DeltaX, DeltaY);
+	outDeltaX = static_cast<float>(DeltaX);
+	outDeltaY = static_cast<float>(DeltaY);
 }
 
 void UJoyShockLibrary::JSL4USetHomeLight(int64 ConnectionId, float Brightness)

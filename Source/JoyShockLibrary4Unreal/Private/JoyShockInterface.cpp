@@ -204,6 +204,16 @@ void FJoyShockInterface::InitializeAdditionalKeys()
 	EKeys::AddKey(FKeyDetails(TouchPad2YKey, LOCTEXT("JoyShock_TouchPad2_Y", "JoyShock TouchPad 2 Y-Axis"), FKeyDetails::GamepadKey | FKeyDetails::Axis1D, JoyShockControllerName));
 	EKeys::AddPairedKey(FKeyDetails(TouchPad2Key, LOCTEXT("JoyShock_TouchPad2", "JoyShock TouchPad 2 2D-Axis"), FKeyDetails::GamepadKey | FKeyDetails::Axis2D, JoyShockControllerName), TouchPad2XKey, TouchPad2YKey);
 	EKeys::AddKey(FKeyDetails(TouchPad2TouchedKey, LOCTEXT("JoyShock_TouchPad2_Touched", "JoyShock TouchPad 2 Touched"), FKeyDetails::GamepadKey, JoyShockControllerName));
+
+	// Joy-Con 2 mouse sensors -- one pair of axes per half, because a joined pair is two mice for one
+	// player. See the note on MouseLeftXKeyName.
+	EKeys::AddKey(FKeyDetails(MouseLeftXKey, LOCTEXT("JoyShock_Mouse_Left_X", "JoyShock Mouse L X-Axis (Switch 2)"), FKeyDetails::GamepadKey | FKeyDetails::Axis1D, JoyShockControllerName));
+	EKeys::AddKey(FKeyDetails(MouseLeftYKey, LOCTEXT("JoyShock_Mouse_Left_Y", "JoyShock Mouse L Y-Axis (Switch 2)"), FKeyDetails::GamepadKey | FKeyDetails::Axis1D, JoyShockControllerName));
+	EKeys::AddPairedKey(FKeyDetails(MouseLeftKey, LOCTEXT("JoyShock_Mouse_Left", "JoyShock Mouse L 2D-Axis (Switch 2)"), FKeyDetails::GamepadKey | FKeyDetails::Axis2D, JoyShockControllerName), MouseLeftXKey, MouseLeftYKey);
+
+	EKeys::AddKey(FKeyDetails(MouseRightXKey, LOCTEXT("JoyShock_Mouse_Right_X", "JoyShock Mouse R X-Axis (Switch 2)"), FKeyDetails::GamepadKey | FKeyDetails::Axis1D, JoyShockControllerName));
+	EKeys::AddKey(FKeyDetails(MouseRightYKey, LOCTEXT("JoyShock_Mouse_Right_Y", "JoyShock Mouse R Y-Axis (Switch 2)"), FKeyDetails::GamepadKey | FKeyDetails::Axis1D, JoyShockControllerName));
+	EKeys::AddPairedKey(FKeyDetails(MouseRightKey, LOCTEXT("JoyShock_Mouse_Right", "JoyShock Mouse R 2D-Axis (Switch 2)"), FKeyDetails::GamepadKey | FKeyDetails::Axis2D, JoyShockControllerName), MouseRightXKey, MouseRightYKey);
 }
 
 FString FJoyShockInterface::GetDeviceName(int32 InControllerId)
@@ -570,7 +580,33 @@ void FJoyShockInterface::SendControllerEvents()
 				}
 
 				ProcessIMUState(DeviceHandle, CurrentIMUState, PlatformUser, InputDevice);
-				
+
+				// The mouse sensor, into this half's own pair of axes. Sent from here, per device handle,
+				// rather than from the analog path: both halves of a joined pair run this loop separately
+				// while sharing a player, which is exactly what makes two mice for one player fall out
+				// without the pairing code having to know the sensor exists.
+				//
+				// Only a Joy-Con 2 has one. Nothing else reaches this at all, and a half with the sensor
+				// idle sends zero, which is the correct value for an axis nobody is moving.
+				{
+					const bool bMouseLeft = IsJoyConLeftIdentifier(ControllerState.HardwareDeviceIdentifier);
+					const bool bMouseRight = IsJoyConRightIdentifier(ControllerState.HardwareDeviceIdentifier);
+					if (bMouseLeft || bMouseRight)
+					{
+						float MouseDeltaX = 0.f;
+						float MouseDeltaY = 0.f;
+						UJoyShockLibrary::JslConsumeMouseAxisDelta(DeviceHandle, MouseDeltaX, MouseDeltaY);
+
+						// Y up, like every other axis this plugin publishes: the sensor counts downwards
+						// from the top-left, as a screen does.
+						MessageHandler->OnControllerAnalog(bMouseLeft ? MouseLeftXKeyName : MouseRightXKeyName,
+							PlatformUser, InputDevice, MouseDeltaX);
+						MessageHandler->OnControllerAnalog(bMouseLeft ? MouseLeftYKeyName : MouseRightYKeyName,
+							PlatformUser, InputDevice, -MouseDeltaY);
+					}
+				}
+
+
 				{
 					FScopeLock Lock(&TouchStateLock);
 					ProcessTouchpadInputs(ControllerState.TouchState, ControllerState.PreviousTouchState, PlatformUser, InputDevice);

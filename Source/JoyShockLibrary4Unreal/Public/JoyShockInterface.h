@@ -353,6 +353,38 @@ private:
 	const FGamepadKeyNames::Type TouchPad2TouchedKeyName = "TouchPad2Touched";
 	const FKey TouchPad2TouchedKey = "TouchPad2Touched";
 
+	/**
+	 * The optical mouse sensor in a Joy-Con 2's underside, as gamepad axes.
+	 *
+	 * Registered like the touchpad above and for the same reason: it belongs to one player's controller, so
+	 * it is that player's gamepad axis rather than anything to do with the system pointer. Nothing here
+	 * moves the OS cursor, and a game binding it does not have to care whether Windows thinks a mouse
+	 * exists.
+	 *
+	 * There are two, one per half, because a joined pair really is two mice for one player -- the console
+	 * uses them that way, and merging them into a single axis would make one hand cancel the other. Which
+	 * half a value came from is the whole information: a detached Joy-Con 2 (L) feeds only the left pair, a
+	 * (R) only the right, and a joined pair feeds both independently while remaining one player. A game that
+	 * wants "the mouse, whichever half is in use" binds both to the same Input Action; only one of them will
+	 * be moving.
+	 *
+	 * The value is a DELTA in the sensor's own counts, not a position -- about 12000 counts to the length of
+	 * a Pro Controller -- which is the same shape as Unreal's own Mouse X / Mouse Y and wants the same
+	 * treatment: scale it in the Input Mapping Context to taste. It is deliberately not normalised to
+	 * anything, because normalising would mean inventing a DPI the hardware never states.
+	 */
+	const FGamepadKeyNames::Type MouseLeftXKeyName = "Switch2MouseLeft_X";
+	const FKey MouseLeftXKey = "Switch2MouseLeft_X";
+	const FGamepadKeyNames::Type MouseLeftYKeyName = "Switch2MouseLeft_Y";
+	const FKey MouseLeftYKey = "Switch2MouseLeft_Y";
+	const FKey MouseLeftKey = "Switch2MouseLeft";
+
+	const FGamepadKeyNames::Type MouseRightXKeyName = "Switch2MouseRight_X";
+	const FKey MouseRightXKey = "Switch2MouseRight_X";
+	const FGamepadKeyNames::Type MouseRightYKeyName = "Switch2MouseRight_Y";
+	const FKey MouseRightYKey = "Switch2MouseRight_Y";
+	const FKey MouseRightKey = "Switch2MouseRight";
+
 
 	
 	const TArray<TTuple<int32, FName>> JoyShockMaskMappings = {

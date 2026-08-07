@@ -170,6 +170,71 @@ public:
 	std::atomic<int32> sw2_mouse_roughness{ 0 };
 	std::atomic<int32> sw2_mouse_distance{ 0 };
 
+	// The same movement, added up instead of wrapped.
+	//
+	// The sensor's own position runs 0..65535 and rolls over, so subtracting one reading from an earlier one
+	// reports a jump of a full 65536 whenever it does -- roughly every 80cm of desk, and always as a
+	// violent flick in whatever a game aimed with it. Every consumer would have to know that and undo it.
+	// Undone once here instead, on the thread that sees every report and therefore never misses a step: the
+	// wrap is resolved against the previous reading and the difference accumulated. What comes out only
+	// grows, and differences taken from it are just differences.
+	std::atomic<int64> sw2_mouse_travel_x{ 0 };
+	std::atomic<int64> sw2_mouse_travel_y{ 0 };
+
+	// Where each consumer of that travel left off. Two, because the Blueprint node and the engine's input
+	// axes are separate readers of the same movement: sharing one baseline would have each of them see only
+	// the part the other had not taken yet, which is the halved sensitivity the node's own tooltip warns
+	// about -- except silently, and between two things a game never asked to have connected.
+	std::atomic<int64> sw2_mouse_consumed_x{ 0 };
+	std::atomic<int64> sw2_mouse_consumed_y{ 0 };
+	std::atomic<int64> sw2_mouse_axis_x{ 0 };
+	std::atomic<int64> sw2_mouse_axis_y{ 0 };
+
+	// Movement since the given baseline last moved forward, moving it forward to now.
+	//
+	// Exchanged rather than read-then-written: between a read and a write the polling thread adds more
+	// travel, and writing back what was read would drop it. The exchange leaves the baseline at exactly
+	// what is being reported, so nothing between two calls is lost or counted twice.
+	void consume_mouse_travel(std::atomic<int64>& baselineX, std::atomic<int64>& baselineY,
+		int64& outDeltaX, int64& outDeltaY)
+	{
+		const int64 travelX = sw2_mouse_travel_x.load();
+		const int64 travelY = sw2_mouse_travel_y.load();
+		outDeltaX = travelX - baselineX.exchange(travelX);
+		outDeltaY = travelY - baselineY.exchange(travelY);
+	}
+
+	// Adds one report's movement to the running travel. Polling thread only.
+	void accumulate_mouse_travel(int32 mouseX, int32 mouseY)
+	{
+		// A step is only meaningful against a previous reading, and the first report has none: taking it
+		// against zero would count the sensor's whole starting offset as movement the player never made.
+		if (sw2_mouse_seen)
+		{
+			// The shortest way round. A real step between reports 7.5ms apart is small, so a difference that
+			// looks enormous is the counter having wrapped, not the controller having crossed the desk.
+			auto Step = [](int32 current, int32 previous)
+			{
+				int32 step = current - previous;
+				if (step > 32767) { step -= 65536; }
+				else if (step < -32768) { step += 65536; }
+				return static_cast<int64>(step);
+			};
+
+			sw2_mouse_travel_x.fetch_add(Step(mouseX, sw2_mouse_prev_x));
+			sw2_mouse_travel_y.fetch_add(Step(mouseY, sw2_mouse_prev_y));
+		}
+
+		sw2_mouse_prev_x = mouseX;
+		sw2_mouse_prev_y = mouseY;
+		sw2_mouse_seen = true;
+	}
+
+	// The previous raw mouse reading, and whether there has been one. Polling thread only, hence not atomic.
+	int32 sw2_mouse_prev_x = 0;
+	int32 sw2_mouse_prev_y = 0;
+	bool sw2_mouse_seen = false;
+
 	// Input suppression for the moment a controller arrives. The button that woke a Bluetooth controller is
 	// still held when its first reports come in, so without this it reaches the game as a press -- and on a
 	// Joy-Con the wake button is usually SL/SR or a shoulder, which is exactly what the grip chords watch.

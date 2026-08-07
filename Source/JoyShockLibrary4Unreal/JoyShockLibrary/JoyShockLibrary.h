@@ -685,6 +685,13 @@ struct JOYSHOCKLIBRARY4UNREAL_API FJSL4USwitch2Sensors
 	UPROPERTY(BlueprintReadOnly)
 	FVector2D MousePosition = FVector2D::ZeroVector;
 
+	// The same movement with the wrap already taken out: it only grows, so the difference between two
+	// reads is the distance travelled between them, with no special case at the roll-over. Prefer this to
+	// Mouse Position for anything that measures movement rather than reporting the sensor's own number.
+	// Reset when the controller reconnects, like everything else about a connection.
+	UPROPERTY(BlueprintReadOnly)
+	FVector2D MouseTravel = FVector2D::ZeroVector;
+
 	// The sensor's read of the surface under it. Distance rises as the controller is lifted, so these are
 	// what tell you whether it is actually being used as a mouse rather than held in the air.
 	//
@@ -1216,6 +1223,12 @@ public:
 	// what kind of controller is this?
 	static int32 JslGetControllerType(int32 deviceId);
 
+	// The mouse sensor's movement since the engine's input axes were last given it, in sensor counts. Not a
+	// Blueprint node: this is the feed behind the JoyShock Mouse axis keys, and it keeps its own baseline
+	// so a game reading Consume Switch 2 Mouse Delta and a game binding the axis key see the same motion
+	// rather than half of it each. Zero for a controller without the sensor.
+	static void JslConsumeMouseAxisDelta(int32 deviceId, float& outDeltaX, float& outDeltaY);
+
 	// is this a left, right, or full controller?
 	static int32 JslGetControllerSplitType(int32 deviceId);
 
@@ -1343,6 +1356,21 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "JoyShock Library|Controllers",
 		meta = (DisplayName = "JSL4U Get Switch 2 Sensors", ToolTip = "Battery voltage, temperature, magnetometer and mouse sensor from a Switch 2 controller. Motion is not here -- use the IMU nodes for that. Other controllers return Is Supported false."))
 	static FJSL4USwitch2Sensors JSL4UGetSwitch2Sensors(int64 ConnectionId);
+
+	// How far the mouse sensor has moved since this node last answered for the same controller -- the
+	// per-frame vector to aim or scroll with, ready to use.
+	//
+	// It CONSUMES: each call reports the movement since the previous call and starts counting again, so two
+	// callers on the same controller each see part of the motion and neither sees all of it. Call it in one
+	// place. The name says so because the alternative -- a second consumer quietly halving the sensitivity
+	// -- is not something the caller could see going wrong.
+	//
+	// A game that wants to read the same movement from several places should use Mouse Travel on Get
+	// Switch 2 Sensors instead, and take its own differences: that value only accumulates and answers
+	// everyone the same.
+	UFUNCTION(BlueprintCallable, Category = "JoyShock Library|Controllers",
+		meta = (DisplayName = "JSL4U Consume Switch 2 Mouse Delta", ToolTip = "Movement of the Switch 2 mouse sensor since this node last answered for this controller, with the sensor's wrap already resolved. Consumes what it reports: call it from one place only. Zero for a controller without the sensor."))
+	static FVector2D JSL4UConsumeSwitch2MouseDelta(int64 ConnectionId);
 
 	// Converts the same semantic one-based number into Nintendo's four visible LED states. This is useful
 	// for controller mirrors and UI; the physical controller is updated automatically by assignment.

@@ -273,8 +273,11 @@ bool handle_input(JoyShock* jc, uint8_t* packet, int32 len, bool &hasIMU) {
 		// they are published on their own rather than folded into the IMU state.
 		if (len >= 32)
 		{
-			jc->sw2_mouse_x.store(packet[17] | (packet[18] << 8));
-			jc->sw2_mouse_y.store(packet[19] | (packet[20] << 8));
+			const int32 mouseX = packet[17] | (packet[18] << 8);
+			const int32 mouseY = packet[19] | (packet[20] << 8);
+			jc->sw2_mouse_x.store(mouseX);
+			jc->sw2_mouse_y.store(mouseY);
+			jc->accumulate_mouse_travel(mouseX, mouseY);
 			jc->sw2_mouse_roughness.store(packet[21] | (packet[22] << 8));
 			jc->sw2_mouse_distance.store(packet[23] | (packet[24] << 8));
 			jc->sw2_magnetometer_x.store(uint16_to_int16(packet[26] | (packet[27] << 8) & 0xFF00));
