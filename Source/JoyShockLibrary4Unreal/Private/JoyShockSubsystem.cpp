@@ -175,9 +175,19 @@ bool UJoyShockSubsystem::EnsureLocalPlayerForController(const FJSL4UControllerIn
 		? UJoyShockLibrary::JSL4UGetControllerInfo(Controller.ConnectionId)
 		: Controller;
 
+	// Every way out of this function says why, because the caller cannot tell them apart and the
+	// consequence of any of them is the same thing from the player's seat: a controller that is visibly
+	// connected, whose motion readouts work, driving no character at all. A game typically calls this once,
+	// when the controller arrives, so a single bad moment is permanent -- and silence about which moment it
+	// was is what made it unfixable from a bug report.
 	UGameInstance* GameInstance = GetGameInstance();
 	if (!Info.bIsConnected || Info.PlatformUserId < 0 || GameInstance == nullptr)
 	{
+		UE_LOG(LogJoyShockLibrary, Warning,
+			TEXT("EnsureLocalPlayerForController: nothing to seat for connection %lld ")
+			TEXT("(connected %d, platform user %d, game instance %d). A controller that had not finished ")
+			TEXT("arriving when this was called reads exactly like this."),
+			Info.ConnectionId, Info.bIsConnected ? 1 : 0, Info.PlatformUserId, GameInstance != nullptr ? 1 : 0);
 		return false;
 	}
 
@@ -211,6 +221,11 @@ bool UJoyShockSubsystem::EnsureLocalPlayerForController(const FJSL4UControllerIn
 
 	if (LocalPlayer == nullptr || LocalPlayerIndex == INDEX_NONE)
 	{
+		UE_LOG(LogJoyShockLibrary, Warning,
+			TEXT("EnsureLocalPlayerForController: connection %lld has no local player for platform user %d, ")
+			TEXT("and %s."),
+			Info.ConnectionId, Info.PlatformUserId,
+			bCreateIfMissing ? TEXT("creating one did not produce an index") : TEXT("was told not to create one"));
 		return false;
 	}
 
@@ -225,10 +240,26 @@ bool UJoyShockSubsystem::EnsureLocalPlayerForController(const FJSL4UControllerIn
 	// rather than at the call site is what lets one Blueprint path seat every controller.
 	if (Info.bIsJoyShockController && !UJoyShockLibrary::JSL4UAssignControllerToPlayerIndex(Info, LocalPlayerIndex))
 	{
+		UE_LOG(LogJoyShockLibrary, Warning,
+			TEXT("EnsureLocalPlayerForController: connection %lld could not be assigned to local player %d ")
+			TEXT("(the line above says why)."),
+			Info.ConnectionId, LocalPlayerIndex);
 		return false;
 	}
 
 	PlayerController = LocalPlayer->GetPlayerController(GetWorld());
+	if (PlayerController == nullptr)
+	{
+		// The local player exists and owns no player controller in this world. Worth its own line because
+		// it is the one failure that repeats: the local player is not torn down when the controller drops,
+		// so unplugging and replugging finds this same player again and fails here again, which is what a
+		// player experiences as a controller that never recovers.
+		UE_LOG(LogJoyShockLibrary, Warning,
+			TEXT("EnsureLocalPlayerForController: local player %d (platform user %d, connection %lld) has no ")
+			TEXT("player controller in this world. Reconnecting the controller will find this same local ")
+			TEXT("player and fail here again."),
+			LocalPlayerIndex, Info.PlatformUserId, Info.ConnectionId);
+	}
 	return PlayerController != nullptr;
 }
 
