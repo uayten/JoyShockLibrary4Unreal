@@ -4,9 +4,10 @@
 
 #include "CoreMinimal.h"
 #include "IInputDeviceModule.h"
-#include "JoyShockLibrary4Unreal/JoyShockLibrary/JoyShockLibrary.h"
+#include "JoyShockTypes.h"
 #include "Modules/ModuleManager.h"
 #include <atomic>
+#include <shared_mutex>
 
 #if PLATFORM_WINDOWS
 #include "Windows/WindowsApplication.h"

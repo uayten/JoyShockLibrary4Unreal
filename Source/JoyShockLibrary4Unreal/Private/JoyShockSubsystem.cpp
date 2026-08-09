@@ -3,7 +3,7 @@
 #include "JoyShockSubsystem.h"
 
 #include "JoyShockLibrary4Unreal.h"
-#include "JoyShockLibrary4Unreal/JoyShockLibrary/JoyShockLibrary.h"
+#include "JoyShockBlueprintLibrary.h"
 #include "Engine/GameInstance.h"
 #include "Engine/LocalPlayer.h"
 #include "GameFramework/PlayerController.h"

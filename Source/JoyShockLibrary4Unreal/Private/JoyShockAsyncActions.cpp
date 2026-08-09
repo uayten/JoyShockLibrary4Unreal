@@ -2,7 +2,7 @@
 
 #include "JoyShockAsyncActions.h"
 
-#include "JoyShockLibrary4Unreal/JoyShockLibrary/JoyShockLibrary.h"
+#include "JoyShockBlueprintLibrary.h"
 #include "Engine/GameInstance.h"
 #include "GameFramework/InputDeviceSubsystem.h"
 

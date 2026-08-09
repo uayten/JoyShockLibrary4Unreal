@@ -1,6 +1,7 @@
 ﻿// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "JoyShockLibrary4Unreal.h"
+#include "JoyShockBlueprintLibrary.h"
 
 #include "JoyShockInterface.h"
 #include "JoyShockLibrary4Unreal/JoyShockLibrary/Switch2Bluetooth.h"

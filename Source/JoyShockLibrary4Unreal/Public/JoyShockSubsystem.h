@@ -4,7 +4,7 @@
 
 #include "CoreMinimal.h"
 #include "Subsystems/GameInstanceSubsystem.h"
-#include "JoyShockLibrary4Unreal/JoyShockLibrary/JoyShockLibrary.h"
+#include "JoyShockTypes.h"
 #include "JoyShockSubsystem.generated.h"
 
 class APlayerController;

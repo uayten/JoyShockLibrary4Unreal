@@ -7,7 +7,7 @@
 #include "GenericPlatform/GenericApplication.h"
 #include "GenericPlatform/GenericPlatformInputDeviceMapper.h"
 #include "GenericPlatform/InputDeviceRegistry.h"
-#include "JoyShockLibrary4Unreal/JoyShockLibrary/JoyShockLibrary.h"
+#include "JoyShockBlueprintLibrary.h"
 #include "Misc/ConfigCacheIni.h"
 #include "HAL/IConsoleManager.h"
 #include <functional>

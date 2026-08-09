@@ -6,7 +6,7 @@
 #include "GenericPlatform/IInputInterface.h"
 #include "IInputDevice.h"
 #include "GenericPlatform/GenericApplicationMessageHandler.h"
-#include "JoyShockLibrary4Unreal/JoyShockLibrary/JoyShockLibrary.h"
+#include "JoyShockTypes.h"
 
 // Max number of controller buttons.  Must be < 256
 #define MAX_NUM_CONTROLLER_BUTTONS 27
