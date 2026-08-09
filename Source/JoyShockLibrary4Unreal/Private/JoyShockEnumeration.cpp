@@ -32,6 +32,21 @@
 #include "Engine/World.h"
 #include "JoyShockLibrary4Unreal/JoyShockLibrary/JoyShockInternal.h"
 
+// A controller this pass already knows about, and the transport it is currently read over.
+struct FTrackedIdentity
+{
+	int32 DeviceId;
+	bool bIsUsb;
+};
+
+// A controller already tracked over Bluetooth that has just turned up on a cable. Its own polling thread
+// performs the swap; this pass only records that there is one to make.
+struct FTransportUpgrade
+{
+	FString Mac;
+	FString Path;
+};
+
 void UJoyShockLibrary::JSL4URefreshControllers()
 {
 	// Hands the scan to the module's background worker rather than enumerating here. Enumeration opens and
@@ -81,62 +96,18 @@ static FString ReadControllerMacAddress(hid_device* InHandle, const hid_device_i
 		featureBuf[6], featureBuf[5], featureBuf[4], featureBuf[3], featureBuf[2], featureBuf[1]);
 }
 
-int32 UJoyShockLibrary::JslConnectDevices()
+// Phase 2: every controller the platform reports as a HID device, opened and identified without the lock.
+//
+// One physical controller can appear as two HID devices: plugging a USB cable into a controller that is
+// already paired over Bluetooth does not end the Bluetooth link, it adds a second path. Both deliver input,
+// so without the MAC comparison the game gains a phantom controller -- taking a player slot, and in a game
+// that spawns per controller, an extra character -- for what the player experienced as simply putting their
+// controller on charge. A cable for an already-tracked controller is instead recorded as a transport
+// upgrade and handed to that device's own polling thread.
+static void discover_hid_devices(TSet<FString>& TrackedPaths, TMap<FString, FTrackedIdentity>& TrackedByMac,
+	TArray<FTransportUpgrade>& TransportUpgrades, TArray<JoyShock*>& NewDevices, TSet<FString>& NewMacsThisPass)
 {
-	FJoyShockLibrary4UnrealModule& JSL4UModule = FJoyShockLibrary4UnrealModule::GetInstance();
-
-	// for writing to console:
-	//freopen("CONOUT$", "w", stdout);
-
-	// most of the joycon and pro controller stuff here is thanks to mfosse's vjoy feeder
-	// Enumerate and print the HID devices on the system
 	struct hid_device_info *devs, *cur_dev;
-
-	// Discovery is split into three phases so that NO blocking HID I/O ever happens while holding
-	// _connectedLock. The game thread's Jsl* getters take that lock shared, so any wedged I/O under it --
-	// hid_get_feature_report has no timeout, and a freshly replugged device can leave one hanging until
-	// the cable is pulled -- freezes the whole editor, which is exactly what repeated DS4 replugs did.
-	//
-	// Phase 1 snapshots the tracked paths/identities under the lock; phase 2 does every open, identity
-	// read and constructor probe lock-free; phase 3 retakes the lock and merges, re-validating everything
-	// against the live maps, because poll threads may have disconnected or transport-switched devices
-	// while phase 2 was blocked on hardware.
-
-	hid_init();
-
-	// Phase 1: snapshot.
-	TSet<FString> TrackedPaths;
-	struct FTrackedIdentity { int32 DeviceId; bool bIsUsb; };
-	TMap<FString, FTrackedIdentity> TrackedByMac;
-
-	JSL4UModule._connectedLock.lock();
-	for (const TTuple<FString, JoyShock*>& Pair : _byPath)
-	{
-		TrackedPaths.Add(Pair.Key);
-	}
-	for (const TTuple<int32, JoyShock*>& Pair : _joyshocks)
-	{
-		if (Pair.Value != nullptr && !Pair.Value->mac_address.IsEmpty())
-		{
-			TrackedByMac.Add(Pair.Value->mac_address, { Pair.Key, Pair.Value->is_usb });
-		}
-	}
-	JSL4UModule._connectedLock.unlock();
-
-	// Phase 2: all the blocking work, without the lock.
-	//
-	// One physical controller can appear as two HID devices: plugging a USB cable into a controller that
-	// is already paired over Bluetooth does not end the Bluetooth link, it adds a second path. Both stream
-	// input, so without the MAC comparison the game gains a phantom controller -- taking a player slot,
-	// and in a game that spawns per controller, an extra character -- for what the player experiences as
-	// simply putting their controller on charge. A cable for an already-tracked controller is instead
-	// recorded as a transport upgrade and handed to that device's own polling thread.
-	struct FTransportUpgrade { FString Mac; FString Path; };
-	TArray<FTransportUpgrade> TransportUpgrades;
-	TArray<JoyShock*> NewDevices;
-	// MACs already claimed by a device created in THIS pass, so one controller reachable two ways cannot be
-	// built twice before either path is tracked. See its use below.
-	TSet<FString> NewMacsThisPass;
 
 	devs = hid_enumerate(0x0, 0x0);
 	cur_dev = devs;
@@ -246,11 +217,15 @@ int32 UJoyShockLibrary::JslConnectDevices()
 		cur_dev = cur_dev->next;
 	}
 	hid_free_enumeration(devs);
+}
 
-	// Phase 2b: the Switch 2 controllers that are on the radio rather than on a cable. hid_enumerate cannot
-	// see them -- they have no Bluetooth HID profile, so Windows never makes them a HID device -- so they
-	// come from a BLE advertisement scan instead. Connecting is slow (it negotiates a link and reads the
-	// GATT table), which is exactly why this belongs here in the lock-free phase.
+// Phase 2b: the Switch 2 controllers that are on the radio rather than on a cable. hid_enumerate cannot see
+// them -- they have no Bluetooth HID profile, so Windows never makes them a HID device -- so they come from
+// a BLE advertisement scan instead. Connecting is slow (it negotiates a link and reads the GATT table),
+// which is exactly why this belongs in the lock-free phase.
+static void discover_bluetooth_switch2(TSet<FString>& TrackedPaths, TMap<FString, FTrackedIdentity>& TrackedByMac,
+	TArray<JoyShock*>& NewDevices, TSet<FString>& NewMacsThisPass)
+{
 	if (Switch2Ble::IsSupported())
 	{
 		// Scanning is what makes a controller appear when its SYNC button is held, so it runs from the
@@ -317,6 +292,154 @@ int32 UJoyShockLibrary::JslConnectDevices()
 			NewMacsThisPass.Add(DeviceMac);
 		}
 	}
+}
+
+// Runs each new device's family init handshake and starts its polling thread.
+//
+// Blocking HID I/O, and unbounded rather than merely slow: hidapi's Windows hid_write waits on an overlapped
+// result with no timeout, so a controller that never completes the write (which is what a freshly replugged
+// one does) never returns. This is why the caller drops _connectedLock before calling: under the lock it is
+// an editor hang lasting until the cable is pulled.
+//
+// Working from a snapshot is what makes dropping the lock safe -- every device here has no polling thread
+// yet, and only a polling thread frees a device, so none of these pointers can go away while we use them.
+static void bring_devices_online(const TArray<JoyShock*>& DevicesToBringOnline)
+{
+	for (JoyShock* jc : DevicesToBringOnline)
+	{
+		if (jc->initialised)
+		{
+			continue;
+		}
+
+		if (jc->is_switch2) {
+			// Send the Switch 2 init sequence that makes it start streaming: over the cable the one Steam
+			// uses, over the radio the same commands on the GATT command channel.
+			if (jc->is_ble()) {
+				jc->init_switch2_bluetooth();
+			}
+			else {
+				jc->init_switch2();
+			}
+		}
+		else if (jc->controller_type == ControllerType::s_ds4) {
+			if (!jc->is_usb) {
+				jc->init_ds4_bt();
+			}
+			else {
+				jc->init_ds4_usb();
+			}
+			// Mark it done, for the reason spelled out for the Switch controllers below: an already-
+			// connected controller must never be re-initialised from here. The DS4 was the one family left
+			// out of that, so every device change re-ran a blocking HID exchange on a controller whose
+			// polling thread was using the very same handle -- while holding _connectedLock.
+			//
+			// That was survivable only while nothing else touched the handle. Once a controller could move
+			// between transports, the polling thread would close that handle mid-exchange, the enumeration
+			// thread's read would never return, and the lock it holds would freeze every Jsl* getter on the
+			// game thread -- an editor hang lasting until the controller was physically unplugged.
+			jc->initialised = true;
+		} // dualsense
+		else if (jc->controller_type == ControllerType::s_ds)
+		{
+			jc->initialised = true;
+		} // charging grip
+		// init_usb/init_bt don't set this themselves, and it has to be set on success: without it a Switch
+		// controller is never considered initialised, so every JslConnectDevices call re-runs init (blocking
+		// HID I/O while holding _connectedLock) on every already-connected one -- which freezes the game
+		// thread's Jsl* getters during play.
+		//
+		// It equally has to NOT be set on failure. Marking a failed init as initialised is silent and
+		// permanent: init is where vibration and the IMU get switched on, so the controller streams buttons
+		// and looks connected while its rumble does nothing and its IMU reports zeroes forever. The `continue`
+		// above is the retry -- leaving the flag false is what arms it for the next enumeration, and costs
+		// nothing for a controller that initialised fine.
+		else if (jc->is_usb) {
+			//UE_LOG(LibraryLogJoyShock, Log, TEXT("USB\n"));
+			jc->initialised = jc->init_usb();
+		}
+		else {
+			//UE_LOG(LibraryLogJoyShock, Log, TEXT("BT\n"));
+			jc->initialised = jc->init_bt();
+		}
+		// all get time now for polling
+		jc->last_polled = std::chrono::steady_clock::now();
+		jc->delta_time = 0.0;
+
+		jc->deviceNumber = 0; // left
+	}
+
+	// Same snapshot, still lock-free: every device here is one this pass is bringing online, so it has no
+	// polling thread and nothing else can be writing to it.
+	for (JoyShock* jc : DevicesToBringOnline)
+	{
+		// DS4 has no separate player indicator, but its RGB light bar and rumble start in the same report.
+		// This is safe before its polling thread exists. All later output, including every numeric player
+		// indicator, is written by that controller's polling thread.
+		if (jc->controller_type == ControllerType::s_ds4)
+		{
+			jc->set_ds4_rumble_light(0, 0, jc->led_r, jc->led_g, jc->led_b);
+		}
+
+		// threads for polling. From here the device is owned by its polling thread, so this is the last
+		// point at which this function may touch it.
+		UE_LOG(LogJoyShockLibrary, Log, TEXT("\tstarting new thread\n"));
+		jc->thread = new std::thread(pollIndividualLoop, jc);
+	}
+}
+
+int32 UJoyShockLibrary::JslConnectDevices()
+{
+	FJoyShockLibrary4UnrealModule& JSL4UModule = FJoyShockLibrary4UnrealModule::GetInstance();
+
+	// for writing to console:
+	//freopen("CONOUT$", "w", stdout);
+
+	// most of the joycon and pro controller stuff here is thanks to mfosse's vjoy feeder
+	// Enumerate and print the HID devices on the system
+
+	// Discovery is split into three phases so that NO blocking HID I/O ever happens while holding
+	// _connectedLock. The game thread's Jsl* getters take that lock shared, so any wedged I/O under it --
+	// hid_get_feature_report has no timeout, and a freshly replugged device can leave one hanging until
+	// the cable is pulled -- freezes the whole editor, which is exactly what repeated DS4 replugs did.
+	//
+	// Phase 1 snapshots the tracked paths/identities under the lock; phase 2 does every open, identity
+	// read and constructor probe lock-free; phase 3 retakes the lock and merges, re-validating everything
+	// against the live maps, because poll threads may have disconnected or transport-switched devices
+	// while phase 2 was blocked on hardware.
+
+	hid_init();
+
+	// Phase 1: snapshot.
+	TSet<FString> TrackedPaths;
+	TMap<FString, FTrackedIdentity> TrackedByMac;
+
+	JSL4UModule._connectedLock.lock();
+	for (const TTuple<FString, JoyShock*>& Pair : _byPath)
+	{
+		TrackedPaths.Add(Pair.Key);
+	}
+	for (const TTuple<int32, JoyShock*>& Pair : _joyshocks)
+	{
+		if (Pair.Value != nullptr && !Pair.Value->mac_address.IsEmpty())
+		{
+			TrackedByMac.Add(Pair.Value->mac_address, { Pair.Key, Pair.Value->is_usb });
+		}
+	}
+	JSL4UModule._connectedLock.unlock();
+
+	// Phase 2: all the blocking work, without the lock.
+	//
+	TArray<FTransportUpgrade> TransportUpgrades;
+	TArray<FTransportUpgrade> TransportUpgrades;
+	TArray<JoyShock*> NewDevices;
+	// MACs already claimed by a device created in THIS pass, so one controller reachable two ways cannot be
+	// built twice before either path is tracked. See its use below.
+	TSet<FString> NewMacsThisPass;
+
+	discover_hid_devices(TrackedPaths, TrackedByMac, TransportUpgrades, NewDevices, NewMacsThisPass);
+
+	discover_bluetooth_switch2(TrackedPaths, TrackedByMac, NewDevices, NewMacsThisPass);
 
 	// Phase 3: merge under the lock, re-validating every decision against the live maps.
 	JSL4UModule._connectedLock.lock();
@@ -402,88 +525,7 @@ int32 UJoyShockLibrary::JslConnectDevices()
 
 	JSL4UModule._connectedLock.unlock();
 
-	// init joyshocks:
-	for (JoyShock* jc : DevicesToBringOnline)
-	{
-		if (jc->initialised)
-		{
-			continue;
-		}
-
-		if (jc->is_switch2) {
-			// Send the Switch 2 init sequence that makes it start streaming: over the cable the one Steam
-			// uses, over the radio the same commands on the GATT command channel.
-			if (jc->is_ble()) {
-				jc->init_switch2_bluetooth();
-			}
-			else {
-				jc->init_switch2();
-			}
-		}
-		else if (jc->controller_type == ControllerType::s_ds4) {
-			if (!jc->is_usb) {
-				jc->init_ds4_bt();
-			}
-			else {
-				jc->init_ds4_usb();
-			}
-			// Mark it done, for the reason spelled out for the Switch controllers below: an already-
-			// connected controller must never be re-initialised from here. The DS4 was the one family left
-			// out of that, so every device change re-ran a blocking HID exchange on a controller whose
-			// polling thread was using the very same handle -- while holding _connectedLock.
-			//
-			// That was survivable only while nothing else touched the handle. Once a controller could move
-			// between transports, the polling thread would close that handle mid-exchange, the enumeration
-			// thread's read would never return, and the lock it holds would freeze every Jsl* getter on the
-			// game thread -- an editor hang lasting until the controller was physically unplugged.
-			jc->initialised = true;
-		} // dualsense
-		else if (jc->controller_type == ControllerType::s_ds)
-		{
-			jc->initialised = true;
-		} // charging grip
-		// init_usb/init_bt don't set this themselves, and it has to be set on success: without it a Switch
-		// controller is never considered initialised, so every JslConnectDevices call re-runs init (blocking
-		// HID I/O while holding _connectedLock) on every already-connected one -- which freezes the game
-		// thread's Jsl* getters during play.
-		//
-		// It equally has to NOT be set on failure. Marking a failed init as initialised is silent and
-		// permanent: init is where vibration and the IMU get switched on, so the controller streams buttons
-		// and looks connected while its rumble does nothing and its IMU reports zeroes forever. The `continue`
-		// above is the retry -- leaving the flag false is what arms it for the next enumeration, and costs
-		// nothing for a controller that initialised fine.
-		else if (jc->is_usb) {
-			//UE_LOG(LibraryLogJoyShock, Log, TEXT("USB\n"));
-			jc->initialised = jc->init_usb();
-		}
-		else {
-			//UE_LOG(LibraryLogJoyShock, Log, TEXT("BT\n"));
-			jc->initialised = jc->init_bt();
-		}
-		// all get time now for polling
-		jc->last_polled = std::chrono::steady_clock::now();
-		jc->delta_time = 0.0;
-
-		jc->deviceNumber = 0; // left
-	}
-
-	// Same snapshot, still lock-free: every device here is one this pass is bringing online, so it has no
-	// polling thread and nothing else can be writing to it.
-	for (JoyShock* jc : DevicesToBringOnline)
-	{
-		// DS4 has no separate player indicator, but its RGB light bar and rumble start in the same report.
-		// This is safe before its polling thread exists. All later output, including every numeric player
-		// indicator, is written by that controller's polling thread.
-		if (jc->controller_type == ControllerType::s_ds4)
-		{
-			jc->set_ds4_rumble_light(0, 0, jc->led_r, jc->led_g, jc->led_b);
-		}
-
-		// threads for polling. From here the device is owned by its polling thread, so this is the last
-		// point at which this function may touch it.
-		UE_LOG(LogJoyShockLibrary, Log, TEXT("\tstarting new thread\n"));
-		jc->thread = new std::thread(pollIndividualLoop, jc);
-	}
+	bring_devices_online(DevicesToBringOnline);
 
 	// Deliberately no connect notification here. Being enumerable is not the same as being a working
 	// controller: a device that has just dropped off Bluetooth lingers in HID enumeration for a moment, and

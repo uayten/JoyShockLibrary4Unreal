@@ -28,6 +28,49 @@
 #include "Engine/World.h"
 #include "JoyShockInternal.h"
 
+// What this thread has already sent to the controller, so it can tell a change from a repeat.
+//
+// These were eleven locals of the polling loop before the output-report writing was split out of it. They
+// travel together because they answer one question -- is this packet worth sending -- and because the Sony
+// pads carry rumble, colour and the player LED in a single report, so a change to any one of them is a
+// change to all three.
+struct FPolledOutputState
+{
+	explicit FPolledOutputState(const JoyShock* jc)
+		// Seeded from what JslConnectDevices already sent when it brought this device online, so we do not
+		// re-send it immediately.
+		: lastSentLedR(jc->led_r)
+		, lastSentLedG(jc->led_g)
+		, lastSentLedB(jc->led_b)
+		, lastSentPlayerNumber(jc->player_number)
+	{
+	}
+
+	// Rumble: the polling thread is the SOLE writer of rumble packets (JSL4USetControllerRumble only stores
+	// the values). Switch 1 rumble decays shortly after a single 0x10 packet, and a Switch 2 packet only
+	// carries ~15ms of waveform, so while active the state is re-sent continuously; a change to (0,0) sends a
+	// short run of silent packets and then stops.
+	int rumbleRefreshCounter = 0;
+	unsigned char lastSentSmallRumble = 0;
+	unsigned char lastSentBigRumble = 0;
+	int32 sw2SilentPacketsSent = 0;
+	std::chrono::steady_clock::time_point lastSw2RumbleTime = std::chrono::steady_clock::now();
+
+	// Which JSL4USetHomeLight call this thread has already acted on. Generation 0 is "no call yet", and the
+	// counter only ever increases, so the first game-set value always sends. Tracking the call rather than
+	// the value is what makes re-sending an unchanged intensity work -- see home_light_generation.
+	uint32 lastSentHomeLightGeneration = 0;
+
+	// DualShock 4 / DualSense: rumble, light colour and the player LED all ride in the SAME output report, so
+	// they are tracked together and sent as one packet whenever any of them changes.
+	unsigned char lastSentLedR;
+	unsigned char lastSentLedG;
+	unsigned char lastSentLedB;
+	int32 lastSentPlayerNumber;
+
+	bool bHomeLightCleared = false;
+};
+
 // Moves this controller onto a different HID path and re-runs whatever init that transport needs.
 // Returns false and leaves the controller untouched if the new path cannot be opened, so a failed swap
 // is never worse than not attempting one.
@@ -72,6 +115,346 @@ static bool SwitchControllerTransport(JoyShock* jc, const FString& NewPath, bool
 	return true;
 }
 
+// Sends whatever output reports this controller is now due: player LEDs, the HOME light, rumble, and the
+// Sony pads' combined rumble/colour/LED report.
+//
+// Called once per input report, from the polling thread, which is the sole writer of all of them -- the
+// JSL4USet* nodes only store what the game asked for. That is deliberate: writing from the game thread
+// meant a blocking HID write while holding modifying_lock, the same lock this thread takes to parse every
+// input packet.
+static void send_pending_output_reports(JoyShock* jc, FPolledOutputState& out)
+{
+	// Player indicators are assigned from Unreal's actual player slot, not from HID enumeration order.
+	// The game thread stores the semantic one-based player number; this polling thread remains the sole
+	// writer to both Nintendo command pipes, keeping LED changes serialised with rumble.
+	if (jc->controller_type == ControllerType::n_switch)
+	{
+		jc->modifying_lock.Lock();
+		const int32 wantedPlayerNumber = jc->player_number;
+		jc->modifying_lock.Unlock();
+
+		if (wantedPlayerNumber != out.lastSentPlayerNumber)
+		{
+			const unsigned char playerLightMask = PlayerNumberToSwitchLedMask(wantedPlayerNumber);
+			bool bSent = false;
+			if (jc->is_switch2)
+			{
+				bSent = jc->set_sw2_player_lights(playerLightMask);
+			}
+			else
+			{
+				bSent = jc->set_switch_player_lights(playerLightMask);
+			}
+			jc->note_output_result(JoyShock::OutputFunctionPlayerIndicator, bSent);
+			if (bSent)
+			{
+				UE_LOG(LogJoyShockLibrary, Verbose,
+					TEXT("Player indicator device %d -> player %d, mask 0x%02X"),
+					jc->intHandle, wantedPlayerNumber, playerLightMask);
+				out.lastSentPlayerNumber = wantedPlayerNumber;
+			}
+		}
+	}
+
+	// The blue HOME light on a right Joy-Con / Pro Controller is a notification channel, not one
+	// of Nintendo's four player indicators. Controllers can retain a pulse from firmware or a
+	// previous host, so clear it once the live input stream is established -- and then keep
+	// re-asserting it.
+	//
+	// Clearing it only once was not enough: the firmware owns this light and turns it back on by
+	// itself (a reconnect or a battery notification is enough), after which nothing here ever
+	// switched it off again and it stayed lit for the rest of the session. It is cheap to repeat
+	// next to a 60Hz input stream, and the write-only path means it cannot disturb that stream.
+	if (jc->controller_type == ControllerType::n_switch
+		&& !jc->is_switch2 && (jc->left_right == 2 || jc->left_right == 3))
+	{
+		if (jc->home_light_owned_by_game.load())
+		{
+			// A game has taken the light over (JSL4USetHomeLight). Its value is authoritative from
+			// then on, and the keep-it-off upkeep below stops -- otherwise the two would fight and
+			// the game's light would last at most one upkeep interval.
+			//
+			// Sent once per call, not once per change: the firmware turns this light back on behind
+			// the plugin's back, so a cached intensity is not evidence of what the light is actually
+			// doing, and "set it to what I already asked for" is a legitimate request. A failed
+			// write leaves the generation unrecorded, which retries on the next report.
+			const uint32 wantedGeneration = jc->home_light_generation.load();
+			if (wantedGeneration != out.lastSentHomeLightGeneration)
+			{
+				const unsigned char wantedHomeLight = jc->wanted_home_light.load();
+				const bool bSent = jc->set_switch_home_light(wantedHomeLight);
+				jc->note_output_result(JoyShock::OutputFunctionHomeLight, bSent);
+				if (bSent)
+				{
+					out.lastSentHomeLightGeneration = wantedGeneration;
+					UE_LOG(LogJoyShockLibrary, Verbose,
+						TEXT("HOME light on device %d set to intensity %d by the game"),
+						jc->intHandle, wantedHomeLight);
+				}
+			}
+		}
+		else if (!out.bHomeLightCleared)
+		{
+			// Cleared exactly once per connection, never on a timer.
+			//
+			// This was briefly re-asserted every few seconds, because the firmware can switch the
+			// light back on by itself. That cost far more than it bought: subcommand 0x38 goes only
+			// to a right Joy-Con or Pro Controller, and those started dropping off Bluetooth after
+			// a while -- the very hazard the IMU note above describes, that configuration
+			// subcommands disturb an established Bluetooth stream. A notification light that may
+			// come back on is a blemish; a controller that disconnects mid-game is a broken game.
+			//
+			// The flag is reset after a transport switch, so a swapped controller is cleared again.
+			const bool bSent = jc->clear_switch_home_light();
+			jc->note_output_result(JoyShock::OutputFunctionHomeLight, bSent);
+			if (bSent)
+			{
+				out.bHomeLightCleared = true;
+				UE_LOG(LogJoyShockLibrary, Verbose,
+					TEXT("Cleared HOME notification light on device %d"), jc->intHandle);
+			}
+		}
+	}
+
+	// Switch 1 rumble (sole writer, see above): send immediately when the requested values change
+	// (including a final stop packet on a change to 0,0), and while active re-send roughly every
+	// 4 input reports (~60ms at 66Hz) -- the actuator fades out on its own otherwise, which made a
+	// single packet feel like a short, inconsistent blip. The write happens outside modifying_lock
+	// so a slow Bluetooth write can never stall the game thread's Jsl* calls.
+	if (jc->controller_type == ControllerType::n_switch && !jc->is_switch2)
+	{
+		jc->modifying_lock.Lock();
+		const unsigned char wantedSmallRumble = jc->get_wanted_small_rumble();
+		const unsigned char wantedBigRumble = jc->get_wanted_big_rumble();
+		jc->modifying_lock.Unlock();
+
+		const bool bRumbleActive = wantedSmallRumble != 0 || wantedBigRumble != 0;
+		const bool bRumbleChanged = wantedSmallRumble != out.lastSentSmallRumble || wantedBigRumble != out.lastSentBigRumble;
+		if (bRumbleChanged || (bRumbleActive && ++out.rumbleRefreshCounter >= 4))
+		{
+			out.rumbleRefreshCounter = 0;
+			jc->set_switch_rumble(wantedSmallRumble, wantedBigRumble);
+			out.lastSentSmallRumble = wantedSmallRumble;
+			out.lastSentBigRumble = wantedBigRumble;
+		}
+	}
+
+	// Switch 2 rumble: each packet is three 5-byte frames, ~5ms of waveform each, so the controller
+	// runs out of rumble to play 15ms after one arrives. Sending on that cadence is what makes a
+	// held rumble continuous. Time-based (not report-count) because the Switch 2 streams reports
+	// much faster than the Switch 1's 66Hz.
+	//
+	// Going silent takes a few zero-amplitude packets -- enough to overwrite whatever the actuator
+	// still had queued -- and after those the wire is left alone entirely rather than carrying a
+	// steady stream of silence.
+	if (jc->is_switch2)
+	{
+		constexpr int32 Sw2RumbleIntervalMs = 15;
+		constexpr int32 Sw2RumbleSilentPackets = 3;
+
+		jc->modifying_lock.Lock();
+		const unsigned char wantedSmallRumble = jc->get_wanted_small_rumble();
+		const unsigned char wantedBigRumble = jc->get_wanted_big_rumble();
+		jc->modifying_lock.Unlock();
+
+		const bool bRumbleActive = wantedSmallRumble != 0 || wantedBigRumble != 0;
+		const bool bRumbleChanged = wantedSmallRumble != out.lastSentSmallRumble || wantedBigRumble != out.lastSentBigRumble;
+		if (bRumbleChanged)
+		{
+			out.sw2SilentPacketsSent = 0;
+		}
+
+		const bool bKeepSending = bRumbleActive || out.sw2SilentPacketsSent < Sw2RumbleSilentPackets;
+		const auto now = std::chrono::steady_clock::now();
+		if (bKeepSending
+			&& (bRumbleChanged
+				|| std::chrono::duration_cast<std::chrono::milliseconds>(now - out.lastSw2RumbleTime).count() >= Sw2RumbleIntervalMs))
+		{
+			jc->set_sw2_rumble(wantedSmallRumble, wantedBigRumble);
+			out.lastSentSmallRumble = wantedSmallRumble;
+			out.lastSentBigRumble = wantedBigRumble;
+			out.lastSw2RumbleTime = now;
+			out.sw2SilentPacketsSent = bRumbleActive ? 0 : out.sw2SilentPacketsSent + 1;
+		}
+
+		// HID input is visible to both the editor and its multi-process Standalone child, but
+		// WinUSB permits only one command-interface owner. Release an inactive lease so the process
+		// that is actually playing can acquire it for calibrated init, LEDs and rumble.
+		jc->release_sw2_command_interface_if_idle();
+	}
+
+	// DualShock 4 / DualSense output (sole writer, see above): unlike the Switch controllers these
+	// actuators hold whatever they were last told until told otherwise, so there is nothing to
+	// sustain -- one packet per change is enough. Rumble, colour and player LED share one report, so
+	// a change to any of them sends a single coalesced write.
+	//
+	// This has to happen here rather than in the JSL4USet* calls: those run on the game thread, and
+	// writing from there meant a blocking HID write while holding modifying_lock -- the very lock
+	// this thread takes to parse every input packet.
+	if (jc->controller_type == ControllerType::s_ds4 || jc->controller_type == ControllerType::s_ds)
+	{
+		jc->modifying_lock.Lock();
+		const unsigned char wantedSmallRumble = jc->get_wanted_small_rumble();
+		const unsigned char wantedBigRumble = jc->get_wanted_big_rumble();
+		const unsigned char wantedLedR = jc->led_r;
+		const unsigned char wantedLedG = jc->led_g;
+		const unsigned char wantedLedB = jc->led_b;
+		const int32 wantedPlayerNumber = jc->player_number;
+		jc->modifying_lock.Unlock();
+
+		if (wantedSmallRumble != out.lastSentSmallRumble || wantedBigRumble != out.lastSentBigRumble
+			|| wantedLedR != out.lastSentLedR || wantedLedG != out.lastSentLedG || wantedLedB != out.lastSentLedB
+			|| wantedPlayerNumber != out.lastSentPlayerNumber)
+		{
+			// Outside modifying_lock: a slow Bluetooth write must not stall the game thread's setters.
+			if (jc->controller_type == ControllerType::s_ds4)
+			{
+				jc->set_ds4_rumble_light(wantedSmallRumble, wantedBigRumble, wantedLedR, wantedLedG, wantedLedB);
+			}
+			else
+			{
+				const unsigned char playerLightMask = PlayerNumberToDualSenseLedMask(wantedPlayerNumber);
+				jc->set_ds5_rumble_light(wantedSmallRumble, wantedBigRumble, wantedLedR, wantedLedG, wantedLedB,
+					playerLightMask);
+				if (wantedPlayerNumber != out.lastSentPlayerNumber)
+				{
+					UE_LOG(LogJoyShockLibrary, Verbose,
+						TEXT("Player indicator device %d -> player %d, DualSense mask 0x%02X"),
+						jc->intHandle, wantedPlayerNumber, playerLightMask);
+				}
+			}
+
+			out.lastSentSmallRumble = wantedSmallRumble;
+			out.lastSentBigRumble = wantedBigRumble;
+			out.lastSentLedR = wantedLedR;
+			out.lastSentLedG = wantedLedG;
+			out.lastSentLedB = wantedLedB;
+			out.lastSentPlayerNumber = wantedPlayerNumber;
+		}
+	}
+
+}
+
+// Winds the thread down: hands back the transport, decides whether the game should be told the controller
+// disconnected, and frees the device if this thread is the one that owns that.
+//
+// Split out of pollIndividualLoop, whose loop this runs after. Nothing here can be reordered lightly --
+// the comments on each step say what breaks.
+static void finish_polling_thread(JoyShock* jc, bool bReceivedInput, bool lockedThread, int numTimeOuts)
+{
+	if (jc->cancel_thread)
+	{
+		UE_LOG(LogJoyShockLibrary, Log, TEXT("\tending cancelled thread\n"));
+	}
+	else
+	{
+		UE_LOG(LogJoyShockLibrary, Log, TEXT("\ttiming out thread\n"));
+	}
+
+	// remove
+	if (jc->remove_on_finish)
+	{
+		UE_LOG(LogJoyShockLibrary, Log, TEXT("\t\tremoving jc\n"));
+		if (!lockedThread)
+		{
+			JSL4UModule._connectedLock.lock();
+			// UJoyShockLibrary::ConnectedLock.Lock();
+		}
+		_joyshocks.Remove(jc->intHandle);
+		_byPath.Remove(jc->path);
+		// A controller that was switched to its cable is mapped under both paths, so the idle one has to go
+		// too -- otherwise it would keep a dead device "tracked" and block that path from ever reconnecting.
+		if (!jc->fallback_path.IsEmpty())
+		{
+			_byPath.Remove(jc->fallback_path);
+		}
+		if (!lockedThread)
+		{
+			JSL4UModule._connectedLock.unlock();
+			// UJoyShockLibrary::ConnectedLock.Unlock();
+		}
+
+		// Free this device's handle so it can be reused by a future connection (keeps player numbers dense).
+		ReleaseUniqueHandle(jc->handle_identity);
+	}
+
+	const int32 intHandle = jc->intHandle;
+	// Capture the notify decision before deleting jc -- reading jc->* after delete is a use-after-free.
+	// Only devices that were announced as connected (i.e. that delivered input) may report a disconnect;
+	// otherwise a phantom that was opened but never worked would produce a disconnect for a controller the
+	// engine was never told about.
+	const bool bShouldNotifyDisconnect = (jc->remove_on_finish || jc->delete_on_finish) // Don't notify if reused
+		&& bReceivedInput;
+
+	// Whether this pass should ask for another scan even though it has nothing to announce -- i.e. whether
+	// this was a phantom, and the path has budget left.
+	//
+	// A phantom holds its path in _byPath for the full ten seconds it takes to time out, and enumeration
+	// skips tracked paths, so for that whole window the real controller behind that path is invisible. Once
+	// the phantom is gone the path is free again -- but the old code notified nothing and scanned nothing for
+	// a device that never delivered input, so the plugin simply stopped looking. The controller then stayed
+	// missing until something else happened to produce a WM_DEVICECHANGE, which is why it appeared to come
+	// back only after unrelated poking around in the editor.
+	//
+	// Rescanning unconditionally is not the answer either: for hardware that lingers in enumeration while
+	// switched off, that is an endless recreate/timeout cycle. Hence the budget -- enough passes to cover a
+	// controller that is mid-reconnect, then quiet.
+	bool bShouldRescanForPhantom = false;
+	if (!bReceivedInput && (jc->remove_on_finish || jc->delete_on_finish))
+	{
+		_pathHandleLock.Lock();
+		int32& Attempts = _phantomAttemptsByPath.FindOrAdd(jc->path);
+		bShouldRescanForPhantom = ++Attempts <= PhantomRescanBudget;
+		_pathHandleLock.Unlock();
+	}
+
+	// disconnect this device
+	const bool bDeletedHere = jc->delete_on_finish;
+	if (bDeletedHere)
+	{
+		UE_LOG(LogJoyShockLibrary, Log, TEXT("\t\tdeleting jc\n"));
+		delete jc;
+	}
+
+	if (lockedThread)
+	{
+		JSL4UModule._connectedLock.unlock();
+		// UJoyShockLibrary::ConnectedLock.Unlock();
+	}
+
+	// notify that we disconnected this device, and say whether or not it was a timeout (if not a timeout, then an explicit disconnect)
+	if (bShouldNotifyDisconnect)
+	{
+		{
+			std::shared_lock<std::shared_timed_mutex> lock(JSL4UModule._callbackLock);
+			// FScopeLock Lock(&UJoyShockLibrary::CallbackLock);
+			JSL4UModule.GetOnDisconnected().ExecuteIfBound(intHandle, numTimeOuts >= 10);
+		}
+
+		// A controller may have reconnected on the same device path just before we finished cleaning up
+		// (within the poll timeout window). Re-scan so it is picked up again -- cheap now that enumeration
+		// only creates genuinely new devices and never touches existing ones. The device that has just gone
+		// away is often still enumerable for a moment, so this pass tends to recreate it; that recreated
+		// device is harmless because it never delivers input and so is never announced.
+		JSL4UModule.RequestConnectDevices();
+	}
+	else if (bShouldRescanForPhantom)
+	{
+		UE_LOG(LogJoyShockLibrary, Verbose,
+			TEXT("Device %d never delivered input; re-scanning in case a working controller is behind that path."),
+			intHandle);
+		JSL4UModule.RequestConnectDevices();
+	}
+
+	// The very last thing, and only when this thread did not free the device itself: this is the handoff to
+	// a shutdown that kept ownership precisely so it could wait here. Guarded, because in every other path
+	// jc is already gone and reading it would be the use-after-free this exists to prevent.
+	if (!bDeletedHere)
+	{
+		jc->thread_exited.store(true);
+	}
+}
+
 void pollIndividualLoop(JoyShock *jc) {
 	FJoyShockLibrary4UnrealModule& JSL4UModule = FJoyShockLibrary4UnrealModule::GetInstance();
 
@@ -108,29 +491,8 @@ void pollIndividualLoop(JoyShock *jc) {
 	// it started streaming after init.
 	bool bLoggedFirstRead = false;
 
-	// Rumble: this thread is the SOLE writer of rumble packets/commands (JSL4USetControllerRumble only stores the
-	// values). Switch 1 rumble decays shortly after a single 0x10 packet, and a Switch 2 packet only carries
-	// ~15ms of waveform, so while active the state is re-sent continuously; a change to (0,0) sends a short
-	// run of silent packets and then stops.
-	int rumbleRefreshCounter = 0;
-	unsigned char lastSentSmallRumble = 0;
-	unsigned char lastSentBigRumble = 0;
-	int32 sw2SilentPacketsSent = 0;
-	auto lastSw2RumbleTime = std::chrono::steady_clock::now();
+	FPolledOutputState out(jc);
 	auto lastSw2InitRetryTime = std::chrono::steady_clock::now();
-	// Which JSL4USetHomeLight call this thread has already acted on. Generation 0 is "no call yet", and the
-	// counter only ever increases, so the first game-set value always sends. Tracking the call rather than
-	// the value is what makes re-sending an unchanged intensity work -- see home_light_generation.
-	uint32 lastSentHomeLightGeneration = 0;
-
-	// DualShock 4 / DualSense: rumble, light colour and the player LED all ride in the SAME output report,
-	// so they are tracked together and sent as one packet whenever any of them changes. Seeded from what
-	// JslConnectDevices already sent when it brought this device online, so we don't re-send it immediately.
-	unsigned char lastSentLedR = jc->led_r;
-	unsigned char lastSentLedG = jc->led_g;
-	unsigned char lastSentLedB = jc->led_b;
-	int32 lastSentPlayerNumber = jc->player_number;
-	bool bHomeLightCleared = false;
 
 	while (!jc->cancel_thread) {
 		// get input:
@@ -167,14 +529,14 @@ void pollIndividualLoop(JoyShock *jc) {
 						jc->intHandle, *jc->name);
 					// Rumble/LED state is re-sent by the tracking below, since the values it last sent went
 					// to a handle that is now closed.
-					lastSentSmallRumble = 0;
-					lastSentBigRumble = 0;
-					sw2SilentPacketsSent = 0;
-					lastSentPlayerNumber = -1;
-					bHomeLightCleared = false;
+					out.lastSentSmallRumble = 0;
+					out.lastSentBigRumble = 0;
+					out.sw2SilentPacketsSent = 0;
+					out.lastSentPlayerNumber = -1;
+					out.bHomeLightCleared = false;
 					// Generation 0 means "nothing sent on this handle yet", so a game-owned light is
 					// re-asserted once on the new transport and an unclaimed one falls to the clear below.
-					lastSentHomeLightGeneration = 0;
+					out.lastSentHomeLightGeneration = 0;
 					continue;
 				}
 				// Unmap the path we never managed to adopt: enumeration registered it as ours when queueing
@@ -233,12 +595,12 @@ void pollIndividualLoop(JoyShock *jc) {
 					UE_LOG(LogJoyShockLibrary, Log,
 						TEXT("Controller %d (%s) lost its USB connection and returned to Bluetooth."),
 						jc->intHandle, *jc->name);
-					lastSentSmallRumble = 0;
-					lastSentBigRumble = 0;
-					sw2SilentPacketsSent = 0;
-					lastSentPlayerNumber = -1;
-					bHomeLightCleared = false;
-					lastSentHomeLightGeneration = 0;
+					out.lastSentSmallRumble = 0;
+					out.lastSentBigRumble = 0;
+					out.sw2SilentPacketsSent = 0;
+					out.lastSentPlayerNumber = -1;
+					out.bHomeLightCleared = false;
+					out.lastSentHomeLightGeneration = 0;
 					numTimeOuts = 0;
 					continue;
 				}
@@ -327,215 +689,7 @@ void pollIndividualLoop(JoyShock *jc) {
 				}
 			}
 
-			// Player indicators are assigned from Unreal's actual player slot, not from HID enumeration order.
-			// The game thread stores the semantic one-based player number; this polling thread remains the sole
-			// writer to both Nintendo command pipes, keeping LED changes serialised with rumble.
-			if (jc->controller_type == ControllerType::n_switch)
-			{
-				jc->modifying_lock.Lock();
-				const int32 wantedPlayerNumber = jc->player_number;
-				jc->modifying_lock.Unlock();
-
-				if (wantedPlayerNumber != lastSentPlayerNumber)
-				{
-					const unsigned char playerLightMask = PlayerNumberToSwitchLedMask(wantedPlayerNumber);
-					bool bSent = false;
-					if (jc->is_switch2)
-					{
-						bSent = jc->set_sw2_player_lights(playerLightMask);
-					}
-					else
-					{
-						bSent = jc->set_switch_player_lights(playerLightMask);
-					}
-					jc->note_output_result(JoyShock::OutputFunctionPlayerIndicator, bSent);
-					if (bSent)
-					{
-						UE_LOG(LogJoyShockLibrary, Verbose,
-							TEXT("Player indicator device %d -> player %d, mask 0x%02X"),
-							jc->intHandle, wantedPlayerNumber, playerLightMask);
-						lastSentPlayerNumber = wantedPlayerNumber;
-					}
-				}
-			}
-
-			// The blue HOME light on a right Joy-Con / Pro Controller is a notification channel, not one
-			// of Nintendo's four player indicators. Controllers can retain a pulse from firmware or a
-			// previous host, so clear it once the live input stream is established -- and then keep
-			// re-asserting it.
-			//
-			// Clearing it only once was not enough: the firmware owns this light and turns it back on by
-			// itself (a reconnect or a battery notification is enough), after which nothing here ever
-			// switched it off again and it stayed lit for the rest of the session. It is cheap to repeat
-			// next to a 60Hz input stream, and the write-only path means it cannot disturb that stream.
-			if (jc->controller_type == ControllerType::n_switch
-				&& !jc->is_switch2 && (jc->left_right == 2 || jc->left_right == 3))
-			{
-				if (jc->home_light_owned_by_game.load())
-				{
-					// A game has taken the light over (JSL4USetHomeLight). Its value is authoritative from
-					// then on, and the keep-it-off upkeep below stops -- otherwise the two would fight and
-					// the game's light would last at most one upkeep interval.
-					//
-					// Sent once per call, not once per change: the firmware turns this light back on behind
-					// the plugin's back, so a cached intensity is not evidence of what the light is actually
-					// doing, and "set it to what I already asked for" is a legitimate request. A failed
-					// write leaves the generation unrecorded, which retries on the next report.
-					const uint32 wantedGeneration = jc->home_light_generation.load();
-					if (wantedGeneration != lastSentHomeLightGeneration)
-					{
-						const unsigned char wantedHomeLight = jc->wanted_home_light.load();
-						const bool bSent = jc->set_switch_home_light(wantedHomeLight);
-						jc->note_output_result(JoyShock::OutputFunctionHomeLight, bSent);
-						if (bSent)
-						{
-							lastSentHomeLightGeneration = wantedGeneration;
-							UE_LOG(LogJoyShockLibrary, Verbose,
-								TEXT("HOME light on device %d set to intensity %d by the game"),
-								jc->intHandle, wantedHomeLight);
-						}
-					}
-				}
-				else if (!bHomeLightCleared)
-				{
-					// Cleared exactly once per connection, never on a timer.
-					//
-					// This was briefly re-asserted every few seconds, because the firmware can switch the
-					// light back on by itself. That cost far more than it bought: subcommand 0x38 goes only
-					// to a right Joy-Con or Pro Controller, and those started dropping off Bluetooth after
-					// a while -- the very hazard the IMU note above describes, that configuration
-					// subcommands disturb an established Bluetooth stream. A notification light that may
-					// come back on is a blemish; a controller that disconnects mid-game is a broken game.
-					//
-					// The flag is reset after a transport switch, so a swapped controller is cleared again.
-					const bool bSent = jc->clear_switch_home_light();
-					jc->note_output_result(JoyShock::OutputFunctionHomeLight, bSent);
-					if (bSent)
-					{
-						bHomeLightCleared = true;
-						UE_LOG(LogJoyShockLibrary, Verbose,
-							TEXT("Cleared HOME notification light on device %d"), jc->intHandle);
-					}
-				}
-			}
-
-			// Switch 1 rumble (sole writer, see above): send immediately when the requested values change
-			// (including a final stop packet on a change to 0,0), and while active re-send roughly every
-			// 4 input reports (~60ms at 66Hz) -- the actuator fades out on its own otherwise, which made a
-			// single packet feel like a short, inconsistent blip. The write happens outside modifying_lock
-			// so a slow Bluetooth write can never stall the game thread's Jsl* calls.
-			if (jc->controller_type == ControllerType::n_switch && !jc->is_switch2)
-			{
-				jc->modifying_lock.Lock();
-				const unsigned char wantedSmallRumble = jc->get_wanted_small_rumble();
-				const unsigned char wantedBigRumble = jc->get_wanted_big_rumble();
-				jc->modifying_lock.Unlock();
-
-				const bool bRumbleActive = wantedSmallRumble != 0 || wantedBigRumble != 0;
-				const bool bRumbleChanged = wantedSmallRumble != lastSentSmallRumble || wantedBigRumble != lastSentBigRumble;
-				if (bRumbleChanged || (bRumbleActive && ++rumbleRefreshCounter >= 4))
-				{
-					rumbleRefreshCounter = 0;
-					jc->set_switch_rumble(wantedSmallRumble, wantedBigRumble);
-					lastSentSmallRumble = wantedSmallRumble;
-					lastSentBigRumble = wantedBigRumble;
-				}
-			}
-
-			// Switch 2 rumble: each packet is three 5-byte frames, ~5ms of waveform each, so the controller
-			// runs out of rumble to play 15ms after one arrives. Sending on that cadence is what makes a
-			// held rumble continuous. Time-based (not report-count) because the Switch 2 streams reports
-			// much faster than the Switch 1's 66Hz.
-			//
-			// Going silent takes a few zero-amplitude packets -- enough to overwrite whatever the actuator
-			// still had queued -- and after those the wire is left alone entirely rather than carrying a
-			// steady stream of silence.
-			if (jc->is_switch2)
-			{
-				constexpr int32 Sw2RumbleIntervalMs = 15;
-				constexpr int32 Sw2RumbleSilentPackets = 3;
-
-				jc->modifying_lock.Lock();
-				const unsigned char wantedSmallRumble = jc->get_wanted_small_rumble();
-				const unsigned char wantedBigRumble = jc->get_wanted_big_rumble();
-				jc->modifying_lock.Unlock();
-
-				const bool bRumbleActive = wantedSmallRumble != 0 || wantedBigRumble != 0;
-				const bool bRumbleChanged = wantedSmallRumble != lastSentSmallRumble || wantedBigRumble != lastSentBigRumble;
-				if (bRumbleChanged)
-				{
-					sw2SilentPacketsSent = 0;
-				}
-
-				const bool bKeepSending = bRumbleActive || sw2SilentPacketsSent < Sw2RumbleSilentPackets;
-				const auto now = std::chrono::steady_clock::now();
-				if (bKeepSending
-					&& (bRumbleChanged
-						|| std::chrono::duration_cast<std::chrono::milliseconds>(now - lastSw2RumbleTime).count() >= Sw2RumbleIntervalMs))
-				{
-					jc->set_sw2_rumble(wantedSmallRumble, wantedBigRumble);
-					lastSentSmallRumble = wantedSmallRumble;
-					lastSentBigRumble = wantedBigRumble;
-					lastSw2RumbleTime = now;
-					sw2SilentPacketsSent = bRumbleActive ? 0 : sw2SilentPacketsSent + 1;
-				}
-
-				// HID input is visible to both the editor and its multi-process Standalone child, but
-				// WinUSB permits only one command-interface owner. Release an inactive lease so the process
-				// that is actually playing can acquire it for calibrated init, LEDs and rumble.
-				jc->release_sw2_command_interface_if_idle();
-			}
-
-			// DualShock 4 / DualSense output (sole writer, see above): unlike the Switch controllers these
-			// actuators hold whatever they were last told until told otherwise, so there is nothing to
-			// sustain -- one packet per change is enough. Rumble, colour and player LED share one report, so
-			// a change to any of them sends a single coalesced write.
-			//
-			// This has to happen here rather than in the JSL4USet* calls: those run on the game thread, and
-			// writing from there meant a blocking HID write while holding modifying_lock -- the very lock
-			// this thread takes to parse every input packet.
-			if (jc->controller_type == ControllerType::s_ds4 || jc->controller_type == ControllerType::s_ds)
-			{
-				jc->modifying_lock.Lock();
-				const unsigned char wantedSmallRumble = jc->get_wanted_small_rumble();
-				const unsigned char wantedBigRumble = jc->get_wanted_big_rumble();
-				const unsigned char wantedLedR = jc->led_r;
-				const unsigned char wantedLedG = jc->led_g;
-				const unsigned char wantedLedB = jc->led_b;
-				const int32 wantedPlayerNumber = jc->player_number;
-				jc->modifying_lock.Unlock();
-
-				if (wantedSmallRumble != lastSentSmallRumble || wantedBigRumble != lastSentBigRumble
-					|| wantedLedR != lastSentLedR || wantedLedG != lastSentLedG || wantedLedB != lastSentLedB
-					|| wantedPlayerNumber != lastSentPlayerNumber)
-				{
-					// Outside modifying_lock: a slow Bluetooth write must not stall the game thread's setters.
-					if (jc->controller_type == ControllerType::s_ds4)
-					{
-						jc->set_ds4_rumble_light(wantedSmallRumble, wantedBigRumble, wantedLedR, wantedLedG, wantedLedB);
-					}
-					else
-					{
-						const unsigned char playerLightMask = PlayerNumberToDualSenseLedMask(wantedPlayerNumber);
-						jc->set_ds5_rumble_light(wantedSmallRumble, wantedBigRumble, wantedLedR, wantedLedG, wantedLedB,
-							playerLightMask);
-						if (wantedPlayerNumber != lastSentPlayerNumber)
-						{
-							UE_LOG(LogJoyShockLibrary, Verbose,
-								TEXT("Player indicator device %d -> player %d, DualSense mask 0x%02X"),
-								jc->intHandle, wantedPlayerNumber, playerLightMask);
-						}
-					}
-
-					lastSentSmallRumble = wantedSmallRumble;
-					lastSentBigRumble = wantedBigRumble;
-					lastSentLedR = wantedLedR;
-					lastSentLedG = wantedLedG;
-					lastSentLedB = wantedLedB;
-					lastSentPlayerNumber = wantedPlayerNumber;
-				}
-			}
-
+			send_pending_output_reports(jc, out);
 			// we want to be able to do these check-and-calls without fear of interruption by another thread. there could be many threads (as many as connected controllers),
 			// and the callback could be time-consuming (up to the user), so we use a readers-writer-lock.
 			if (handle_input(jc, buf, res, hasIMU)) { // but the user won't necessarily have a callback at all, so we'll skip the lock altogether in that case
@@ -674,115 +828,5 @@ void pollIndividualLoop(JoyShock *jc) {
 		}
 	}
 
-	if (jc->cancel_thread)
-	{
-		UE_LOG(LogJoyShockLibrary, Log, TEXT("\tending cancelled thread\n"));
-	}
-	else
-	{
-		UE_LOG(LogJoyShockLibrary, Log, TEXT("\ttiming out thread\n"));
-	}
-
-	// remove
-	if (jc->remove_on_finish)
-	{
-		UE_LOG(LogJoyShockLibrary, Log, TEXT("\t\tremoving jc\n"));
-		if (!lockedThread)
-		{
-			JSL4UModule._connectedLock.lock();
-			// UJoyShockLibrary::ConnectedLock.Lock();
-		}
-		_joyshocks.Remove(jc->intHandle);
-		_byPath.Remove(jc->path);
-		// A controller that was switched to its cable is mapped under both paths, so the idle one has to go
-		// too -- otherwise it would keep a dead device "tracked" and block that path from ever reconnecting.
-		if (!jc->fallback_path.IsEmpty())
-		{
-			_byPath.Remove(jc->fallback_path);
-		}
-		if (!lockedThread)
-		{
-			JSL4UModule._connectedLock.unlock();
-			// UJoyShockLibrary::ConnectedLock.Unlock();
-		}
-
-		// Free this device's handle so it can be reused by a future connection (keeps player numbers dense).
-		ReleaseUniqueHandle(jc->handle_identity);
-	}
-
-	const int32 intHandle = jc->intHandle;
-	// Capture the notify decision before deleting jc -- reading jc->* after delete is a use-after-free.
-	// Only devices that were announced as connected (i.e. that delivered input) may report a disconnect;
-	// otherwise a phantom that was opened but never worked would produce a disconnect for a controller the
-	// engine was never told about.
-	const bool bShouldNotifyDisconnect = (jc->remove_on_finish || jc->delete_on_finish) // Don't notify if reused
-		&& bReceivedInput;
-
-	// Whether this pass should ask for another scan even though it has nothing to announce -- i.e. whether
-	// this was a phantom, and the path has budget left.
-	//
-	// A phantom holds its path in _byPath for the full ten seconds it takes to time out, and enumeration
-	// skips tracked paths, so for that whole window the real controller behind that path is invisible. Once
-	// the phantom is gone the path is free again -- but the old code notified nothing and scanned nothing for
-	// a device that never delivered input, so the plugin simply stopped looking. The controller then stayed
-	// missing until something else happened to produce a WM_DEVICECHANGE, which is why it appeared to come
-	// back only after unrelated poking around in the editor.
-	//
-	// Rescanning unconditionally is not the answer either: for hardware that lingers in enumeration while
-	// switched off, that is an endless recreate/timeout cycle. Hence the budget -- enough passes to cover a
-	// controller that is mid-reconnect, then quiet.
-	bool bShouldRescanForPhantom = false;
-	if (!bReceivedInput && (jc->remove_on_finish || jc->delete_on_finish))
-	{
-		_pathHandleLock.Lock();
-		int32& Attempts = _phantomAttemptsByPath.FindOrAdd(jc->path);
-		bShouldRescanForPhantom = ++Attempts <= PhantomRescanBudget;
-		_pathHandleLock.Unlock();
-	}
-
-	// disconnect this device
-	const bool bDeletedHere = jc->delete_on_finish;
-	if (bDeletedHere)
-	{
-		UE_LOG(LogJoyShockLibrary, Log, TEXT("\t\tdeleting jc\n"));
-		delete jc;
-	}
-
-	if (lockedThread)
-	{
-		JSL4UModule._connectedLock.unlock();
-		// UJoyShockLibrary::ConnectedLock.Unlock();
-	}
-
-	// notify that we disconnected this device, and say whether or not it was a timeout (if not a timeout, then an explicit disconnect)
-	if (bShouldNotifyDisconnect)
-	{
-		{
-			std::shared_lock<std::shared_timed_mutex> lock(JSL4UModule._callbackLock);
-			// FScopeLock Lock(&UJoyShockLibrary::CallbackLock);
-			JSL4UModule.GetOnDisconnected().ExecuteIfBound(intHandle, numTimeOuts >= 10);
-		}
-
-		// A controller may have reconnected on the same device path just before we finished cleaning up
-		// (within the poll timeout window). Re-scan so it is picked up again -- cheap now that enumeration
-		// only creates genuinely new devices and never touches existing ones. The device that has just gone
-		// away is often still enumerable for a moment, so this pass tends to recreate it; that recreated
-		// device is harmless because it never delivers input and so is never announced.
-		JSL4UModule.RequestConnectDevices();
-	}
-	else if (bShouldRescanForPhantom)
-	{
-		UE_LOG(LogJoyShockLibrary, Verbose,
-			TEXT("Device %d never delivered input; re-scanning in case a working controller is behind that path."),
-			intHandle);
-		JSL4UModule.RequestConnectDevices();
-	}
-
-	// The very last thing, and only when this thread did not free the device itself: this is the handoff to
-	// a shutdown that kept ownership precisely so it could wait here. Guarded, because in every other path
-	// jc is already gone and reading it would be the use-after-free this exists to prevent.
-	if (!bDeletedHere)
-	{
-		jc->thread_exited.store(true);
-	}
+	finish_polling_thread(jc, bReceivedInput, lockedThread, numTimeOuts);
 }
