@@ -342,6 +342,8 @@ static void send_pending_output_reports(JoyShock* jc, FPolledOutputState& out)
 // the comments on each step say what breaks.
 static void finish_polling_thread(JoyShock* jc, bool bReceivedInput, bool lockedThread, int numTimeOuts)
 {
+	FJoyShockLibrary4UnrealModule& JSL4UModule = FJoyShockLibrary4UnrealModule::GetInstance();
+
 	if (jc->cancel_thread)
 	{
 		UE_LOG(LogJoyShockLibrary, Log, TEXT("\tending cancelled thread\n"));

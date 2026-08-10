@@ -4,6 +4,8 @@
 #include "JoyShockBlueprintLibrary.h"
 
 #include "JoyShockInterface.h"
+// For ShutdownAllDevices(), called by ShutdownModule below.
+#include "JoyShockLibrary4Unreal/JoyShockLibrary/JoyShockLibrary.h"
 #include "JoyShockLibrary4Unreal/JoyShockLibrary/Switch2Bluetooth.h"
 #include "Interfaces/IPluginManager.h"
 #include "Async/Async.h"

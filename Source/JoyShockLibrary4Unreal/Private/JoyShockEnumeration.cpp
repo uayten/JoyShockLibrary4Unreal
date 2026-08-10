@@ -431,7 +431,6 @@ int32 UJoyShockLibrary::ConnectDevices()
 	// Phase 2: all the blocking work, without the lock.
 	//
 	TArray<FTransportUpgrade> TransportUpgrades;
-	TArray<FTransportUpgrade> TransportUpgrades;
 	TArray<JoyShock*> NewDevices;
 	// MACs already claimed by a device created in THIS pass, so one controller reachable two ways cannot be
 	// built twice before either path is tracked. See its use below.
