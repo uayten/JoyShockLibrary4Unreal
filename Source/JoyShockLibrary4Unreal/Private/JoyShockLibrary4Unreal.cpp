@@ -56,7 +56,7 @@ void FJoyShockLibrary4UnrealModule::RequestConnectDevices()
 				{
 					break;
 				}
-				UJoyShockLibrary::JslConnectDevices();
+				UJoyShockLibrary::ConnectDevices();
 			}
 
 			bConnectRunning.store(false);
@@ -141,7 +141,7 @@ void FJoyShockLibrary4UnrealModule::ShutdownModule()
 	// hidapi handle or a Bluetooth connection each, and call back into this module; leaving them running
 	// while the rest of this function frees those was the crash on closing the editor with a controller on
 	// the radio, because the Bluetooth teardown below freed the very object each thread was asleep inside.
-	const bool bAllDevicesStopped = JslShutdownAllDevices();
+	const bool bAllDevicesStopped = ShutdownAllDevices();
 
 	// Now the radio: stop scanning, drop the discovery callback into this module, and release any connection
 	// no controller claimed. By this point every controller has handed its own connection back, so this is

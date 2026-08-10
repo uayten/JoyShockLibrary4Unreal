@@ -54,5 +54,5 @@ unsigned char PlayerNumberToSwitchLedMask(int32 PlayerNumber);
 unsigned char PlayerNumberToDualSenseLedMask(int32 PlayerNumber);
 
 // One controller's polling thread: reads input reports until the device goes away. Started by
-// JslConnectDevices, and the only writer of a controller's output reports.
+// ConnectDevices, and the only writer of a controller's output reports.
 void pollIndividualLoop(JoyShock* jc);

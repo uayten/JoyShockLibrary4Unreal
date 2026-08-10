@@ -546,7 +546,7 @@ and LEDs without requiring Steam — or the parent editor — to be closed.
 
 ## Blueprint nodes
 
-Blueprint exposes only the Unreal-oriented `JSL4U*` API. The old `Jsl*` nodes, their raw integer enums, loose float outputs and synchronous device scan have been removed. The low-level functions remain implementation details in C++ where the modern wrappers reuse them.
+The API is `JSL4U*` and nothing else. The original library's `Jsl*` layer — its raw integer enums, loose float outputs and synchronous device scan — is gone entirely, not merely hidden from Blueprint: half of it had no caller left, and the half that did was folded into the internal `…ForHandle` helpers the `JSL4U*` nodes call. A node takes a connection id; a helper takes a device handle; there is no third convention.
 
 Current nodes are grouped by responsibility:
 

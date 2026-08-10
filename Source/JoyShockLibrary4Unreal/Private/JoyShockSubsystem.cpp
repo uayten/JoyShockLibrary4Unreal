@@ -78,7 +78,7 @@ void UJoyShockSubsystem::Initialize(FSubsystemCollectionBase& Collection)
 	// rather than from the public listing because the cache is keyed by handle -- that is what the
 	// disconnect event will arrive with, and it is the one place in the plugin where the two must line up.
 	TArray<int32> ExistingHandles;
-	UJoyShockLibrary::JslGetConnectedDeviceHandles(ExistingHandles);
+	UJoyShockLibrary::GetConnectedDeviceHandles(ExistingHandles);
 	int32 SeededCount = 0;
 	for (int32 Handle : ExistingHandles)
 	{

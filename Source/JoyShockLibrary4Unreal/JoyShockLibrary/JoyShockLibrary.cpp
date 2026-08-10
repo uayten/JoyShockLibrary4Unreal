@@ -170,7 +170,7 @@ unsigned char PlayerNumberToDualSenseLedMask(int32 PlayerNumber)
 // because the process usually died before a thread noticed. Bluetooth made it deterministic -- shutdown
 // actively freed the connection object each polling thread was asleep inside -- which is the crash on
 // closing the editor with a controller on the radio.
-bool JslShutdownAllDevices()
+bool ShutdownAllDevices()
 {
 	FJoyShockLibrary4UnrealModule& JSL4UModule = FJoyShockLibrary4UnrealModule::GetInstance();
 

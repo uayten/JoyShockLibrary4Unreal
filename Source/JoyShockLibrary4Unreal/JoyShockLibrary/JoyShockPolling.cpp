@@ -1,6 +1,6 @@
 // JoyShockPolling.cpp - One controller's polling thread.
 //
-// Every connected controller gets one of these, started by JslConnectDevices. It reads input reports until
+// Every connected controller gets one of these, started by ConnectDevices. It reads input reports until
 // the device goes away, hands each one to handle_input, and is the only writer of a controller's output
 // reports -- rumble, lights and IMU configuration all queue here rather than being written by the caller.
 //
@@ -37,7 +37,7 @@
 struct FPolledOutputState
 {
 	explicit FPolledOutputState(const JoyShock* jc)
-		// Seeded from what JslConnectDevices already sent when it brought this device online, so we do not
+		// Seeded from what ConnectDevices already sent when it brought this device online, so we do not
 		// re-send it immediately.
 		: lastSentLedR(jc->led_r)
 		, lastSentLedG(jc->led_g)
@@ -110,7 +110,7 @@ static bool SwitchControllerTransport(JoyShock* jc, const FString& NewPath, bool
 	{
 		bNewIsUsb ? jc->init_usb() : jc->init_bt();
 	}
-	// The DualSense needs no explicit init for either transport, matching JslConnectDevices.
+	// The DualSense needs no explicit init for either transport, matching ConnectDevices.
 
 	return true;
 }
@@ -220,7 +220,7 @@ static void send_pending_output_reports(JoyShock* jc, FPolledOutputState& out)
 	// (including a final stop packet on a change to 0,0), and while active re-send roughly every
 	// 4 input reports (~60ms at 66Hz) -- the actuator fades out on its own otherwise, which made a
 	// single packet feel like a short, inconsistent blip. The write happens outside modifying_lock
-	// so a slow Bluetooth write can never stall the game thread's Jsl* calls.
+	// so a slow Bluetooth write can never stall the game thread's device getters.
 	if (jc->controller_type == ControllerType::n_switch && !jc->is_switch2)
 	{
 		jc->modifying_lock.Lock();
@@ -512,7 +512,7 @@ void pollIndividualLoop(JoyShock *jc) {
 				const FString PreviousPath = jc->path;
 				// Deliberately NOT under _connectedLock. The swap's init performs blocking HID I/O, and on
 				// a freshly replugged device that I/O can block until the cable is pulled again -- holding
-				// the exclusive lock through it froze every Jsl* getter on the game thread, i.e. the whole
+				// the exclusive lock through it froze every device getter on the game thread, i.e. the whole
 				// editor, on the second plug of a session. The lock is not needed for handle safety any
 				// more: enumeration does no I/O on a tracked device's handle (every family marks
 				// initialised now), and this thread is the handle's only user. Worst case an init that

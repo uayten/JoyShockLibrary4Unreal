@@ -5,7 +5,7 @@
 // locked read of a JoyShock the registry already owns -- the hardware work happens on the polling thread.
 //
 // Two nodes that belong to this class live elsewhere because they are enumeration, not queries:
-// JslConnectDevices and JSL4URefreshControllers are in JoyShockEnumeration.cpp.
+// ConnectDevices and JSL4URefreshControllers are in JoyShockEnumeration.cpp.
 
 #include "JoyShockBlueprintLibrary.h"
 #include <bitset>
@@ -29,7 +29,7 @@
 #include "Engine/World.h"
 #include "JoyShockLibrary4Unreal/JoyShockLibrary/JoyShockInternal.h"
 
-int32 UJoyShockLibrary::JslGetConnectedDeviceHandles(TArray<int32>& OutDeviceHandleArray)
+int32 UJoyShockLibrary::GetConnectedDeviceHandles(TArray<int32>& OutDeviceHandleArray)
 {
 	FJoyShockLibrary4UnrealModule& JSL4UModule = FJoyShockLibrary4UnrealModule::GetInstance();
 
@@ -72,9 +72,9 @@ static EJSL4UControllerType JSL4UControllerTypeFromLegacy(int32 LegacyType)
 // Reads everything the JoyShock itself owns. The caller must hold _connectedLock (shared is enough) and
 // must have already null-checked jc. Kept separate from the locking so that callers which already hold
 // the lock for a whole batch of devices don't have to re-acquire it per device.
-static FJSLSettings JSL4UReadJslSettings(JoyShock* jc)
+static FJSL4URawSettings ReadControllerSettings(JoyShock* jc)
 {
-	FJSLSettings settings;
+	FJSL4URawSettings settings;
 
 	settings.gyroSpace = jc->gyroSpace;
 	settings.playerNumber = jc->player_number;
@@ -110,12 +110,12 @@ static FJSLSettings JSL4UReadJslSettings(JoyShock* jc)
 // Builds the Blueprint-facing struct from the raw JSL settings. Leaves every field the interface owns --
 // the whole identity block, from Connection Id down -- at its defaults; see JSL4UFillPlayerFields, which is
 // what turns this into a controller a caller can name.
-static FJSL4UControllerInfo JSL4UMakeControllerInfo(const FJSLSettings& JslSettings, const JoyShock* jc)
+static FJSL4UControllerInfo JSL4UMakeControllerInfo(const FJSL4URawSettings& RawSettings, const JoyShock* jc)
 {
 	// The colour arrives packed as 0xRRGGBB (both the Switch body colour read over SPI and the DS4/DualSense
 	// LED colour are assembled that way), so it has to go into FColor as (R, G, B) -- passing it reversed
 	// swapped red and blue, turning a blue Joy-Con red on screen.
-	const uint32 RGBColor = JslSettings.colour;
+	const uint32 RGBColor = RawSettings.colour;
 	const uint8 Red = (RGBColor >> 16) & 0xff;
 	const uint8 Green = (RGBColor >> 8) & 0xff;
 	const uint8 Blue = RGBColor & 0xff;
@@ -124,8 +124,8 @@ static FJSL4UControllerInfo JSL4UMakeControllerInfo(const FJSLSettings& JslSetti
 	// Everything built here is, by definition, a controller this plugin drives. The flag exists for the one
 	// node that also reports controllers it does not -- see FJSL4UControllerInfo::bIsJoyShockController.
 	Info.bIsJoyShockController = true;
-	Info.ControllerType = JSL4UControllerTypeFromLegacy(JslSettings.controllerType);
-	Info.PlayerLedNumber = JslSettings.playerNumber;
+	Info.ControllerType = JSL4UControllerTypeFromLegacy(RawSettings.controllerType);
+	Info.PlayerLedNumber = RawSettings.playerNumber;
 
 	if (jc != nullptr)
 	{
@@ -163,17 +163,17 @@ static FJSL4UControllerInfo JSL4UMakeControllerInfo(const FJSLSettings& JslSetti
 	// JSL stores the gyro space as a raw int. Anything outside the three JSL4U knows about reads as Local
 	// Space rather than as a garbage enumerator, so a value the library grows later cannot make a Blueprint
 	// switch fall through a branch that does not exist.
-	Info.GyroSpace = JslSettings.gyroSpace >= 0 && JslSettings.gyroSpace <= static_cast<int32>(EJSL4UGyroSpace::PlayerSpace)
-		? static_cast<EJSL4UGyroSpace>(JslSettings.gyroSpace)
+	Info.GyroSpace = RawSettings.gyroSpace >= 0 && RawSettings.gyroSpace <= static_cast<int32>(EJSL4UGyroSpace::PlayerSpace)
+		? static_cast<EJSL4UGyroSpace>(RawSettings.gyroSpace)
 		: EJSL4UGyroSpace::LocalSpace;
-	Info.bIsCalibrating = JslSettings.isCalibrating;
-	Info.bAutoCalibrationEnabled = JslSettings.autoCalibrationEnabled;
-	Info.bIsConnected = JslSettings.isConnected;
+	Info.bIsCalibrating = RawSettings.isCalibrating;
+	Info.bAutoCalibrationEnabled = RawSettings.autoCalibrationEnabled;
+	Info.bIsConnected = RawSettings.isConnected;
 	return Info;
 }
 
 // Fills the fields the input-device interface owns. Must NOT be called while holding _connectedLock:
-// the game thread takes the interface's lock and then calls Jsl* getters (which take _connectedLock),
+// the game thread takes the interface's lock and then calls the device getters (which take _connectedLock),
 // so acquiring them in the opposite order here could deadlock.
 //
 // False means the interface has no live registration for this controller, so none of the identity it owns
@@ -216,7 +216,7 @@ FQuat UJoyShockLibrary::GetJoyConGripUndoRotation(bool bHorizontal, bool bIsLeft
 // not a Joy-Con held sideways.
 //
 // MUST be called before taking _connectedLock: this asks the interface, and the game thread takes the
-// interface's lock and then calls Jsl* getters (which take _connectedLock), so acquiring the two in the
+// interface's lock and then calls the device getters (which take _connectedLock), so acquiring the two in the
 // opposite order here could deadlock. Every caller below resolves it as its first statement.
 static FQuat GripUndoRotationForHandle(int32 Handle)
 {
@@ -266,7 +266,7 @@ static void ApplyGripUndo(FJSL4UMotionState& MotionState, const FQuat& GripUndo)
 // rotating it again would take a correctly-reported turn and tilt it a quarter turn out.
 static bool IsGyroInLocalSpace(int32 Handle)
 {
-	return UJoyShockLibrary::JslGetControllerInfoAndSettings(Handle).gyroSpace == 0;
+	return UJoyShockLibrary::GetControllerSettingsForHandle(Handle).gyroSpace == 0;
 }
 
 // The library handle that addresses this connection, or INDEX_NONE when nothing of ours answers to it: a
@@ -310,7 +310,7 @@ static int32 HandleForConnection(int64 ConnectionId)
 			{
 				TArray<int64> LiveIds;
 				TArray<int32> Handles;
-				UJoyShockLibrary::JslGetConnectedDeviceHandles(Handles);
+				UJoyShockLibrary::GetConnectedDeviceHandles(Handles);
 				for (int32 LiveHandle : Handles)
 				{
 					const int64 LiveId = Interface->GetConnectionForHandle(LiveHandle);
@@ -396,11 +396,11 @@ TArray<FJSL4UControllerInfo> UJoyShockLibrary::JSL4UGetConnectedControllers()
 		Found.Reserve(_joyshocks.Num());
 		for (const TTuple<int32, JoyShock*>& Pair : _joyshocks)
 		{
-			// Same filter as JslGetConnectedDeviceHandles: only controllers that have actually delivered
+			// Same filter as GetConnectedDeviceHandles: only controllers that have actually delivered
 			// input, so a device still lingering in enumeration after a disconnect never shows up here.
 			if (Pair.Value != nullptr && Pair.Value->has_delivered_input.load())
 			{
-				Found.Add({ Pair.Key, JSL4UMakeControllerInfo(JSL4UReadJslSettings(Pair.Value), Pair.Value) });
+				Found.Add({ Pair.Key, JSL4UMakeControllerInfo(ReadControllerSettings(Pair.Value), Pair.Value) });
 			}
 		}
 	}
@@ -543,8 +543,8 @@ bool UJoyShockLibrary::JSL4UJoinJoyCons(int64 ConnectionIdA, int64 ConnectionIdB
 	const int32 DeviceIdA = HandleForOutput(ConnectionIdA, TEXT("JSL4UJoinJoyCons"));
 	const int32 DeviceIdB = HandleForOutput(ConnectionIdB, TEXT("JSL4UJoinJoyCons"));
 
-	const EJSL4UControllerType TypeA = JSL4UControllerTypeFromLegacy(JslGetControllerType(DeviceIdA));
-	const EJSL4UControllerType TypeB = JSL4UControllerTypeFromLegacy(JslGetControllerType(DeviceIdB));
+	const EJSL4UControllerType TypeA = JSL4UControllerTypeFromLegacy(GetControllerTypeForHandle(DeviceIdA));
+	const EJSL4UControllerType TypeB = JSL4UControllerTypeFromLegacy(GetControllerTypeForHandle(DeviceIdB));
 
 	if (!JSL4UIsControllerTypeJoinable(TypeA) || !JSL4UIsControllerTypeJoinable(TypeB))
 	{
@@ -836,7 +836,7 @@ TArray<FJSL4UControllerInfo> UJoyShockLibrary::JSL4UGetControllersAssignedToPlay
 	return JSL4UGetControllersAssignedToPlayerIndex(UserIndex);
 }
 
-// JslDisconnectAndDisposeAll used to live here. It was exposed to Blueprint, called by nothing, and
+// A DisconnectAndDisposeAll used to live here. It was exposed to Blueprint, called by nothing, and
 // unrecoverable: it unbound the module's connect/disconnect/poll delegates, which only the input
 // interface's constructor ever binds, so calling it left every controller dead for the rest of the
 // session with no way back short of restarting the editor. Removed rather than given a JSL4U name --
@@ -865,19 +865,9 @@ bool UJoyShockLibrary::JSL4UIsControllerConnected(int64 ConnectionId)
 	std::shared_lock<std::shared_timed_mutex> lock(JSL4UModule._connectedLock);
 
 	// Same test the JSL4U listings use, so this can never disagree with JSL4UGetConnectedControllers about
-	// whether a controller is there. JslStillConnected below deliberately keeps its looser "is it in the
-	// device map at all" answer, which is what existing callers of it expect.
+	// whether a controller is there: present in the device map AND having delivered at least one report.
 	const JoyShock* jc = GetJoyShockFromHandle(DeviceId);
 	return jc != nullptr && jc->has_delivered_input.load();
-}
-
-bool UJoyShockLibrary::JslStillConnected(int32 deviceId)
-{
-	FJoyShockLibrary4UnrealModule& JSL4UModule = FJoyShockLibrary4UnrealModule::GetInstance();
-
-	std::shared_lock<std::shared_timed_mutex> lock(JSL4UModule._connectedLock);
-	
-	return GetJoyShockFromHandle(deviceId) != nullptr;
 }
 
 // get buttons as bits in the following order, using North South East West to name face buttons to avoid ambiguity between Xbox and Nintendo layouts:
@@ -903,7 +893,7 @@ bool UJoyShockLibrary::JslStillConnected(int32 deviceId)
 // 0x40000: SL
 // 0x80000: SR
 // if you want the whole state, this is the best way to do it
-FJoyShockState UJoyShockLibrary::JslGetSimpleState(int32 deviceId)
+FJoyShockState UJoyShockLibrary::GetSimpleStateForHandle(int32 deviceId)
 {
 	FJoyShockLibrary4UnrealModule& JSL4UModule = FJoyShockLibrary4UnrealModule::GetInstance();
 
@@ -919,7 +909,7 @@ FJoyShockState UJoyShockLibrary::JslGetSimpleState(int32 deviceId)
 FJSL4UJoyShockState UJoyShockLibrary::JSL4UGetControllerState(int64 ConnectionId)
 {
 	const int32 DeviceId = HandleForConnection(ConnectionId);
-	const FJoyShockState& LegacySimpleState = JslGetSimpleState(DeviceId);
+	const FJoyShockState& LegacySimpleState = GetSimpleStateForHandle(DeviceId);
 	return {
 		.Buttons = LegacySimpleState.buttons,
 		.LeftTrigger = LegacySimpleState.lTrigger,
@@ -929,7 +919,7 @@ FJSL4UJoyShockState UJoyShockLibrary::JSL4UGetControllerState(int64 ConnectionId
 	};
 }
 
-FIMUState UJoyShockLibrary::JslGetIMUState(int32 deviceId)
+FIMUState UJoyShockLibrary::GetRawIMUStateForHandle(int32 deviceId)
 {
 	FJoyShockLibrary4UnrealModule& JSL4UModule = FJoyShockLibrary4UnrealModule::GetInstance();
 
@@ -948,7 +938,7 @@ FJSL4UIMUState UJoyShockLibrary::JSL4UGetIMUState(int64 ConnectionId)
 	const FQuat GripUndo = GripUndoRotationForHandle(DeviceID);
 	const bool bRotateGyro = !GripUndo.IsIdentity() && IsGyroInLocalSpace(DeviceID);
 
-	const FIMUState& LegacyIMUState = JslGetIMUState(DeviceID);
+	const FIMUState& LegacyIMUState = GetRawIMUStateForHandle(DeviceID);
 	const FVector Acceleration(LegacyIMUState.accelZ, LegacyIMUState.accelX, -LegacyIMUState.accelY);
 	// Negate rotation around vertical axis to make up for different handedness
 	const FVector Gyro(-LegacyIMUState.gyroZ, LegacyIMUState.gyroX, -LegacyIMUState.gyroY);
@@ -961,7 +951,7 @@ FJSL4UIMUState UJoyShockLibrary::JSL4UGetIMUState(int64 ConnectionId)
 FJSL4UIMUState UJoyShockLibrary::JSL4UGetRawIMUState(int64 ConnectionId)
 {
 	const int32 DeviceID = HandleForConnection(ConnectionId);
-	const FIMUState& LegacyIMUState = JslGetIMUState(DeviceID);
+	const FIMUState& LegacyIMUState = GetRawIMUStateForHandle(DeviceID);
 	return {
 		.Acceleration = FVector(LegacyIMUState.accelX, LegacyIMUState.accelY, LegacyIMUState.accelZ),
 		.Gyro = FVector(LegacyIMUState.gyroX, LegacyIMUState.gyroY, LegacyIMUState.gyroZ)
@@ -973,7 +963,7 @@ FJSL4UIMUState UJoyShockLibrary::JSL4UGetRawIMUState(int64 ConnectionId)
 	// Raw Z = JSL4U -X
 }
 
-FMotionState UJoyShockLibrary::JslGetMotionState(int32 deviceId)
+FMotionState UJoyShockLibrary::GetRawMotionStateForHandle(int32 deviceId)
 {
 	FJoyShockLibrary4UnrealModule& JSL4UModule = FJoyShockLibrary4UnrealModule::GetInstance();
 
@@ -1002,7 +992,7 @@ FJSL4UMotionState UJoyShockLibrary::GetMotionStateForHandle(int32 DeviceHandle)
 	UKismetSystemLibrary::DrawDebugArrow(World, Origin, Origin + TempFlattened * 200.0f, 2.0f, FColor::Red);
 	TEMP DEBUG */
 
-	FMotionState NativeMotionState = JslGetMotionState(DeviceHandle);
+	FMotionState NativeMotionState = GetRawMotionStateForHandle(DeviceHandle);
 	FJSL4UMotionState UnrealMotionState;
 
 
@@ -1034,7 +1024,7 @@ FJSL4UMotionState UJoyShockLibrary::GetMotionStateForHandle(int32 DeviceHandle)
 FJSL4UMotionState UJoyShockLibrary::JSL4UGetRawMotionState(int64 ConnectionId)
 {
 	const int32 DeviceID = HandleForConnection(ConnectionId);
-	FMotionState NativeMotionState = JslGetMotionState(DeviceID);
+	FMotionState NativeMotionState = GetRawMotionStateForHandle(DeviceID);
 	FJSL4UMotionState UnrealMotionState;
 
 	// The uncorrected orientation -- which is what "raw" means here, the counterpart to the corrected one
@@ -1053,7 +1043,7 @@ FJSL4UMotionState UJoyShockLibrary::JSL4UGetRawMotionState(int64 ConnectionId)
 	return UnrealMotionState;
 }
 
-FTouchState UJoyShockLibrary::JslGetTouchState(int32 deviceId, bool previous)
+FTouchState UJoyShockLibrary::GetTouchStateForHandle(int32 deviceId, bool previous)
 {
 	FJoyShockLibrary4UnrealModule& JSL4UModule = FJoyShockLibrary4UnrealModule::GetInstance();
 
@@ -1069,7 +1059,7 @@ FTouchState UJoyShockLibrary::JslGetTouchState(int32 deviceId, bool previous)
 FJSL4UTouchState UJoyShockLibrary::JSL4UGetTouchState(int64 ConnectionId, bool bPrevious)
 {
 	const int32 DeviceId = HandleForConnection(ConnectionId);
-	const FTouchState& LegacyTouchState = JslGetTouchState(DeviceId, bPrevious);
+	const FTouchState& LegacyTouchState = GetTouchStateForHandle(DeviceId, bPrevious);
 
 	return {
 		.PrimaryTouch = {
@@ -1091,11 +1081,11 @@ FVector2D UJoyShockLibrary::JSL4UGetTouchpadSize(int64 ConnectionId)
 	int32 SizeX = 0;
 	int32 SizeY = 0;
 	// Returns zero for a controller with no touchpad, which is also what the legacy call leaves behind.
-	JslGetTouchpadDimension(DeviceId, SizeX, SizeY);
+	GetTouchpadDimensionForHandle(DeviceId, SizeX, SizeY);
 	return FVector2D(SizeX, SizeY);
 }
 
-bool UJoyShockLibrary::JslGetTouchpadDimension(int32 deviceId, int32 &sizeX, int32 &sizeY)
+bool UJoyShockLibrary::GetTouchpadDimensionForHandle(int32 deviceId, int32 &sizeX, int32 &sizeY)
 {
 	FJoyShockLibrary4UnrealModule& JSL4UModule = FJoyShockLibrary4UnrealModule::GetInstance();
 	
@@ -1122,19 +1112,6 @@ bool UJoyShockLibrary::JslGetTouchpadDimension(int32 deviceId, int32 &sizeX, int
 	return false;
 }
 
-int32 UJoyShockLibrary::JslGetButtons(int32 deviceId)
-{
-	FJoyShockLibrary4UnrealModule& JSL4UModule = FJoyShockLibrary4UnrealModule::GetInstance();
-	
-	std::shared_lock<std::shared_timed_mutex> lock(JSL4UModule._connectedLock);
-	
-	JoyShock* jc = GetJoyShockFromHandle(deviceId);
-	if (jc != nullptr) {
-		return jc->simple_state.buttons;
-	}
-	return 0;
-}
-
 FVector2D UJoyShockLibrary::JSL4UGetLeftStick(int64 ConnectionId)
 {
 	const int32 DeviceId = HandleForConnection(ConnectionId);
@@ -1148,32 +1125,6 @@ FVector2D UJoyShockLibrary::JSL4UGetLeftStick(int64 ConnectionId)
 		return FVector2D(jc->simple_state.stickLX, jc->simple_state.stickLY);
 	}
 	return FVector2D::ZeroVector;
-}
-
-// get thumbsticks
-float UJoyShockLibrary::JslGetLeftX(int32 deviceId)
-{
-	FJoyShockLibrary4UnrealModule& JSL4UModule = FJoyShockLibrary4UnrealModule::GetInstance();
-	
-	std::shared_lock<std::shared_timed_mutex> lock(JSL4UModule._connectedLock);
-	
-	JoyShock* jc = GetJoyShockFromHandle(deviceId);
-	if (jc != nullptr) {
-		return jc->simple_state.stickLX;
-	}
-	return 0.0f;
-}
-float UJoyShockLibrary::JslGetLeftY(int32 deviceId)
-{
-	FJoyShockLibrary4UnrealModule& JSL4UModule = FJoyShockLibrary4UnrealModule::GetInstance();
-	
-	std::shared_lock<std::shared_timed_mutex> lock(JSL4UModule._connectedLock);
-	
-	JoyShock* jc = GetJoyShockFromHandle(deviceId);
-	if (jc != nullptr) {
-		return jc->simple_state.stickLY;
-	}
-	return 0.0f;
 }
 
 FVector2D UJoyShockLibrary::JSL4UGetRightStick(int64 ConnectionId)
@@ -1190,96 +1141,7 @@ FVector2D UJoyShockLibrary::JSL4UGetRightStick(int64 ConnectionId)
 	return FVector2D::ZeroVector;
 }
 
-float UJoyShockLibrary::JslGetRightX(int32 deviceId)
-{
-	FJoyShockLibrary4UnrealModule& JSL4UModule = FJoyShockLibrary4UnrealModule::GetInstance();
-	
-	std::shared_lock<std::shared_timed_mutex> lock(JSL4UModule._connectedLock);
-	
-	JoyShock* jc = GetJoyShockFromHandle(deviceId);
-	if (jc != nullptr) {
-		return jc->simple_state.stickRX;
-	}
-	return 0.0f;
-}
-float UJoyShockLibrary::JslGetRightY(int32 deviceId)
-{
-	FJoyShockLibrary4UnrealModule& JSL4UModule = FJoyShockLibrary4UnrealModule::GetInstance();
-	
-	std::shared_lock<std::shared_timed_mutex> lock(JSL4UModule._connectedLock);
-	
-	JoyShock* jc = GetJoyShockFromHandle(deviceId);
-	if (jc != nullptr) {
-		return jc->simple_state.stickRY;
-	}
-	return 0.0f;
-}
-
-// get triggers. Switch controllers don't have analogue triggers, but will report 0.0 or 1.0 so they can be used in the same way as others
-float UJoyShockLibrary::JslGetLeftTrigger(int32 deviceId)
-{
-	FJoyShockLibrary4UnrealModule& JSL4UModule = FJoyShockLibrary4UnrealModule::GetInstance();
-	
-	std::shared_lock<std::shared_timed_mutex> lock(JSL4UModule._connectedLock);
-	
-	JoyShock* jc = GetJoyShockFromHandle(deviceId);
-	if (jc != nullptr) {
-		return jc->simple_state.lTrigger;
-	}
-	return 0.0f;
-}
-float UJoyShockLibrary::JslGetRightTrigger(int32 deviceId)
-{
-	FJoyShockLibrary4UnrealModule& JSL4UModule = FJoyShockLibrary4UnrealModule::GetInstance();
-	
-	std::shared_lock<std::shared_timed_mutex> lock(JSL4UModule._connectedLock);
-	
-	JoyShock* jc = GetJoyShockFromHandle(deviceId);
-	if (jc != nullptr) {
-		return jc->simple_state.rTrigger;
-	}
-	return 0.0f;
-}
-
-// get gyro
-float UJoyShockLibrary::JslGetGyroX(int32 deviceId)
-{
-	FJoyShockLibrary4UnrealModule& JSL4UModule = FJoyShockLibrary4UnrealModule::GetInstance();
-	
-	std::shared_lock<std::shared_timed_mutex> lock(JSL4UModule._connectedLock);
-	
-	JoyShock* jc = GetJoyShockFromHandle(deviceId);
-	if (jc != nullptr) {
-		return jc->get_transformed_imu_state(jc->imu_state).gyroX;
-	}
-	return 0.0f;
-}
-float UJoyShockLibrary::JslGetGyroY(int32 deviceId)
-{
-	FJoyShockLibrary4UnrealModule& JSL4UModule = FJoyShockLibrary4UnrealModule::GetInstance();
-	
-	std::shared_lock<std::shared_timed_mutex> lock(JSL4UModule._connectedLock);
-	
-	JoyShock* jc = GetJoyShockFromHandle(deviceId);
-	if (jc != nullptr) {
-		return jc->get_transformed_imu_state(jc->imu_state).gyroY;
-	}
-	return 0.0f;
-}
-float UJoyShockLibrary::JslGetGyroZ(int32 deviceId)
-{
-	FJoyShockLibrary4UnrealModule& JSL4UModule = FJoyShockLibrary4UnrealModule::GetInstance();
-	
-	std::shared_lock<std::shared_timed_mutex> lock(JSL4UModule._connectedLock);
-	
-	JoyShock* jc = GetJoyShockFromHandle(deviceId);
-	if (jc != nullptr) {
-		return jc->get_transformed_imu_state(jc->imu_state).gyroZ;
-	}
-	return 0.0f;
-}
-
-void UJoyShockLibrary::JslGetAndFlushAccumulatedGyro(int32 deviceId, float& gyroX, float& gyroY, float& gyroZ)
+void UJoyShockLibrary::GetAndFlushAccumulatedGyroForHandle(int32 deviceId, float& gyroX, float& gyroY, float& gyroZ)
 {
 	FJoyShockLibrary4UnrealModule& JSL4UModule = FJoyShockLibrary4UnrealModule::GetInstance();
 	
@@ -1303,12 +1165,12 @@ FVector UJoyShockLibrary::JSL4UGetAndClearAccumulatedGyro(int64 ConnectionId)
 	const bool bRotate = !GripUndo.IsIdentity() && IsGyroInLocalSpace(DeviceId);
 
 	float GyroX, GyroY, GyroZ;
-	JslGetAndFlushAccumulatedGyro(DeviceId, GyroY, GyroZ, GyroX);
+	GetAndFlushAccumulatedGyroForHandle(DeviceId, GyroY, GyroZ, GyroX);
 	const FVector Gyro(-GyroX, GyroY, -GyroZ);
 	return bRotate ? GripUndo.RotateVector(Gyro) : Gyro;
 }
 
-void UJoyShockLibrary::JslSetGyroSpace(int32 deviceId, int32 gyroSpace)
+void UJoyShockLibrary::SetGyroSpaceForHandle(int32 deviceId, int32 gyroSpace)
 {
 	FJoyShockLibrary4UnrealModule& JSL4UModule = FJoyShockLibrary4UnrealModule::GetInstance();
 
@@ -1332,81 +1194,7 @@ void UJoyShockLibrary::JslSetGyroSpace(int32 deviceId, int32 gyroSpace)
 void UJoyShockLibrary::JSL4USetGyroSpace(int64 ConnectionId, EJSL4UGyroSpace GyroSpace)
 {
 	const int32 DeviceId = HandleForOutput(ConnectionId, TEXT("JSL4USetGyroSpace"));
-	JslSetGyroSpace(DeviceId, static_cast<int32>(GyroSpace));
-}
-
-// get accelerometer
-float UJoyShockLibrary::JslGetAccelX(int32 deviceId)
-{
-	FJoyShockLibrary4UnrealModule& JSL4UModule = FJoyShockLibrary4UnrealModule::GetInstance();
-	
-	std::shared_lock<std::shared_timed_mutex> lock(JSL4UModule._connectedLock);
-	
-	JoyShock* jc = GetJoyShockFromHandle(deviceId);
-	if (jc != nullptr) {
-		return jc->imu_state.accelX;
-	}
-	return 0.0f;
-}
-float UJoyShockLibrary::JslGetAccelY(int32 deviceId)
-{
-	FJoyShockLibrary4UnrealModule& JSL4UModule = FJoyShockLibrary4UnrealModule::GetInstance();
-	
-	std::shared_lock<std::shared_timed_mutex> lock(JSL4UModule._connectedLock);
-	
-	JoyShock* jc = GetJoyShockFromHandle(deviceId);
-	if (jc != nullptr) {
-		return jc->imu_state.accelY;
-	}
-	return 0.0f;
-}
-float UJoyShockLibrary::JslGetAccelZ(int32 deviceId)
-{
-	FJoyShockLibrary4UnrealModule& JSL4UModule = FJoyShockLibrary4UnrealModule::GetInstance();
-	
-	std::shared_lock<std::shared_timed_mutex> lock(JSL4UModule._connectedLock);
-	
-	JoyShock* jc = GetJoyShockFromHandle(deviceId);
-	if (jc != nullptr) {
-		return jc->imu_state.accelZ;
-	}
-	return 0.0f;
-}
-
-// get touchpad
-int32 UJoyShockLibrary::JslGetTouchId(int32 deviceId, bool secondTouch)
-{
-	FJoyShockLibrary4UnrealModule& JSL4UModule = FJoyShockLibrary4UnrealModule::GetInstance();
-	
-	std::shared_lock<std::shared_timed_mutex> lock(JSL4UModule._connectedLock);
-	
-	JoyShock* jc = GetJoyShockFromHandle(deviceId);
-	if (jc != nullptr) {
-		if (!secondTouch) {
-			return jc->touch_state.t0Id;
-		}
-		else {
-			return jc->touch_state.t1Id;
-		}
-	}
-	return false;
-}
-bool UJoyShockLibrary::JslGetTouchDown(int32 deviceId, bool secondTouch)
-{
-	FJoyShockLibrary4UnrealModule& JSL4UModule = FJoyShockLibrary4UnrealModule::GetInstance();
-	
-	std::shared_lock<std::shared_timed_mutex> lock(JSL4UModule._connectedLock);
-	
-	JoyShock* jc = GetJoyShockFromHandle(deviceId);
-	if (jc != nullptr) {
-		if (!secondTouch) {
-			return jc->touch_state.t0Down;
-		}
-		else {
-			return jc->touch_state.t1Down;
-		}
-	}
-	return false;
+	SetGyroSpaceForHandle(DeviceId, static_cast<int32>(GyroSpace));
 }
 
 FVector2D UJoyShockLibrary::JSL4UGetTouchPosition(int64 ConnectionId, bool bSecondTouch)
@@ -1428,67 +1216,32 @@ FVector2D UJoyShockLibrary::JSL4UGetTouchPosition(int64 ConnectionId, bool bSeco
 	return FVector2D::ZeroVector;
 }
 
-float UJoyShockLibrary::JslGetTouchX(int32 deviceId, bool secondTouch)
-{
-	FJoyShockLibrary4UnrealModule& JSL4UModule = FJoyShockLibrary4UnrealModule::GetInstance();
-	
-	std::shared_lock<std::shared_timed_mutex> lock(JSL4UModule._connectedLock);
-	
-	JoyShock* jc = GetJoyShockFromHandle(deviceId);
-	if (jc != nullptr) {
-		if (!secondTouch) {
-			return jc->touch_state.t0X;
-		}
-		else {
-			return jc->touch_state.t1X;
-		}
-	}
-	return 0.0f;
-}
-float UJoyShockLibrary::JslGetTouchY(int32 deviceId, bool secondTouch)
-{
-	FJoyShockLibrary4UnrealModule& JSL4UModule = FJoyShockLibrary4UnrealModule::GetInstance();
-	
-	std::shared_lock<std::shared_timed_mutex> lock(JSL4UModule._connectedLock);
-	
-	JoyShock* jc = GetJoyShockFromHandle(deviceId);
-	if (jc != nullptr) {
-		if (!secondTouch) {
-			return jc->touch_state.t0Y;
-		}
-		else {
-			return jc->touch_state.t1Y;
-		}
-	}
-	return 0.0f;
-}
-
 // analog parameters have different resolutions depending on device
 float UJoyShockLibrary::JSL4UGetStickResolutionStep(int64 ConnectionId)
 {
 	const int32 DeviceId = HandleForConnection(ConnectionId);
-	return JslGetStickStep(DeviceId);
+	return GetStickStepForHandle(DeviceId);
 }
 
 float UJoyShockLibrary::JSL4UGetTriggerResolutionStep(int64 ConnectionId)
 {
 	const int32 DeviceId = HandleForConnection(ConnectionId);
-	return JslGetTriggerStep(DeviceId);
+	return GetTriggerStepForHandle(DeviceId);
 }
 
 float UJoyShockLibrary::JSL4UGetPollInterval(int64 ConnectionId)
 {
 	const int32 DeviceId = HandleForConnection(ConnectionId);
-	return JslGetPollRate(DeviceId);
+	return GetPollRateForHandle(DeviceId);
 }
 
 float UJoyShockLibrary::JSL4UGetSecondsSinceLastReport(int64 ConnectionId)
 {
 	const int32 DeviceId = HandleForConnection(ConnectionId);
-	return JslGetTimeSinceLastUpdate(DeviceId);
+	return GetTimeSinceLastUpdateForHandle(DeviceId);
 }
 
-float UJoyShockLibrary::JslGetStickStep(int32 deviceId)
+float UJoyShockLibrary::GetStickStepForHandle(int32 deviceId)
 {
 	FJoyShockLibrary4UnrealModule& JSL4UModule = FJoyShockLibrary4UnrealModule::GetInstance();
 	
@@ -1511,7 +1264,7 @@ float UJoyShockLibrary::JslGetStickStep(int32 deviceId)
 	}
 	return 0.0f;
 }
-float UJoyShockLibrary::JslGetTriggerStep(int32 deviceId)
+float UJoyShockLibrary::GetTriggerStepForHandle(int32 deviceId)
 {
 	FJoyShockLibrary4UnrealModule& JSL4UModule = FJoyShockLibrary4UnrealModule::GetInstance();
 	
@@ -1523,7 +1276,7 @@ float UJoyShockLibrary::JslGetTriggerStep(int32 deviceId)
 	}
 	return 1.0f;
 }
-float UJoyShockLibrary::JslGetPollRate(int32 deviceId)
+float UJoyShockLibrary::GetPollRateForHandle(int32 deviceId)
 {
 	FJoyShockLibrary4UnrealModule& JSL4UModule = FJoyShockLibrary4UnrealModule::GetInstance();
 	
@@ -1535,7 +1288,7 @@ float UJoyShockLibrary::JslGetPollRate(int32 deviceId)
 	}
 	return 0.0f;
 }
-float UJoyShockLibrary::JslGetTimeSinceLastUpdate(int32 deviceId)
+float UJoyShockLibrary::GetTimeSinceLastUpdateForHandle(int32 deviceId)
 {
 	FJoyShockLibrary4UnrealModule& JSL4UModule = FJoyShockLibrary4UnrealModule::GetInstance();
 	
@@ -1556,17 +1309,17 @@ float UJoyShockLibrary::JslGetTimeSinceLastUpdate(int32 deviceId)
 //   Unreal = (-jslZ, jslX, -jslY)
 // The calibration offset lives in the same space as the raw gyro readings, so it is converted the same way
 // -- otherwise an offset read back would not line up with the gyro values it is subtracted from.
-static FVector JSL4UGyroToUnreal(float JslX, float JslY, float JslZ)
+static FVector JSL4UGyroToUnreal(float RawX, float RawY, float RawZ)
 {
-	return FVector(-JslZ, JslX, -JslY);
+	return FVector(-RawZ, RawX, -RawY);
 }
 
 // Exact inverse of the above, for handing a value back to the library.
-static void JSL4UGyroFromUnreal(const FVector& InVector, float& OutJslX, float& OutJslY, float& OutJslZ)
+static void JSL4UGyroFromUnreal(const FVector& InVector, float& OutRawX, float& OutRawY, float& OutRawZ)
 {
-	OutJslX = InVector.Y;
-	OutJslY = -InVector.Z;
-	OutJslZ = -InVector.X;
+	OutRawX = InVector.Y;
+	OutRawY = -InVector.Z;
+	OutRawZ = -InVector.X;
 }
 
 void UJoyShockLibrary::JSL4USetGyroCalibrationMode(int64 ConnectionId, EJSL4UGyroCalibrationMode Mode)
@@ -1574,25 +1327,25 @@ void UJoyShockLibrary::JSL4USetGyroCalibrationMode(int64 ConnectionId, EJSL4UGyr
 	const int32 DeviceId = HandleForOutput(ConnectionId, TEXT("JSL4USetGyroCalibrationMode"));
 	// Automatic is the library's SensorFusion+Stillness pair: it decides for itself when the controller is
 	// being held still. Manual leaves it entirely to JSL4UStartManualGyroCalibration / JSL4UStopManualGyroCalibration.
-	JslSetAutomaticCalibration(DeviceId, Mode == EJSL4UGyroCalibrationMode::Automatic);
+	SetAutomaticCalibrationForHandle(DeviceId, Mode == EJSL4UGyroCalibrationMode::Automatic);
 }
 
 void UJoyShockLibrary::JSL4UStartManualGyroCalibration(int64 ConnectionId)
 {
 	const int32 DeviceId = HandleForOutput(ConnectionId, TEXT("JSL4UStartManualGyroCalibration"));
-	JslStartContinuousCalibration(DeviceId);
+	StartContinuousCalibrationForHandle(DeviceId);
 }
 
 void UJoyShockLibrary::JSL4UStopManualGyroCalibration(int64 ConnectionId)
 {
 	const int32 DeviceId = HandleForOutput(ConnectionId, TEXT("JSL4UStopManualGyroCalibration"));
-	JslPauseContinuousCalibration(DeviceId);
+	PauseContinuousCalibrationForHandle(DeviceId);
 }
 
 void UJoyShockLibrary::JSL4UResetGyroCalibration(int64 ConnectionId)
 {
 	const int32 DeviceId = HandleForOutput(ConnectionId, TEXT("JSL4UResetGyroCalibration"));
-	JslResetContinuousCalibration(DeviceId);
+	ResetContinuousCalibrationForHandle(DeviceId);
 }
 
 FJSL4UGyroCalibrationStatus UJoyShockLibrary::JSL4UGetGyroCalibrationStatus(int64 ConnectionId)
@@ -1623,20 +1376,20 @@ FJSL4UGyroCalibrationStatus UJoyShockLibrary::JSL4UGetGyroCalibrationStatus(int6
 FVector UJoyShockLibrary::JSL4UGetGyroCalibrationOffset(int64 ConnectionId)
 {
 	const int32 DeviceId = HandleForConnection(ConnectionId);
-	float JslX = 0.f, JslY = 0.f, JslZ = 0.f;
-	JslGetCalibrationOffset(DeviceId, JslX, JslY, JslZ);
-	return JSL4UGyroToUnreal(JslX, JslY, JslZ);
+	float RawX = 0.f, RawY = 0.f, RawZ = 0.f;
+	GetCalibrationOffsetForHandle(DeviceId, RawX, RawY, RawZ);
+	return JSL4UGyroToUnreal(RawX, RawY, RawZ);
 }
 
 void UJoyShockLibrary::JSL4USetGyroCalibrationOffset(int64 ConnectionId, FVector Offset)
 {
 	const int32 DeviceId = HandleForOutput(ConnectionId, TEXT("JSL4USetGyroCalibrationOffset"));
-	float JslX, JslY, JslZ;
-	JSL4UGyroFromUnreal(Offset, JslX, JslY, JslZ);
-	JslSetCalibrationOffset(DeviceId, JslX, JslY, JslZ);
+	float RawX, RawY, RawZ;
+	JSL4UGyroFromUnreal(Offset, RawX, RawY, RawZ);
+	SetCalibrationOffsetForHandle(DeviceId, RawX, RawY, RawZ);
 }
 
-void UJoyShockLibrary::JslResetContinuousCalibration(int32 deviceId)
+void UJoyShockLibrary::ResetContinuousCalibrationForHandle(int32 deviceId)
 {
 	FJoyShockLibrary4UnrealModule& JSL4UModule = FJoyShockLibrary4UnrealModule::GetInstance();
 	
@@ -1647,7 +1400,7 @@ void UJoyShockLibrary::JslResetContinuousCalibration(int32 deviceId)
 		jc->reset_continuous_calibration();
 	}
 }
-void UJoyShockLibrary::JslStartContinuousCalibration(int32 deviceId)
+void UJoyShockLibrary::StartContinuousCalibrationForHandle(int32 deviceId)
 {
 	FJoyShockLibrary4UnrealModule& JSL4UModule = FJoyShockLibrary4UnrealModule::GetInstance();
 	
@@ -1659,7 +1412,7 @@ void UJoyShockLibrary::JslStartContinuousCalibration(int32 deviceId)
 		jc->cue_motion_reset = true;
 	}
 }
-void UJoyShockLibrary::JslPauseContinuousCalibration(int32 deviceId)
+void UJoyShockLibrary::PauseContinuousCalibrationForHandle(int32 deviceId)
 {
 	FJoyShockLibrary4UnrealModule& JSL4UModule = FJoyShockLibrary4UnrealModule::GetInstance();
 	
@@ -1670,7 +1423,7 @@ void UJoyShockLibrary::JslPauseContinuousCalibration(int32 deviceId)
 		jc->use_continuous_calibration = false;
 	}
 }
-void UJoyShockLibrary::JslSetAutomaticCalibration(int32 deviceId, bool enabled)
+void UJoyShockLibrary::SetAutomaticCalibrationForHandle(int32 deviceId, bool enabled)
 {
 	FJoyShockLibrary4UnrealModule& JSL4UModule = FJoyShockLibrary4UnrealModule::GetInstance();	
 	
@@ -1683,7 +1436,7 @@ void UJoyShockLibrary::JslSetAutomaticCalibration(int32 deviceId, bool enabled)
 		jc->modifying_lock.Unlock();
 	}
 }
-void UJoyShockLibrary::JslGetCalibrationOffset(int32 deviceId, float& xOffset, float& yOffset, float& zOffset)
+void UJoyShockLibrary::GetCalibrationOffsetForHandle(int32 deviceId, float& xOffset, float& yOffset, float& zOffset)
 {
 	FJoyShockLibrary4UnrealModule& JSL4UModule = FJoyShockLibrary4UnrealModule::GetInstance();
 	
@@ -1698,7 +1451,7 @@ void UJoyShockLibrary::JslGetCalibrationOffset(int32 deviceId, float& xOffset, f
 	}
 }
 
-void UJoyShockLibrary::JslSetCalibrationOffset(int32 deviceId, float xOffset, float yOffset, float zOffset)
+void UJoyShockLibrary::SetCalibrationOffsetForHandle(int32 deviceId, float xOffset, float yOffset, float zOffset)
 {
 	FJoyShockLibrary4UnrealModule& JSL4UModule = FJoyShockLibrary4UnrealModule::GetInstance();
 	
@@ -1711,26 +1464,6 @@ void UJoyShockLibrary::JslSetCalibrationOffset(int32 deviceId, float xOffset, fl
 		jc->modifying_lock.Unlock();
 	}
 }
-FJSLAutoCalibration UJoyShockLibrary::JslGetAutoCalibrationStatus(int32 deviceId)
-{
-	FJoyShockLibrary4UnrealModule& JSL4UModule = FJoyShockLibrary4UnrealModule::GetInstance();
-
-	std::shared_lock<std::shared_timed_mutex> lock(JSL4UModule._connectedLock);
-	
-	JoyShock* jc = GetJoyShockFromHandle(deviceId);
-	if (jc != nullptr) {
-		FJSLAutoCalibration calibration;
-
-		calibration.autoCalibrationEnabled = jc->motion.GetCalibrationMode() != GamepadMotionHelpers::CalibrationMode::Manual;
-		calibration.confidence = jc->motion.GetAutoCalibrationConfidence();
-		calibration.isSteady = jc->motion.GetAutoCalibrationIsSteady();
-
-		return calibration;
-	}
-
-	return {};
-}
-
 FJSL4UControllerInfo UJoyShockLibrary::GetControllerInfoForHandle(int32 Handle)
 {
 	FJoyShockLibrary4UnrealModule& JSL4UModule = FJoyShockLibrary4UnrealModule::GetInstance();
@@ -1745,7 +1478,7 @@ FJSL4UControllerInfo UJoyShockLibrary::GetControllerInfoForHandle(int32 Handle)
 		{
 			return {}; // bIsConnected stays false
 		}
-		Info = JSL4UMakeControllerInfo(JSL4UReadJslSettings(jc), jc);
+		Info = JSL4UMakeControllerInfo(ReadControllerSettings(jc), jc);
 	}
 
 	// Same rule as the listing: a controller whose connect has not reached the game thread yet has no
@@ -1781,7 +1514,7 @@ FJSL4UControllerInfo UJoyShockLibrary::JSL4UGetControllerInfo(int64 ConnectionId
 }
 
 // super-getter for reading a whole lot of state at once
-FJSLSettings UJoyShockLibrary::JslGetControllerInfoAndSettings(int32 deviceId)
+FJSL4URawSettings UJoyShockLibrary::GetControllerSettingsForHandle(int32 deviceId)
 {
 	FJoyShockLibrary4UnrealModule& JSL4UModule = FJoyShockLibrary4UnrealModule::GetInstance();
 	
@@ -1789,13 +1522,13 @@ FJSLSettings UJoyShockLibrary::JslGetControllerInfoAndSettings(int32 deviceId)
 	
 	JoyShock* jc = GetJoyShockFromHandle(deviceId);
 	if (jc != nullptr) {
-		return JSL4UReadJslSettings(jc);
+		return ReadControllerSettings(jc);
 	}
 	return {};
 }
 
 // what split type of controller is this?
-int32 UJoyShockLibrary::JslGetControllerType(int32 deviceId)
+int32 UJoyShockLibrary::GetControllerTypeForHandle(int32 deviceId)
 {
 	FJoyShockLibrary4UnrealModule& JSL4UModule = FJoyShockLibrary4UnrealModule::GetInstance();
 	
@@ -1817,42 +1550,8 @@ int32 UJoyShockLibrary::JslGetControllerType(int32 deviceId)
 	return 0;
 }
 
-// what split type of controller is this?
-int32 UJoyShockLibrary::JslGetControllerSplitType(int32 deviceId)
-{
-	FJoyShockLibrary4UnrealModule& JSL4UModule = FJoyShockLibrary4UnrealModule::GetInstance();
-
-	std::shared_lock<std::shared_timed_mutex> lock(JSL4UModule._connectedLock);
-	
-	JoyShock* jc = GetJoyShockFromHandle(deviceId);
-	if (jc != nullptr) {
-		return jc->left_right;
-	}
-	return 0;
-}
-
-// what colour is the controller (not all controllers support this; those that don't will report white)
-FColor UJoyShockLibrary::JslGetControllerColor(int32 InDeviceId)
-{
-	FJoyShockLibrary4UnrealModule& JSL4UModule = FJoyShockLibrary4UnrealModule::GetInstance();
-	
-	std::shared_lock<std::shared_timed_mutex> lock(JSL4UModule._connectedLock);
-	
-	// this just reports body colour. Switch controllers also give buttons colour, and in Pro's case, left and right grips
-	JoyShock* jc = GetJoyShockFromHandle(InDeviceId);
-	if (jc != nullptr) {
-		// body_colour is packed 0xRRGGBB, so it goes into FColor as (R, G, B) -- see the note in
-		// JSL4UMakeControllerInfo; this was reversed and reported a blue controller as red.
-		uint32 RGBColor = jc->body_colour;
-		uint8 Red = (RGBColor >> 16) & 0xff;
-		uint8 Green = (RGBColor >> 8) & 0xff;
-		uint8 Blue = RGBColor & 0xff;
-		return FColor(Red, Green, Blue);
-	}
-	return FColor::White;
-}
-
-// Shared by JSL4USetLightColor and the legacy JslSetLightColor, so the two cannot drift.
+// Takes a device handle rather than a connection id, so the assignment code can drive a controller's
+// light before the game has a connection id for it.
 static void SetLightColorRaw(int32 DeviceHandle, FColor Color)
 {
 	FJoyShockLibrary4UnrealModule& JSL4UModule = FJoyShockLibrary4UnrealModule::GetInstance();
@@ -1876,13 +1575,7 @@ void UJoyShockLibrary::JSL4USetLightColor(int64 ConnectionId, FColor Color)
 	SetLightColorRaw(HandleForOutput(ConnectionId, TEXT("JSL4USetLightColor")), Color);
 }
 
-// set controller light colour (not all controllers have a light whose colour can be set, but that just means nothing will be done when this is called -- no harm)
-void UJoyShockLibrary::JslSetLightColor(int32 InDeviceId, FColor InColor)
-{
-	SetLightColorRaw(InDeviceId, InColor);
-}
-
-// Shared by JSL4USetControllerRumble and the legacy JslSetRumble. Every controller family now works the same way:
+// Takes a device handle rather than a connection id. Every controller family works the same way:
 // store the requested intensities and let that device's polling thread do the writing. What the poll thread
 // then does with them differs (Switch 1 re-sends to fight the actuator's decay, Switch 2 retriggers its
 // one-shot preset, DualShock 4 / DualSense send once per change), but no HID write happens on this thread.
@@ -1995,12 +1688,6 @@ void UJoyShockLibrary::JSL4USetControllerRumble(int64 ConnectionId, float SmallR
 		FMath::RoundToInt(FMath::Clamp(BigRumble, 0.0f, 1.0f) * 255.0f));
 }
 
-// set controller rumble
-void UJoyShockLibrary::JslSetRumble(int32 deviceId, int32 smallRumble, int32 bigRumble)
-{
-	SetRumbleRaw(deviceId, smallRumble, bigRumble);
-}
-
 FJSL4USwitch2Sensors UJoyShockLibrary::JSL4UGetSwitch2Sensors(int64 ConnectionId)
 {
 	FJSL4USwitch2Sensors Sensors;
@@ -2052,7 +1739,7 @@ FVector2D UJoyShockLibrary::JSL4UConsumeSwitch2MouseDelta(int64 ConnectionId)
 	return FVector2D(DeltaX, DeltaY);
 }
 
-void UJoyShockLibrary::JslConsumeMouseAxisDelta(int32 deviceId, float& outDeltaX, float& outDeltaY)
+void UJoyShockLibrary::ConsumeMouseAxisDeltaForHandle(int32 deviceId, float& outDeltaX, float& outDeltaY)
 {
 	outDeltaX = 0.f;
 	outDeltaY = 0.f;
@@ -2139,8 +1826,3 @@ void UJoyShockLibrary::JSL4UGetSwitchPlayerLedPattern(int32 PlayerNumber,
 	bLed4 = (Mask & 0x08) != 0;
 }
 
-// set controller player number indicator (not all controllers have a number indicator which can be set, but that just means nothing will be done when this is called -- no harm)
-void UJoyShockLibrary::JslSetPlayerNumber(int32 deviceId, int32 number)
-{
-	SetPlayerIndicatorForHandle(deviceId, number);
-}

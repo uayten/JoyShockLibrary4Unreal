@@ -1,6 +1,6 @@
 // JoyShockEnumeration.cpp - Finding controllers and opening them.
 //
-// One pass of JslConnectDevices walks every HID device the platform reports, decides which are controllers
+// One pass of ConnectDevices walks every HID device the platform reports, decides which are controllers
 // this plugin drives, works out whether each is one it has seen before (by MAC where readable, by HID path
 // otherwise), opens it, runs its family's init handshake and starts its polling thread.
 //
@@ -51,7 +51,7 @@ void UJoyShockLibrary::JSL4URefreshControllers()
 {
 	// Hands the scan to the module's background worker rather than enumerating here. Enumeration opens and
 	// initialises HID devices, which blocks -- doing it on the calling thread is what makes the legacy
-	// JslConnectDevices node freeze the game when a Blueprint calls it.
+	// ConnectDevices node freeze the game when a Blueprint calls it.
 	FJoyShockLibrary4UnrealModule::GetInstance().RequestConnectDevices();
 }
 
@@ -336,7 +336,7 @@ static void bring_devices_online(const TArray<JoyShock*>& DevicesToBringOnline)
 			//
 			// That was survivable only while nothing else touched the handle. Once a controller could move
 			// between transports, the polling thread would close that handle mid-exchange, the enumeration
-			// thread's read would never return, and the lock it holds would freeze every Jsl* getter on the
+			// thread's read would never return, and the lock it holds would freeze every device getter on the
 			// game thread -- an editor hang lasting until the controller was physically unplugged.
 			jc->initialised = true;
 		} // dualsense
@@ -345,9 +345,9 @@ static void bring_devices_online(const TArray<JoyShock*>& DevicesToBringOnline)
 			jc->initialised = true;
 		} // charging grip
 		// init_usb/init_bt don't set this themselves, and it has to be set on success: without it a Switch
-		// controller is never considered initialised, so every JslConnectDevices call re-runs init (blocking
+		// controller is never considered initialised, so every ConnectDevices call re-runs init (blocking
 		// HID I/O while holding _connectedLock) on every already-connected one -- which freezes the game
-		// thread's Jsl* getters during play.
+		// thread's device getters during play.
 		//
 		// It equally has to NOT be set on failure. Marking a failed init as initialised is silent and
 		// permanent: init is where vibration and the IMU get switched on, so the controller streams buttons
@@ -388,7 +388,7 @@ static void bring_devices_online(const TArray<JoyShock*>& DevicesToBringOnline)
 	}
 }
 
-int32 UJoyShockLibrary::JslConnectDevices()
+int32 UJoyShockLibrary::ConnectDevices()
 {
 	FJoyShockLibrary4UnrealModule& JSL4UModule = FJoyShockLibrary4UnrealModule::GetInstance();
 
@@ -399,7 +399,7 @@ int32 UJoyShockLibrary::JslConnectDevices()
 	// Enumerate and print the HID devices on the system
 
 	// Discovery is split into three phases so that NO blocking HID I/O ever happens while holding
-	// _connectedLock. The game thread's Jsl* getters take that lock shared, so any wedged I/O under it --
+	// _connectedLock. The game thread's device getters take that lock shared, so any wedged I/O under it --
 	// hid_get_feature_report has no timeout, and a freshly replugged device can leave one hanging until
 	// the cable is pulled -- freezes the whole editor, which is exactly what repeated DS4 replugs did.
 	//

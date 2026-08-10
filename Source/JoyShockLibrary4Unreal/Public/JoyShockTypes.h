@@ -333,21 +333,6 @@ struct JOYSHOCKLIBRARY4UNREAL_API FJSL4UTouchState
 	FJSL4USingleTouchState SecondaryTouch = {};
 };
 
-USTRUCT(BlueprintType)
-struct JOYSHOCKLIBRARY4UNREAL_API FJSLAutoCalibration // typedef struct JSL_AUTO_CALIBRATION {
-{
-	GENERATED_BODY()
-	
-	UPROPERTY(BlueprintReadOnly)
-	float confidence = 0.f;
-	
-	UPROPERTY(BlueprintReadOnly)
-	bool autoCalibrationEnabled = false;
-	
-	UPROPERTY(BlueprintReadOnly)
-	bool isSteady = false;
-}; // JSL_AUTO_CALIBRATION;
-
 /**
  * Which model a controller is. Ordered by family rather than by history, so a Switch node reads the way a
  * controller-select screen does; the numbers behind the names are not meaningful and nothing outside this
@@ -612,7 +597,7 @@ struct JOYSHOCKLIBRARY4UNREAL_API FJSL4UControllerInfo // typedef struct JSL_SET
 };
 
 USTRUCT(BlueprintType)
-struct JOYSHOCKLIBRARY4UNREAL_API FJSLSettings // typedef struct JSL_SETTINGS {
+struct JOYSHOCKLIBRARY4UNREAL_API FJSL4URawSettings // typedef struct JSL_SETTINGS {
 {
 	GENERATED_BODY()
 

@@ -80,7 +80,7 @@ public:
 	// The controller's own MAC address, lower-case and without separators, or empty when it could not be
 	// determined. This is the only thing that identifies a physical controller across transports: plugging
 	// a USB cable into a controller that is already paired over Bluetooth enumerates a SECOND HID device
-	// with its own path, which the plugin would otherwise treat as a second controller. See JslConnectDevices.
+	// with its own path, which the plugin would otherwise treat as a second controller. See ConnectDevices.
 	FString mac_address;
 
 	// The key this device's intHandle was reserved under: its MAC when one could be read, otherwise the HID

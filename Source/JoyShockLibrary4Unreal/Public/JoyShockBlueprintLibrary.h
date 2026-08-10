@@ -252,7 +252,7 @@ public:
 		meta = (DisplayName = "JSL4U Refresh Controllers", ToolTip = "Requests an asynchronous controller rescan. Normal device changes are detected automatically, so this is only needed when the platform sends no notification."))
 	static void JSL4URefreshControllers();
 
-	static int32 JslConnectDevices();
+	static int32 ConnectDevices();
 
 	/**
 	 * Fills OutDeviceHandleArray with the device id of every connected controller and returns how many
@@ -263,7 +263,7 @@ public:
 	 * For new Blueprints, prefer JSL4UGetConnectedControllers: it names each controller by Connection Id
 	 * plus each controller's type, player slot and settings, so you rarely need this raw handle list.
 	 */
-	static int32 JslGetConnectedDeviceHandles(/* int* */ TArray<int32>& OutDeviceHandleArray); //, int32 InSize);
+	static int32 GetConnectedDeviceHandles(/* int* */ TArray<int32>& OutDeviceHandleArray); //, int32 InSize);
 
 	/**
 	 * Whether this connection id currently refers to a connected, working controller.
@@ -282,8 +282,6 @@ public:
 	UFUNCTION(BlueprintPure, Category = "JoyShock Library|Controllers",
 		meta = (DisplayName = "JSL4U Is Controller Connected", ToolTip = "Returns true only when Connection Id currently identifies a connected controller. Answers for every controller Unreal accepts, not only this plugin's."))
 	static bool JSL4UIsControllerConnected(int64 ConnectionId);
-
-	static bool JslStillConnected(int32 deviceId);
 
 	// get buttons as bits in the following order, using North South East West to name face buttons to avoid ambiguity between Xbox and Nintendo layouts:
 	// 0x00001: up
@@ -308,13 +306,13 @@ public:
 	// 0x40000: SL
 	// 0x80000: SR
 	// These are the best way to get all the buttons/triggers/sticks, gyro/accelerometer (IMU), orientation/acceleration/gravity (Motion), or touchpad
-	static FJoyShockState JslGetSimpleState(int32 deviceId);
+	static FJoyShockState GetSimpleStateForHandle(int32 deviceId);
 
 	UFUNCTION(BlueprintPure, Category = "JoyShock Library|Input State",
 		meta = (DisplayName = "JSL4U Get Controller State", ToolTip = "Returns one controller's current buttons, sticks and triggers in Unreal-friendly types. Reads that device directly, so it answers before the controller belongs to any player -- which is what a controller-assignment screen needs (\"press a button on the pad you want to be player 2\"). For gameplay, bind Enhanced Input instead: it is per-player, and these same inputs already reach it."))
 	static FJSL4UJoyShockState JSL4UGetControllerState(int64 ConnectionId);
 	
-	static FIMUState JslGetIMUState(int32 deviceId);
+	static FIMUState GetRawIMUStateForHandle(int32 deviceId);
 
 	UFUNCTION(BlueprintPure, Category = "JoyShock Library|Motion",
 		meta = (DisplayName = "JSL4U Get IMU State", ToolTip = "Returns one controller's gyroscope and acceleration in Unreal axes, after applying the selected gyro space. Reads that device directly, so it answers before the controller belongs to any player -- for assignment screens, calibration UI and diagnostics. For gameplay, this plugin already reports motion to Unreal's motion input, so bind Tilt / Rotation Rate / Gravity / Acceleration in Enhanced Input instead. Returns zeroes for a controller without motion sensors -- check Has Motion Sensors on the controller info."))
@@ -324,7 +322,7 @@ public:
 		meta = (DisplayName = "JSL4U Get Raw IMU State", ToolTip = "Returns one controller's untransformed gyroscope and acceleration in Unreal axes, ignoring the selected gyro space. Use Get IMU State unless you specifically need the untransformed reading."))
 	static FJSL4UIMUState JSL4UGetRawIMUState(int64 ConnectionId);
 	
-	static FMotionState JslGetMotionState(int32 deviceId);
+	static FMotionState GetRawMotionStateForHandle(int32 deviceId);
 
 	UFUNCTION(BlueprintPure, Category = "JoyShock Library|Motion",
 		meta = (DisplayName = "JSL4U Get Motion State", ToolTip = "Returns one controller's processed orientation, acceleration and gravity in Unreal coordinates. Reads that device directly, so it answers before the controller belongs to any player. For gameplay, bind Enhanced Input's motion inputs instead. Returns zeroes for a controller without motion sensors -- check Has Motion Sensors on the controller info."))
@@ -334,7 +332,7 @@ public:
 		meta = (DisplayName = "JSL4U Get Raw Motion State", ToolTip = "Returns one controller's untransformed orientation, acceleration and gravity from the motion processor. Use Get Motion State unless you specifically need the untransformed reading."))
 	static FJSL4UMotionState JSL4UGetRawMotionState(int64 ConnectionId);
 
-	static FTouchState JslGetTouchState(int32 deviceId, bool previous = false);
+	static FTouchState GetTouchStateForHandle(int32 deviceId, bool previous = false);
 
 	UFUNCTION(BlueprintPure, Category = "JoyShock Library|Touchpad",
 		meta = (DisplayName = "JSL4U Get Touch State", ToolTip = "Returns one controller's two touch contacts. Enable Previous to read the preceding report instead of the current one. Reads that device directly, so it answers before the controller belongs to any player. For gameplay, this plugin already reports the touchpad as gamepad axes, so bind TouchPad 1 / TouchPad 2 in Enhanced Input instead. Returns nothing touched for a controller without a touchpad -- check Has Touchpad on the controller info."))
@@ -347,9 +345,7 @@ public:
 		meta = (DisplayName = "JSL4U Get Touchpad Size", ToolTip = "Returns the touchpad's native width and height, or zero for a controller without a touchpad. Touch State positions are normalized from 0 to 1."))
 	static FVector2D JSL4UGetTouchpadSize(int64 ConnectionId);
 
-	static bool JslGetTouchpadDimension(int32 deviceId, int32 &sizeX, int32 &sizeY);
-
-	static int32 JslGetButtons(int32 deviceId);
+	static bool GetTouchpadDimensionForHandle(int32 deviceId, int32 &sizeX, int32 &sizeY);
 
 	// get thumbsticks
 
@@ -357,66 +353,31 @@ public:
 		meta = (DisplayName = "JSL4U Get Left Stick", ToolTip = "Returns one controller's current left-stick position, from -1 to 1. Reads that device directly, so it answers before the controller belongs to any player -- for assignment screens and diagnostics. For gameplay, bind Enhanced Input instead."))
 	static FVector2D JSL4UGetLeftStick(int64 ConnectionId);
 	
-	static float JslGetLeftX(int32 deviceId);
-
-	static float JslGetLeftY(int32 deviceId);
-
 	UFUNCTION(BlueprintPure, Category = "JoyShock Library|Input State",
 		meta = (DisplayName = "JSL4U Get Right Stick", ToolTip = "Returns one controller's current right-stick position, from -1 to 1. Reads that device directly, so it answers before the controller belongs to any player -- for assignment screens and diagnostics. For gameplay, bind Enhanced Input instead."))
 	static FVector2D JSL4UGetRightStick(int64 ConnectionId);
 
-	static float JslGetRightX(int32 deviceId);
-
-	static float JslGetRightY(int32 deviceId);
-
-	// get triggers. Switch controllers don't have analogue triggers, but will report 0.0 or 1.0 so they can be used in the same way as others
-	static float JslGetLeftTrigger(int32 deviceId);
-
-	static float JslGetRightTrigger(int32 deviceId);
-
-	// get gyro
-	static float JslGetGyroX(int32 deviceId);
-
-	static float JslGetGyroY(int32 deviceId);
-
-	static float JslGetGyroZ(int32 deviceId);
-
 	// get accumulated average gyro since this function was last called or last flushed values
-	static void JslGetAndFlushAccumulatedGyro(int32 deviceId, float& gyroX, float& gyroY, float& gyroZ);
+	static void GetAndFlushAccumulatedGyroForHandle(int32 deviceId, float& gyroX, float& gyroY, float& gyroZ);
 
 	UFUNCTION(BlueprintCallable, Category = "JoyShock Library|Motion",
 		meta = (DisplayName = "JSL4U Get And Clear Accumulated Gyro", ToolTip = "Returns the accumulated gyro rotation since the previous call, then clears the accumulator. Values use Unreal axes."))
 	static FVector JSL4UGetAndClearAccumulatedGyro(int64 ConnectionId);
 
-	// set gyro space. JslGetGyro*, JslGetAndFlushAccumulatedGyro, JslGetIMUState, and the IMU_STATEs reported in the callback functions will use one of 3 transformations:
+	// Sets how gyro input is transformed. GetAndFlushAccumulatedGyroForHandle, GetRawIMUStateForHandle and the
+	// IMU states reported through the poll callback all honour it. One of 3 transformations:
 	// 0 = local space -> no transformation is done on gyro input
 	// 1 = world space -> gyro input is transformed based on the calculated gravity direction to account for the player's preferred controller orientation
 	// 2 = player space -> a simple combination of local and world space that is as adaptive as world space but is as robust as local space
-	static void JslSetGyroSpace(int32 deviceId, int32 gyroSpace);
+	static void SetGyroSpaceForHandle(int32 deviceId, int32 gyroSpace);
 
 	UFUNCTION(BlueprintCallable, Category = "JoyShock Library|Motion",
 		meta = (DisplayName = "JSL4U Set Gyro Space", ToolTip = "TYPICAL USE: Player Space, the usual choice for gyro aiming -- as adaptive as world space and as robust as local space. Local Space is the untransformed controller frame; World Space corrects by the measured gravity direction so yaw is always around the real vertical. Worth exposing as a player preference in a game that aims with gyro."))
 	static void JSL4USetGyroSpace(int64 ConnectionId, EJSL4UGyroSpace GyroSpace);
 
-	// get accelerometer
-	static float JslGetAccelX(int32 deviceId);
-
-	static float JslGetAccelY(int32 deviceId);
-
-	static float JslGetAccelZ(int32 deviceId);
-
-	// get touchpad
-	static int32 JslGetTouchId(int32 deviceId, bool secondTouch = false);
-
-	static bool JslGetTouchDown(int32 deviceId, bool secondTouch = false);
-
 	UFUNCTION(BlueprintPure, Category = "JoyShock Library|Touchpad",
 		meta = (DisplayName = "JSL4U Get Touch Position", ToolTip = "Returns the selected touch contact's normalized position from 0 to 1. Use Get Touch State when you also need contact id or down state."))
 	static FVector2D JSL4UGetTouchPosition(int64 ConnectionId, bool bSecondTouch = false);
-
-	static float JslGetTouchX(int32 deviceId, bool secondTouch = false);
-
-	static float JslGetTouchY(int32 deviceId, bool secondTouch = false);
 
 	// analog parameters have different resolutions depending on device
 	// The smallest change this controller can report on a stick axis. Sticks are 8-bit on a DualShock 4 and
@@ -444,13 +405,13 @@ public:
 		meta = (DisplayName = "JSL4U Get Seconds Since Last Report", ToolTip = "Returns seconds since the controller last delivered an input report. A steadily increasing value indicates the device has stopped reporting."))
 	static float JSL4UGetSecondsSinceLastReport(int64 ConnectionId);
 
-	static float JslGetStickStep(int32 deviceId);
+	static float GetStickStepForHandle(int32 deviceId);
 
-	static float JslGetTriggerStep(int32 deviceId);
+	static float GetTriggerStepForHandle(int32 deviceId);
 
-	static float JslGetPollRate(int32 deviceId);
+	static float GetPollRateForHandle(int32 deviceId);
 
-	static float JslGetTimeSinceLastUpdate(int32 deviceId);
+	static float GetTimeSinceLastUpdateForHandle(int32 deviceId);
 
 	// --- Gyro calibration -------------------------------------------------------------------------------
 	//
@@ -509,19 +470,17 @@ public:
 	static void JSL4USetGyroCalibrationOffset(int64 ConnectionId, FVector Offset);
 
 	// calibration
-	static void JslResetContinuousCalibration(int32 deviceId);
+	static void ResetContinuousCalibrationForHandle(int32 deviceId);
 
-	static void JslStartContinuousCalibration(int32 deviceId);
+	static void StartContinuousCalibrationForHandle(int32 deviceId);
 
-	static void JslPauseContinuousCalibration(int32 deviceId);
+	static void PauseContinuousCalibrationForHandle(int32 deviceId);
 
-	static void JslSetAutomaticCalibration(int32 deviceId, bool enabled);
+	static void SetAutomaticCalibrationForHandle(int32 deviceId, bool enabled);
 
-	static void JslGetCalibrationOffset(int32 deviceId, float& xOffset, float& yOffset, float& zOffset);
+	static void GetCalibrationOffsetForHandle(int32 deviceId, float& xOffset, float& yOffset, float& zOffset);
 
-	static void JslSetCalibrationOffset(int32 deviceId, float xOffset, float yOffset, float zOffset);
-
-	static FJSLAutoCalibration JslGetAutoCalibrationStatus(int32 deviceId);
+	static void SetCalibrationOffsetForHandle(int32 deviceId, float xOffset, float yOffset, float zOffset);
 
 	// Everything the plugin knows about one controller. Returns a struct with bIsConnected == false if
 	// no controller has this connection id.
@@ -530,22 +489,16 @@ public:
 	static FJSL4UControllerInfo JSL4UGetControllerInfo(int64 ConnectionId);
 
 	// super-getter for reading a whole lot of state at once
-	static FJSLSettings JslGetControllerInfoAndSettings(int32 deviceId);
+	static FJSL4URawSettings GetControllerSettingsForHandle(int32 deviceId);
 
 	// what kind of controller is this?
-	static int32 JslGetControllerType(int32 deviceId);
+	static int32 GetControllerTypeForHandle(int32 deviceId);
 
 	// The mouse sensor's movement since the engine's input axes were last given it, in sensor counts. Not a
 	// Blueprint node: this is the feed behind the JoyShock Mouse axis keys, and it keeps its own baseline
 	// so a game reading Consume Switch 2 Mouse Delta and a game binding the axis key see the same motion
 	// rather than half of it each. Zero for a controller without the sensor.
-	static void JslConsumeMouseAxisDelta(int32 deviceId, float& outDeltaX, float& outDeltaY);
-
-	// is this a left, right, or full controller?
-	static int32 JslGetControllerSplitType(int32 deviceId);
-
-	// what colour is the controller (not all controllers support this; those that don't will report white)
-	static FColor JslGetControllerColor(int32 InDeviceId);
+	static void ConsumeMouseAxisDeltaForHandle(int32 deviceId, float& outDeltaX, float& outDeltaY);
 
 	/**
 	 * Sets the controller's light: the DualShock 4's light bar or the DualSense's. Controllers without a
@@ -692,14 +645,5 @@ public:
 		bool& bLed1, bool& bLed2, bool& bLed3, bool& bLed4);
 
 	// --- Low-level C++ compatibility helpers. Not exposed to Blueprint. ---
-
-	// set controller light colour (not all controllers have a light whose colour can be set, but that just means nothing will be done when this is called -- no harm)
-	static void JslSetLightColor(int32 InDeviceId, FColor InColor);
-
-	// set controller rumble, 0-255 per motor. See JSL4USetControllerRumble for the full description.
-	static void JslSetRumble(int32 deviceId, int32 smallRumble, int32 bigRumble);
-
-	// set controller player number indicator (not all controllers have a number indicator which can be set, but that just means nothing will be done when this is called -- no harm)
-	static void JslSetPlayerNumber(int32 deviceId, int32 number);
 
 };

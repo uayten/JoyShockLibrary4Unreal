@@ -23,4 +23,4 @@
 // which is the only place it belongs: a game has no reason to tear the library down while it is running.
 // Returns false if a thread was still running when the wait ran out, in which case its device is left alive
 // on purpose and the hidapi library must not be unloaded.
-bool JslShutdownAllDevices();
+bool ShutdownAllDevices();

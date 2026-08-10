@@ -118,7 +118,7 @@ FJoyShockInterface::FJoyShockInterface(const TSharedRef<FGenericApplicationMessa
 	// Pick up any devices that were already enumerated before this interface (and its OnConnected binding)
 	// existed -- e.g. a WM_DEVICECHANGE that fired between module startup and interface creation.
 	TArray<int32> ExistingHandles;
-	UJoyShockLibrary::JslGetConnectedDeviceHandles(ExistingHandles);
+	UJoyShockLibrary::GetConnectedDeviceHandles(ExistingHandles);
 	for (int32 ExistingHandle : ExistingHandles)
 	{
 		PendingConnects.Enqueue(ExistingHandle);
@@ -214,7 +214,7 @@ void FJoyShockInterface::InitializeAdditionalKeys()
 FString FJoyShockInterface::GetDeviceName(int32 InControllerId)
 {
 	// TODO: Add Player Number to Device Name
-	int32 ControllerType = UJoyShockLibrary::JslGetControllerType(InControllerId);
+	int32 ControllerType = UJoyShockLibrary::GetControllerTypeForHandle(InControllerId);
 
 	switch (ControllerType)
 	{
@@ -240,7 +240,7 @@ FString FJoyShockInterface::GetDeviceName(int32 InControllerId)
 }
 FName FJoyShockInterface::GetHardwareDeviceIdentifier(int32 InControllerId)
 {
-	switch (UJoyShockLibrary::JslGetControllerType(InControllerId))
+	switch (UJoyShockLibrary::GetControllerTypeForHandle(InControllerId))
 	{
 	case JS_TYPE_JOYCON_LEFT:
 		return TEXT("JoyConLeft");
@@ -400,7 +400,7 @@ void FJoyShockInterface::SendControllerEvents()
 					ControllerState.bAnalogWasJoyConHorizontal = ControllerState.bJoyConHorizontal;
 					ControllerState.bButtonsWereJoyConHorizontal = ControllerState.bJoyConHorizontal;
 					// Copied out rather than dispatched here: ProcessIMUState reads the motion state through
-					// the Jsl* getters, and doing that under SimpleStateLock would nest this lock inside the
+					// the device getters, and doing that under SimpleStateLock would nest this lock inside the
 					// library's for no reason.
 					CurrentIMUState = ControllerState.IMUState;
 				}
@@ -421,7 +421,7 @@ void FJoyShockInterface::SendControllerEvents()
 					{
 						float MouseDeltaX = 0.f;
 						float MouseDeltaY = 0.f;
-						UJoyShockLibrary::JslConsumeMouseAxisDelta(DeviceHandle, MouseDeltaX, MouseDeltaY);
+						UJoyShockLibrary::ConsumeMouseAxisDeltaForHandle(DeviceHandle, MouseDeltaX, MouseDeltaY);
 
 						// Y up, like every other axis this plugin publishes: the sensor counts downwards
 						// from the top-left, as a screen does.
