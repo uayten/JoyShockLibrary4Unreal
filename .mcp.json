@@ -1,13 +1,10 @@
 {
   "mcpServers": {
     "code-review-graph": {
-      "command": "C:\\Users\\ant7a\\AppData\\Local\\Programs\\Python\\Python312\\python.exe",
+      "command": "code-review-graph",
       "args": [
-        "-m",
-        "code_review_graph",
         "serve"
       ],
-      "cwd": "C:\\Unreal Projects\\BossRush\\Plugins\\JoyShockLibrary4Unreal",
       "type": "stdio"
     }
   }
