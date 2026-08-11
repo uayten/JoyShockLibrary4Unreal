@@ -340,10 +340,16 @@ static void send_pending_output_reports(JoyShock* jc, FPolledOutputState& out)
 //
 // Split out of pollIndividualLoop, whose loop this runs after. Nothing here can be reordered lightly --
 // the comments on each step say what breaks.
-static void finish_polling_thread(JoyShock* jc, bool bReceivedInput, bool lockedThread, int numTimeOuts)
+//
+// The module arrives as an argument, resolved once when the thread started, and must NOT be looked up here
+// with GetInstance(): this function runs precisely when the thread is being retired, which is what module
+// shutdown does to every controller at once. FModuleManager::UnloadModule clears the module's "ready" flag
+// BEFORE calling ShutdownModule, and from any thread other than the game thread LoadModuleChecked then
+// fails its own check -- so a lookup here kills the editor on close, on a thread whose call stack says
+// nothing about why.
+static void finish_polling_thread(JoyShock* jc, FJoyShockLibrary4UnrealModule& JSL4UModule,
+	bool bReceivedInput, bool lockedThread, int numTimeOuts)
 {
-	FJoyShockLibrary4UnrealModule& JSL4UModule = FJoyShockLibrary4UnrealModule::GetInstance();
-
 	if (jc->cancel_thread)
 	{
 		UE_LOG(LogJoyShockLibrary, Log, TEXT("\tending cancelled thread\n"));
@@ -830,5 +836,5 @@ void pollIndividualLoop(JoyShock *jc) {
 		}
 	}
 
-	finish_polling_thread(jc, bReceivedInput, lockedThread, numTimeOuts);
+	finish_polling_thread(jc, JSL4UModule, bReceivedInput, lockedThread, numTimeOuts);
 }

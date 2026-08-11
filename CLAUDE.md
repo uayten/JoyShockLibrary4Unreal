@@ -66,6 +66,15 @@ generation counter bumped by each `JSL4USetHomeLight` call, so one call means ex
 controller is quiet, do nothing — `hid_read` returning 0 means present-but-silent and recovers for free,
 while -1 is the genuine disconnect that reconnects cleanly.
 
+**No background thread may resolve the module through `FModuleManager` — `GetInstance()` included.** A
+polling or enumeration thread must be handed the module reference its caller already holds, resolved once
+when the thread started. `FModuleManager::UnloadModule` clears the module's ready flag *before* calling
+`ShutdownModule`, and off the game thread `GetModule` then answers null, so `LoadModuleChecked` fails its
+own check — during exactly the window in which module shutdown is waiting for those threads to stop. The
+resulting crash reports a three-frame call stack that names nothing but `GetInstance`. Splitting a
+function out of a polling loop is how this gets reintroduced: the loop resolved the module once at the
+top, and the new function looks like it may simply ask again.
+
 **Never broadcast a game-visible event straight from `IPlatformInputDeviceMapper`'s connection delegate.**
 It looks like a neutral engine signal, but the thing raising it is this plugin's own
 `Internal_MapInputDeviceToUser` inside `RefreshPlayerAssignments()` — so it fires re-entrantly, inside our
