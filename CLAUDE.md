@@ -67,14 +67,19 @@ generation counter bumped by each `JSL4USetHomeLight` call, so one call means ex
 controller is quiet, do nothing — `hid_read` returning 0 means present-but-silent and recovers for free,
 while -1 is the genuine disconnect that reconnects cleanly.
 
-**No background thread may resolve the module through `FModuleManager` — `GetInstance()` included.** A
-polling or enumeration thread must be handed the module reference its caller already holds, resolved once
-when the thread started. `FModuleManager::UnloadModule` clears the module's ready flag *before* calling
-`ShutdownModule`, and off the game thread `GetModule` then answers null, so `LoadModuleChecked` fails its
-own check — during exactly the window in which module shutdown is waiting for those threads to stop. The
-resulting crash reports a three-frame call stack that names nothing but `GetInstance`. Splitting a
-function out of a polling loop is how this gets reintroduced: the loop resolved the module once at the
-top, and the new function looks like it may simply ask again.
+**`GetInstance()` must keep answering from the module's own stored pointer, never from `FModuleManager`.**
+It looks like a function begging to be simplified back into a one-line `LoadModuleChecked` in the header.
+Do not: `FModuleManager::UnloadModule` clears the module's ready flag *before* calling `ShutdownModule`,
+and off the game thread `GetModule` then answers null, so `LoadModuleChecked` fails its own check — during
+exactly the window in which shutdown is waiting for the polling and enumeration threads to stop. They are
+alive, the module is alive, and the only thing that changed is a flag meaning "hand this to no new
+callers". The crash reports a three-frame call stack naming nothing but `GetInstance`, on a thread whose
+stack explains none of it.
+
+Even so, **prefer handing a thread the reference its caller already holds** — `pollIndividualLoop`
+resolves it once at the top and passes it down. It is cheaper, and it does not depend on the above staying
+true. Splitting a function out of a polling loop is how the dependency gets reintroduced: the new function
+looks like it may simply ask for the module again.
 
 **Never broadcast a game-visible event straight from `IPlatformInputDeviceMapper`'s connection delegate.**
 It looks like a neutral engine signal, but the thing raising it is this plugin's own
