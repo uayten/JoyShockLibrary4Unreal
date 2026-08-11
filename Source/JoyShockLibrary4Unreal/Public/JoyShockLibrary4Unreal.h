@@ -51,10 +51,10 @@ public:
 class JOYSHOCKLIBRARY4UNREAL_API FJoyShockLibrary4UnrealModule : public IInputDeviceModule
 {
 public:
-	static FORCEINLINE FJoyShockLibrary4UnrealModule& GetInstance()
-	{
-		return FModuleManager::LoadModuleChecked<FJoyShockLibrary4UnrealModule>(TEXT("JoyShockLibrary4Unreal"));
-	}
+	// The module itself, for everything in the plugin that needs to reach it. Answered from a pointer the
+	// module publishes at startup rather than from FModuleManager -- see the definition for why that
+	// difference matters to the threads. Safe from any thread for as long as the module is alive.
+	static FJoyShockLibrary4UnrealModule& GetInstance();
 	
 	static FORCEINLINE bool IsAvailable()
 	{

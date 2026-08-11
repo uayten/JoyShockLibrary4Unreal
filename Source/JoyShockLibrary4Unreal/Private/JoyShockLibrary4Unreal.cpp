@@ -13,6 +13,33 @@
 
 #define LOCTEXT_NAMESPACE "FJoyShockLibrary4UnrealModule"
 
+// The live module: published by StartupModule, withdrawn only once ShutdownModule has finished tearing
+// everything down.
+//
+// GetInstance answers from here rather than from FModuleManager because the manager stops answering too
+// early for this plugin's threads. UnloadModule clears the module's ready flag BEFORE calling
+// ShutdownModule, and off the game thread GetModule then returns null, so LoadModuleChecked fails its own
+// check -- during exactly the window in which shutdown is waiting for the polling and enumeration threads
+// to stop. Those threads are alive, the module they are calling into is alive, and the only thing that
+// has changed is a flag meaning "do not hand this out to new callers".
+//
+// The module object outlives ShutdownModule (the manager destroys it after that returns), so a pointer
+// held here is valid for every moment a thread of ours can still be running.
+static std::atomic<FJoyShockLibrary4UnrealModule*> GLiveJoyShockModule{ nullptr };
+
+FJoyShockLibrary4UnrealModule& FJoyShockLibrary4UnrealModule::GetInstance()
+{
+	if (FJoyShockLibrary4UnrealModule* Live = GLiveJoyShockModule.load(std::memory_order_acquire))
+	{
+		return *Live;
+	}
+
+	// Before startup, or after shutdown has finished: ask the manager, which loads the module if this is
+	// the first call for it. This is what this function did unconditionally before, and it is still the
+	// right answer on the game thread, which is the only place a first call can come from.
+	return FModuleManager::LoadModuleChecked<FJoyShockLibrary4UnrealModule>(TEXT("JoyShockLibrary4Unreal"));
+}
+
 #if PLATFORM_WINDOWS
 void *hidapiDllHandle = nullptr;
 
@@ -82,6 +109,10 @@ void FJoyShockLibrary4UnrealModule::RequestConnectDevices()
 void FJoyShockLibrary4UnrealModule::StartupModule()
 {
 	IInputDeviceModule::StartupModule();
+
+	// Before anything below can start a thread -- the Bluetooth scan at the end of this function is the
+	// first one -- so no thread of ours ever runs without a module to reach.
+	GLiveJoyShockModule.store(this, std::memory_order_release);
 
 	if (FSlateApplication::IsInitialized())
 	{
@@ -177,6 +208,15 @@ void FJoyShockLibrary4UnrealModule::ShutdownModule()
 			}
 		}
 	}*/
+
+	// Withdrawn last, because the manager destroys this object as soon as this function returns and a
+	// pointer to freed memory is worse than no pointer at all.
+	//
+	// A polling thread that outran the wait above is still running and can still call GetInstance, and
+	// from here on it gets what it got before any of this existed: the manager's refusal, and the check
+	// that comes with it. That case is not solvable from inside the plugin -- the module is genuinely
+	// going away -- and it is why the wait exists at all.
+	GLiveJoyShockModule.store(nullptr, std::memory_order_release);
 
 	IInputDeviceModule::ShutdownModule();
 }
