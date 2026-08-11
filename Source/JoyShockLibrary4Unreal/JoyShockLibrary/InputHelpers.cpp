@@ -272,21 +272,22 @@ static bool parse_switch2_report(JoyShock* jc, uint8_t* packet, int32 len, FIMUS
 		imu_state.gyroY = gw2 * gyroScale;
 		imu_state.gyroZ = -gw1 * gyroScale;
 
-		// A detached Joy-Con is held rotated relative to the whole controller, so its sensor axes need
-		// the same corrections the Switch 1 halves take: the left one turned about Z, the right one
-		// turned the other way. UNVERIFIED on hardware -- carried over from the Switch 1 Joy-Cons on the
-		// grounds that the shells and sensor mountings are the same shape. If a Joy-Con 2's gyro turns
-		// the wrong way or its gravity points sideways, this is the block to correct, and nothing else
-		// depends on it.
-		if (bLeftHalf)
-		{
-			imu_state.gyroZ = -imu_state.gyroZ;
-		}
-		else if (bRightHalf)
+		// A detached Joy-Con 2 is held rotated relative to the whole controller: the right half sits turned
+		// half a turn about the roll axis, the left half in the same orientation as the base mapping above.
+		//
+		// Both sensors must take the SAME correction, because both describe the same physical rotation of
+		// the same shell. A half turn about Z sends accelerometer (x,y,z) to (-x,-y,z), and a gyro reading
+		// is a rotation about those same axes, so it goes exactly the same way -- the Z component is what
+		// the shell was turned about, and turning about an axis cannot flip that axis' own sign.
+		//
+		// The Switch 1 halves negate gyroZ here as well, and that is where this block came from. It does not
+		// carry over: the Switch 1 base maps roll to +w0, this one to -w1, so the extra negation lands on a
+		// sign that is already accounted for and the roll comes out backwards -- pitch and yaw correct,
+		// roll reversed, which is precisely what a Joy-Con 2 was reported doing.
+		if (bRightHalf)
 		{
 			imu_state.gyroX = -imu_state.gyroX;
 			imu_state.gyroY = -imu_state.gyroY;
-			imu_state.gyroZ = -imu_state.gyroZ;
 			imu_state.accelX = -imu_state.accelX;
 			imu_state.accelY = -imu_state.accelY;
 		}
