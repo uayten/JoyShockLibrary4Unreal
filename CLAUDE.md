@@ -40,7 +40,8 @@ answers in a container, and the failures that matter here — a dropped Bluetoot
 inverted, a rumble packet that never lands — are all invisible to the compiler.
 
 So: **say which of the three you did.** Compiled / compiled and ran / tested on the actual controller. Do
-not describe untested code as working, and name the hardware whoever tests it will need.
+not describe untested code as working, and name the hardware whoever tests it will need — the README's
+*Asking for a test* says who owns what, so that request can go to someone who can actually answer it.
 
 **Standalone is the honest test, not PIE.** Play-In-Editor masks at least two classes of bug this codebase
 has actually shipped: input focus problems that only appear with more than one player, and re-entrancy
