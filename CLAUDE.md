@@ -3,6 +3,9 @@
 An Unreal Engine plugin that talks to PlayStation and Nintendo controllers over HID, and reports them to
 Unreal as ordinary input devices with motion, rumble, lights and per-player assignment.
 
+This project follows the project-docs convention (ROADMAP.md, DECISIONS.md, HANDOFF.md).
+When the user asks to resume ("retoma", "vamos continuar o projeto", "vamos continuar o desenvolvimento do roadmap"), before acting: read HANDOFF.md; from ROADMAP.md, only the titles (`grep "^### R-" ROADMAP.md`) and the item for the next step or the request. Confirm the state and the next step in 3 lines and wait for the go-ahead.
+
 This file is for **changing** the plugin. Using it is the README's job, and the README is long and current
 — read it before writing code here.
 
@@ -120,6 +123,7 @@ placed instance in `Content/`, and those can only be repaired in the editor: fin
 - **`JSL4U` prefixes everything a game sees**, and see the naming rule above before adding a node.
 - **A new event is an async `WaitFor*` node**, in the shape of GAS's latent actions — not a delegate the
   game has to bind by hand.
+- **Never push.** Commit locally when the work calls for it; the user decides when anything goes public.
 - **The polling thread owns output.** A setter stores what the game asked for and returns; the thread
   decides when it reaches the hardware.
 
