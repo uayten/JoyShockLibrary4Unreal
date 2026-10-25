@@ -215,8 +215,3 @@ Facts to start from:
 - Reported once with a Joy-Con 2: the mirror appeared and the motion readouts worked, but the pawn did not move. Stopping and re-playing fixed it, which is not an option in a packaged build.
 - Not diagnosed. Suspected the demo's assignment path rather than the plugin, since the controller was visibly connected and reporting. May share a cause with R-019.
 Origin: README *Planned future updates*, moved here by R-013.
-
-### R-014 [adjustment] Update README.md
-Adjusts: README.md
-Expected: README.md with the same content as the current README.pt-BR.md.
-Depends on: R-013
