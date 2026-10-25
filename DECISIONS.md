@@ -1,6 +1,6 @@
 # Decisions
 
-<!-- project-docs: only what holds now. Next ID: D-006 · Next fact: F-008 -->
+<!-- project-docs: only what holds now. Next ID: D-006 · Next fact: F-009 -->
 
 The invariants learned by breaking them (Bluetooth streams, `GetInstance`, the device mapper, the right
 stick's Y, Connection Id, no CoreRedirects) live in `CLAUDE.md`, with their reasons. They are not repeated
@@ -78,3 +78,8 @@ Verified: 2026-08-02
 Fact: in report 0x05, accelX = +int16 @49, accelY = +@53, accelZ = -@51; gyroX (pitch) = +@55, gyroY (yaw) = +@59, gyroZ (roll) = -@57; bytes 61-62 are always zero. A wrong gyro mapping also makes gravity look axis-swapped during motion, so gravity is checked only after the gyro is right.
 Source: user's hardware test against a Joy-Con in the same poses (flat and standing), July 2026
 Verified: July 2026
+
+### F-008 Config/Input.ini does not register the Joy-Con 2 identifiers
+Fact: `FJoyShockInterface` reports a Joy-Con 2 half as `JoyCon2Left` / `JoyCon2Right` (`JoyShockInterface.cpp`, the hardware-identifier switch), but `Config/Input.ini` has `HardwareDevices` entries only for JoyConLeft, JoyConRight, SwitchProController, Switch2ProController, DualShock4, DualSense and JoyShockGamepad.
+Source: code and config read, 2026-10-25
+Verified: 2026-10-25

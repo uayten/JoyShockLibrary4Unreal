@@ -3,19 +3,22 @@
 Updated: 2026-10-25
 
 ## State
-- The plugin builds and works as of `ffd39e7` (PR #7, the 0x3F recovery for Switch 1 controllers, merged).
-- A code review on 2026-10-25 found seven problems, now R-006 to R-012; none is fixed. R-001 to R-005 came from porting the Switch 2 path to Unity.
-- Trail is wired in (`.trail/`, session hook in `.claude/settings.json`); its code map is local and rebuilt with `trail build`.
-- The code-review-graph MCP timed out in that session, so the `CLAUDE.md` instruction to use it first could not be followed.
+- The plugin builds and works as of `ffd39e7`; no code changed since.
+- Documentation is done: `README.pt-BR.md` is the main README and `README.md` its English translation, both short. The detail lives in twelve English pages under `docs/`, plus `docs/getting-started.pt-BR.md` (the one exception to D-002). The pages were reorganised around tables. Per-controller claims were checked in the code, not on hardware.
+- The roadmap has R-001 to R-012 (fixes from the Switch 2 port and the 2026-10-25 code review) and R-015 to R-028 (tests, demo work, new items). None is in progress.
 - Branch `master`, everything committed, nothing pushed.
 
 ## Next step
-R-013: write `README.pt-BR.md`, short, and move the long sections of the current `README.md` into English pages under `docs/`. Start by reading `README.md` whole and proposing the page split (R-013 lists the proposed topics) before writing.
+Work on the roadmap with the user: review priorities and the order of *To do*, and decide which item comes first. Use the roadmap skill.
+
+## Open questions
+- Should the missing Joy-Con 2 entries in `Config/Input.ini` (F-008) become a roadmap item?
+- `docs/hardware.md` lists magnetometer, mouse and temperature among the Pro Controller 2's sensors, but `docs/switch2.md` says those are Joy-Con 2 sensors. Which is right?
+- The comment on **Wait For Battery Changes** (`JoyShockAsyncActions.h`) says the Pro Controller 2 reports battery as Unknown, but `docs/controllers.md` says the Switch 2 controllers fill Battery Percent. One of them is out of date.
 
 ## Notes for the next session
-- `README.md` stays untouched until R-014 (D-001).
-- `CLAUDE.md` points at README sections (*Source layout*, *Where to change what*, *Things worth knowing...*, *Blueprint nodes*, *Reacting to controllers*, *Asking for a test*); so do R-001 and R-004. When a section moves to `docs/`, those references move with it.
-- Before writing any README, read `~/.claude/skills/project-docs/references/readme.md`.
+- The docs describe the plugin as it is now: no history, no comparisons with the original JoyShockLibrary (trail learning in `.trail/learnings/`).
+- When `docs/getting-started.md` changes, `docs/getting-started.pt-BR.md` needs a roadmap item to catch up (D-002).
 
 ## Read first
-`README.md`, the R-013 and R-014 items, D-001 and D-002. The source code is not needed for this task.
+`ROADMAP.md`, whole: the next task is the roadmap itself. The docs and the source are not needed for it.
