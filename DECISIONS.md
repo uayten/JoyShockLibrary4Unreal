@@ -18,6 +18,7 @@ Affects: R-013, R-014
 ### D-002 The docs/ pages are English only
 Decision: the detailed pages under `docs/` exist in English only; both READMEs link to them.
 Why: one copy of the long material to keep current; the READMEs are what a newcomer reads in their language.
+Exception: `docs/getting-started.pt-BR.md`, a Portuguese translation of `docs/getting-started.md`, which README.pt-BR.md links to instead (user, 2026-10-25). When the English page changes, the Portuguese one gets a roadmap item to catch up.
 Origin: user, 2026-10-25
 Affects: R-013
 
