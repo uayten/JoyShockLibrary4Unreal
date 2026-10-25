@@ -1,6 +1,6 @@
 # Roadmap
 
-<!-- project-docs: pending work only; approved items are deleted. Order = priority. Next ID: R-026 -->
+<!-- project-docs: pending work only; approved items are deleted. Order = priority. Next ID: R-029 -->
 
 ## Testing
 
@@ -20,17 +20,6 @@
 
 ## To do
 
-### R-013 [adjustment] A short README, the details in docs/, and a Portuguese version
-Adjusts: README.md
-Expected: the repository's front page is short -- what the plugin does, which controllers, how to install and start -- and each part of the plugin has its own page in `docs/` for whoever wants to go deeper. There is a Portuguese README alongside the English one, with the same content.
-How:
-- Portuguese first: `README.pt-BR.md` is written and reviewed before anything else; the English version follows it in R-014.
-- `README.md` stays exactly as it is until then.
-- Each long README section becomes a `docs/<topic>.md`, leaving a sentence and the link. Proposed topics (agent's choice): hardware, getting-started, input, players, output, switch2, blueprint-nodes, troubleshooting, architecture.
-- The references to README sections in `CLAUDE.md` and in this roadmap follow the text to where it moves.
-- *Planned future updates* leaves the README: pending work belongs here (agent's choice).
-- The `docs/` pages are English only; both READMEs link to them (D-002).
-
 ### R-003 [adjustment] A failed Bluetooth connection must close what it opened
 Adjusts: `Switch2Ble::Connect` (`Switch2Bluetooth.cpp`).
 Expected: every way out of `Connect` short of success closes the GATT service, the session (with `MaintainConnection(false)`) and the device, so a failed attempt leaves nothing behind.
@@ -43,7 +32,7 @@ Tests:
 - Force a failed attempt (for example, turn the controller off right after it starts advertising), then connect normally: it succeeds without restarting the editor.
 
 ### R-001 [adjustment] One stick Y sign per layer, across controller families
-Adjusts: stick normalisation (README > *Where to change what*).
+Adjusts: stick normalisation (`docs/architecture.md` > *Where to change what*).
 Expected: the low-level JSL state (`simple_state`, the direct getters and the Blueprint nodes that read it) reports the right stick's Y with the same sign as the left one on every family, and the comments say what the code actually does. `FJoyShockInterface` then presents the sticks without per-family corrections.
 Facts to start from:
 - Switch 2 Pro Controller over USB: in the raw report both sticks grow upwards; no axis needs negating. Measured on hardware with the Stick Overlay of FofuxoJoySense4Unity (its F-006), 2026-10-08.
@@ -138,7 +127,7 @@ Adjusts: `finish_polling_thread` (`JoyShockPolling.cpp`) and the race-loser disc
 Expected: turning off a Switch 2 that is on Bluetooth never freezes the game, not even briefly.
 Facts to start from (code review, 2026-10-25, not measured):
 - Both places run `delete jc` while holding `_connectedLock`, which every device getter on the game thread waits for. For a Bluetooth Switch 2 the destructor calls `Switch2Ble::Disconnect`, which closes the connection-parameters request, the `GattSession` and the `BluetoothLEDevice` synchronously.
-- The README's "no blocking HID under `_connectedLock`" rule was written for hidapi, but WinRT teardown is the same kind of risk. The transport-switch branches of the same loop already drop the lock before their slow work.
+- The "no blocking HID under `_connectedLock`" rule in `docs/architecture.md` was written for hidapi, but WinRT teardown is the same kind of risk. The transport-switch branches of the same loop already drop the lock before their slow work.
 Tests (Pro Controller 2 on Bluetooth):
 - While moving a stick on another controller, turn the Switch 2 off: the other controller never stops responding. Repeat a few times.
 
@@ -208,6 +197,24 @@ Depends on: R-023
 Expected: the player LEDs on the demo's controller models light up exactly like the physical controller's.
 How: read `FJSL4UControllerInfo.PlayerLedNumber`, which is a position (1-4).
 Open: the demo rework of 2026-07-19 already mirrors the pairing LED on the model -- is anything left of this item?
+
+### R-026 [feature] Pro Controller and Xbox models in the demo's controller mirror
+Expected: the demo's controller mirror has a model for the Nintendo Switch Pro Controller, the Nintendo Switch 2 Pro Controller and an Xbox pad; today only the Joy-Con pair, the Joy-Con grip, the DualShock 4 and the DualSense are modelled, and the Joy-Con 2 borrow the Switch 1 Joy-Con models.
+How: the user models them.
+Origin: README *Planned future updates*, moved here by R-013.
+
+### R-027 [feature] Switch 2 battery percentage from a charge curve
+Expected: a Switch 2 controller's Battery Percent follows a lithium cell's discharge curve instead of a straight line between 3.0 V and 4.2 V, so the number is worth showing and not only a bar.
+Facts to start from: the controller reports its cell voltage and nothing else, and the voltage sags under load -- it reads low mid-rumble.
+Origin: README *Planned future updates*, moved here by R-013.
+
+### R-028 [adjustment] A controller that arrives must drive its character
+Adjusts: the demo's player initialiser.
+Expected: every controller that connects drives its character, without stopping and re-playing.
+Facts to start from:
+- Reported once with a Joy-Con 2: the mirror appeared and the motion readouts worked, but the pawn did not move. Stopping and re-playing fixed it, which is not an option in a packaged build.
+- Not diagnosed. Suspected the demo's assignment path rather than the plugin, since the controller was visibly connected and reporting. May share a cause with R-019.
+Origin: README *Planned future updates*, moved here by R-013.
 
 ### R-014 [adjustment] Update README.md
 Adjusts: README.md

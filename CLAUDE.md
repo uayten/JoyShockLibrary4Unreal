@@ -6,15 +6,15 @@ Unreal as ordinary input devices with motion, rumble, lights and per-player assi
 This project follows the project-docs convention (ROADMAP.md, DECISIONS.md, HANDOFF.md).
 When the user asks to resume ("retoma", "vamos continuar o projeto", "vamos continuar o desenvolvimento do roadmap"), before acting: read HANDOFF.md; from ROADMAP.md, only the titles (`grep "^### R-" ROADMAP.md`) and the item for the next step or the request. Confirm the state and the next step in 3 lines and wait for the go-ahead.
 
-This file is for **changing** the plugin. Using it is the README's job, and the README is long and current
-— read it before writing code here.
+This file is for **changing** the plugin. Using it is the job of the pages in `docs/`, which are long and
+current — read the relevant one before writing code here.
 
-| Question | README section |
+| Question | Page |
 |---|---|
-| Where does anything live? | *Source layout* — three layers, and the folder tells you which |
-| I want to change X, where do I go? | *Where to change what* |
-| What will bite me? | *Things worth knowing before changing any of it* |
-| What does a game actually call? | *Blueprint nodes*, *Reacting to controllers* |
+| Where does anything live? | `docs/architecture.md` — three layers, and the folder tells you which |
+| I want to change X, where do I go? | `docs/architecture.md`, *Where to change what* |
+| What will bite me? | `docs/architecture.md`, *Things worth knowing before changing any of it* |
+| What does a game actually call? | `docs/blueprint-nodes.md`, `docs/controllers.md` |
 
 ## Building
 
@@ -43,8 +43,8 @@ answers in a container, and the failures that matter here — a dropped Bluetoot
 inverted, a rumble packet that never lands — are all invisible to the compiler.
 
 So: **say which of the three you did.** Compiled / compiled and ran / tested on the actual controller. Do
-not describe untested code as working, and name the hardware whoever tests it will need — the README's
-*Asking for a test* says who owns what, so that request can go to someone who can actually answer it.
+not describe untested code as working, and name the hardware whoever tests it will need — *Asking for a test*
+in `docs/hardware.md` says who owns what, so that request can go to someone who can actually answer it.
 
 **Standalone is the honest test, not PIE.** Play-In-Editor masks at least two classes of bug this codebase
 has actually shipped: input focus problems that only appear with more than one player, and re-entrancy
@@ -55,7 +55,7 @@ zero for everything; do not read that as a finding, and do not promise coverage 
 
 ## Invariants the compiler cannot check
 
-The README lists four (sole writer of output reports; no blocking HID under `_connectedLock`; identity is
+`docs/architecture.md` lists four (sole writer of output reports; no blocking HID under `_connectedLock`; identity is
 MAC-or-path; `UJoyShockLibrary` and node names cannot be renamed). These are the rest — each one was
 learned by breaking it.
 
