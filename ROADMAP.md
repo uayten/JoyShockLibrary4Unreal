@@ -1,6 +1,6 @@
 # Roadmap
 
-<!-- project-docs: pending work only; approved items are deleted. Order = priority. Next ID: R-029 -->
+<!-- project-docs: pending work only; approved items are deleted. Order = priority. Next ID: R-035 -->
 
 ## Testing
 
@@ -19,6 +19,71 @@
 ## In progress
 
 ## To do
+
+### R-030 [feature] Battery and Switch 2 sensors in the demo's controller panel
+Expected: the demo's per-controller panel shows the battery of any controller and, on a Switch 2 controller, its battery voltage, temperature, magnetometer and mouse sensor, so these can be tested without building a Blueprint.
+How:
+- `WBP_ConnectedJoyShockInfo`: a Battery row for every controller (level, percent, charging), and a Switch 2 section shown only when *Is Supported* is true (agent's choice).
+- Refreshed by a looping timer started in `OnInitialized`, not from `Tick`, so the existing Tick chain is left alone (agent's choice).
+- Both the Designer rows and the graph are written with NodeScribe (`write_object` with `designer`, then `write_graph`). The texts below compiled clean in a BossRush draft copy of the widget's rows on 2026-10-26; they were written before NodeScribe's fixes to Append pins and Set Visibility, which is why they chain Appends and say `Widget.SetVisibility`.
+Replaces: the `BP_TesteSensoresPro2` test Blueprint in BossRush (`Content/BossRush/Testes/`), to delete once this is approved.
+
+#### Designer text
+```
+designer
+VerticalBox_2 : VerticalBox
+  HorizontalBox_1 : HorizontalBox
+  BatteryRow : HorizontalBox like HorizontalBox
+    BatteryText : TextBlock like IsStill?Text
+      Text = "Battery"
+    BatterySpacer : Spacer like Spacer_3
+    BatteryAnswer : TextBlock variable like IsStillAnswer
+  Switch2Section : VerticalBox variable
+    BatteryVoltsRow : HorizontalBox like HorizontalBox
+      BatteryVoltsText : TextBlock like IsStill?Text
+        Text = "Battery Volts"
+      BatteryVoltsSpacer : Spacer like Spacer_3
+      BatteryVoltsAnswer : TextBlock variable like IsStillAnswer
+    TemperatureRow : HorizontalBox like HorizontalBox
+      TemperatureText : TextBlock like IsStill?Text
+        Text = "Temperature"
+      TemperatureSpacer : Spacer like Spacer_3
+      TemperatureAnswer : TextBlock variable like IsStillAnswer
+    MouseRow : HorizontalBox like HorizontalBox
+      MouseText : TextBlock like IsStill?Text
+        Text = "Mouse"
+      MouseSpacer : Spacer like Spacer_3
+      MouseAnswer : TextBlock variable like IsStillAnswer
+    MagnetometerVector : WBP_VectorInspector variable like GravityVector
+      Title = Magnetometer
+```
+
+#### Graph text (EventGraph)
+```
+event OnInitialized
+Set Timer by Event (Event = $update, Time = 0.1, Looping = true)
+
+update = event Update Sensor Readout
+info = Break JSL4UControllerInfo ($Controller)
+b1 = Append (A = $info.BatteryLevel, B = " | ")
+b2 = Append (A = $b1, B = $info.BatteryPercent)
+b3 = Append (A = $b2, B = "% | charging ")
+b4 = Append (A = $b3, B = $info.bIsCharging)
+TextBlock.SetText (Target = $BatteryAnswer, In Text = $b4)
+s = JSL4U Get Switch 2 Sensors (Connection Id = $info.ConnectionId)
+Branch (Condition = $s.ReturnValue_bIsSupported)
+  true:
+    Widget.SetVisibility (Target = $Switch2Section, In Visibility = Visible)
+    TextBlock.SetText (Target = $BatteryVoltsAnswer, In Text = $s.ReturnValue_BatteryVolts)
+    TextBlock.SetText (Target = $TemperatureAnswer, In Text = $s.ReturnValue_TemperatureCelsius)
+    TextBlock.SetText (Target = $MouseAnswer, In Text = $s.ReturnValue_MousePosition)
+    Set Vector Inspector (Target = $MagnetometerVector, In Value = $s.ReturnValue_Magnetometer)
+  false:
+    Widget.SetVisibility (Target = $Switch2Section, In Visibility = Collapsed)
+```
+
+Tests (the user, with the Pro Controller 2):
+- Over the cable and over Bluetooth (Bluetooth in PIE, see F-010), the panel of the Pro 2 shows battery and the Switch 2 section; a DualShock 4's panel shows battery only.
 
 ### R-003 [adjustment] A failed Bluetooth connection must close what it opened
 Adjusts: `Switch2Ble::Connect` (`Switch2Bluetooth.cpp`).
@@ -215,3 +280,31 @@ Facts to start from:
 - Reported once with a Joy-Con 2: the mirror appeared and the motion readouts worked, but the pawn did not move. Stopping and re-playing fixed it, which is not an option in a packaged build.
 - Not diagnosed. Suspected the demo's assignment path rather than the plugin, since the controller was visibly connected and reporting. May share a cause with R-019.
 Origin: README *Planned future updates*, moved here by R-013.
+
+### R-029 [adjustment] Register the Joy-Con 2 halves in Config/Input.ini
+Adjusts: the plugin's hardware devices (`Config/Input.ini`).
+Expected: Unreal knows a Joy-Con 2 half as a hardware device of its own, the way it knows a Joy-Con half, so a game's input settings can pick it out.
+Facts to start from: F-008. `FJoyShockInterface` reports the halves as `JoyCon2Left` / `JoyCon2Right`, and `Config/Input.ini` has no entry for either. Which `SupportedFeaturesMask` they need is not settled: the Joy-Con entries use 9541, the Pro Controller 2 entry 9477.
+Tests: Renan, with a Joy-Con 2 pair (no Joy-Con 2 in Brazil).
+
+### R-031 [adjustment] Switch 2 controllers report charging
+Adjusts: battery reporting (`docs/controllers.md` > *Battery*).
+Expected: Is Charging on a Switch 2 controller turns true when its cable goes in and false when it comes out, and Wait For Battery Changes raises On Charging Changed for it.
+Facts to start from: F-009. `parse_switch2_report` (`InputHelpers.cpp`) fills voltage, percent and level but never `battery_charging`; where the report carries charging is not known yet (F-006's Switch2Connect is the reference to check).
+Tests: the user, with the Pro Controller 2 over the cable and over Bluetooth.
+
+### R-032 [adjustment] The Switch 2 magnetometer over the cable too
+Adjusts: the Switch 2 USB init (`JoyShock_Switch2.cpp`, the FEATSEL command).
+Expected: the magnetometer of a Switch 2 controller reads over the cable as it does over Bluetooth.
+Facts to start from: F-009. The USB init asks for features 0x27, the Bluetooth one for 0x94 (motion 0x04, mouse 0x10, magnetometer 0x80). The Bluetooth comment warns that asking for every feature turns on report fields the parser does not expect, read as stuck triggers -- add 0x80 alone and check the triggers.
+Tests: the user, with the Pro Controller 2 over the cable: the magnetometer moves when the controller turns, and ZL/ZR read released at rest.
+
+### R-033 [adjustment] A Switch 2 on Bluetooth reaches a Standalone game launched from the editor
+Adjusts: `Switch2Bluetooth.cpp` / `discover_bluetooth_switch2`, next to the USB lease the editor and Standalone already pass between them.
+Expected: with the editor holding a Switch 2 controller over Bluetooth, playing in Standalone gives the controller to the game, and it comes back to the editor when the game closes.
+Facts to start from: F-010.
+Tests: the user, with the Pro Controller 2 over Bluetooth, in Standalone launched from the editor.
+
+### R-034 [research] Does the Pro Controller 2 report temperature, and where?
+Expected: whether the Pro Controller 2's report carries a temperature, at which bytes and with which scale; the answer counts when the reading rises while the controller is held for a few minutes.
+Facts to start from: F-009. The parser reads bytes 47-48 as `25 + raw / 127`; on the Pro 2 the raw value sits around 9-15 and only flickers.

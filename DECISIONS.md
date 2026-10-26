@@ -1,6 +1,6 @@
 # Decisions
 
-<!-- project-docs: only what holds now. Next ID: D-006 · Next fact: F-009 -->
+<!-- project-docs: only what holds now. Next ID: D-006 · Next fact: F-011 -->
 
 The invariants learned by breaking them (Bluetooth streams, `GetInstance`, the device mapper, the right
 stick's Y, Connection Id, no CoreRedirects) live in `CLAUDE.md`, with their reasons. They are not repeated
@@ -83,3 +83,15 @@ Verified: July 2026
 Fact: `FJoyShockInterface` reports a Joy-Con 2 half as `JoyCon2Left` / `JoyCon2Right` (`JoyShockInterface.cpp`, the hardware-identifier switch), but `Config/Input.ini` has `HardwareDevices` entries only for JoyConLeft, JoyConRight, SwitchProController, Switch2ProController, DualShock4, DualSense and JoyShockGamepad.
 Source: code and config read, 2026-10-25
 Verified: 2026-10-25
+
+### F-009 What the Pro Controller 2 reports beyond input
+Fact: battery voltage, percent and level read correctly over the cable (3.747 V, 62%, Medium) and over Bluetooth (3.652 V, 54%, Medium). Is Charging stays false even on the cable: `parse_switch2_report` never fills it. The magnetometer is present: over Bluetooth it reads non-zero and moves as the controller turns; over the cable it reads zero because the USB init does not ask for it (FEATSEL 0x27, against 0x94 over Bluetooth). The mouse fields read zero on both, as the Pro 2 has no mouse sensor. The temperature reads 25.07-25.12 and does not warm in the hand, so it is not a temperature as parsed.
+Source: the user's Pro Controller 2 with a test Blueprint printing JSL4U Get Switch 2 Sensors and the controller info, PIE; `JoyShock_Switch2.cpp` read for the FEATSEL values
+Verified: 2026-10-25
+Affects: R-031, R-032, R-034, docs/hardware.md
+
+### F-010 A Switch 2 on Bluetooth stays with the editor in Standalone
+Fact: with the editor connected to a Pro Controller 2 over Bluetooth, a Standalone game launched from the editor logged "0 controller(s) already connected" and never tried to connect it; PIE worked. The Bluetooth session belongs to the process that opened it and a connected controller stops advertising, and unlike the USB interface nothing hands it over.
+Source: editor and Standalone logs (`Saved/Logs/BossRush.log`, `BossRush_2.log`), 2026-10-25 23:15
+Verified: 2026-10-25
+Affects: R-033, docs/switch2.md
