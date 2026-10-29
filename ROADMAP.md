@@ -4,6 +4,9 @@
 
 ## Testing
 
+### R-009 Switch 2 stick calibration checked the same way on cable and Bluetooth
+1. Pro Controller 2 on the cable, then on Bluetooth, sticks at rest: both read centred on the controller mirror, and the log line "SW2 left/right stick cal" shows the same centre on both transports.
+
 ### R-003 A failed Switch 2 Bluetooth connection leaves nothing behind
 1. Connect the Pro Controller 2 over Bluetooth, turn it off, connect it again -- several times in one editor session: every connection succeeds.
 2. Hold SYNC and turn the controller off right after the lights start moving, so the attempt fails; then connect normally: it succeeds without restarting the editor.
@@ -75,16 +78,6 @@ Facts to start from (code review, 2026-10-25, not reproduced):
 - The kind of crash Renan's debugger stops on and the user's editor hides, since it was already closing.
 Tests (any controller; worth asking Renan, under the debugger):
 - With a controller connected, close the editor and pull its cable (or turn it off) at the same moment. Repeat several times: the editor always closes cleanly.
-
-### R-009 [adjustment] Calibrate the Switch 2 sticks over USB with the same checks as over Bluetooth
-Adjusts: stick calibration in `init_switch2` (`JoyShock_Switch2.cpp`).
-Expected: a Pro Controller 2 whose stored calibration is blank or invalid gets the same centred sticks on the cable as over Bluetooth.
-Facts to start from (code review, 2026-10-25):
-- The Bluetooth init checks each calibration block with `AxisIsPlausible` (centre near the middle, a real range in all four directions) and falls back to fixed centres when a block fails it. The USB init only checks the first three bytes of the user block for all-ones, and applies the factory block with no check at all.
-- The Bluetooth init's own comment describes the consequence: an erased block parses into a centre of 4095, and the stick reads as held to one side.
-- `ReadStickCalFrom`'s check can be shared rather than written a second time.
-Tests (Pro Controller 2):
-- On cable and on Bluetooth, sticks at rest: both read centred, and the log line for the stick calibration says the same thing on both transports.
 
 ### R-010 [adjustment] Close a Switch 2 Bluetooth connection outside the connected lock
 Adjusts: `finish_polling_thread` (`JoyShockPolling.cpp`) and the race-loser discard in phase 3 of `ConnectDevices` (`JoyShockEnumeration.cpp`).
