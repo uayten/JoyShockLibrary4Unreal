@@ -4,6 +4,16 @@
 
 ## Testing
 
+### R-003 A failed Switch 2 Bluetooth connection leaves nothing behind
+1. Connect the Pro Controller 2 over Bluetooth, turn it off, connect it again -- several times in one editor session: every connection succeeds.
+2. Hold SYNC and turn the controller off right after the lights start moving, so the attempt fails; then connect normally: it succeeds without restarting the editor.
+
+### R-005 A Switch 2 reconnects over Bluetooth right after leaving its cable
+1. Plug the Pro Controller 2 in and pull the cable, then wake it with a button: it reconnects over Bluetooth. Repeat a few times.
+
+### R-012 A refused Switch 2 Bluetooth command fails at once
+1. Connect the Pro Controller 2 over Bluetooth and read the log: the init lines come out quickly, none waits about a second before "was not acknowledged", and the controller responds within a couple of seconds of connecting. (A Joy-Con 2 too, with Renan.)
+
 ### R-006 A Joy-Con in 0x3F mode is recovered a few times, not on every report
 1. Four Joy-Cons on Bluetooth, play for a few minutes with gyro in use: gyro keeps working, and if the log shows "0x3F mode reset detected" it is followed by at most two "still in 0x3F" lines per episode.
 2. Turn a Joy-Con off and on while the game runs: it reconnects with gyro and does not disconnect again by itself.
@@ -33,17 +43,6 @@
 
 ## To do
 
-### R-003 [adjustment] A failed Bluetooth connection must close what it opened
-Adjusts: `Switch2Ble::Connect` (`Switch2Bluetooth.cpp`).
-Expected: every way out of `Connect` short of success closes the GATT service, the session (with `MaintainConnection(false)`) and the device, so a failed attempt leaves nothing behind.
-Facts to start from (FofuxoJoySense4Unity F-008, 2026-10-12):
-- `Connect` returns `nullptr` when a characteristic is missing or a subscription is refused, without closing anything; the session was set to `MaintainConnection(true)` before that. The service it found is never closed on any path, success included, and `Disconnect` does not close it either.
-- Measured in the Unity port, which had the same code: with the Nintendo service left open by one failed attempt, every later attempt -- in the same process or another -- got "sharing violation" from `OpenAsync(SharedReadAndWrite)` and "access denied" (status 3) from every characteristic lookup, although Windows reported the controller paired and access allowed. Closing the process that held it fixed it at once. The first failure feeds every later one, so a single bad attempt can leave the controller unusable until the editor restarts.
-- The Unity port keeps the service on the connection, closes it in teardown, and runs the teardown from a scope guard on every failure path.
-Tests:
-- Connect, disconnect, connect again several times in one editor session: every connection succeeds.
-- Force a failed attempt (for example, turn the controller off right after it starts advertising), then connect normally: it succeeds without restarting the editor.
-
 ### R-001 [adjustment] One stick Y sign per layer, across controller families
 Adjusts: stick normalisation (`docs/architecture.md` > *Where to change what*).
 Expected: the low-level JSL state (`simple_state`, the direct getters and the Blueprint nodes that read it) reports the right stick's Y with the same sign as the left one on every family, and the comments say what the code actually does. `FJoyShockInterface` then presents the sticks without per-family corrections.
@@ -65,15 +64,6 @@ Tests:
 - A controller already paired with the PC reconnects on a button press, as before.
 - A controller paired with a Switch 2 console: pressing a button does not connect it to the PC, and the log says once that it is paired with another device; holding SYNC then connects it and pairs it with the PC.
 - A brand-new controller in SYNC mode connects and pairs, as before.
-
-### R-005 [adjustment] Open the GATT session before looking up the Switch 2 service
-Adjusts: `Switch2Ble::Connect` (`Switch2Bluetooth.cpp`).
-Expected: a controller woken by a button connects on the first advertisement, also right after it leaves its cable.
-Facts to start from (FofuxoJoySense4Unity, 2026-10-13):
-- `Connect` looks up the service with `BluetoothCacheMode::Uncached` before creating the `GattSession`, and fails at once when that lookup comes back empty. In the Unity port, with the same order, a controller woken by a button right after its cable was pulled failed every attempt with "does not expose the Switch 2 service".
-- After moving the session (with `MaintainConnection(true)`) before the lookup, and retrying the lookup three times 500 ms apart with the last one `Cached`, the same case connected. It is not proven which of the two changes did it, and that test ran in a fresh process, so the earlier failures may also have come from the leak in R-003.
-Tests:
-- Plug the cable in and pull it, then wake the controller with a button: it reconnects over Bluetooth. Repeat a few times.
 
 ### R-008 [adjustment] A controller that disconnects while the editor is closing must not crash it
 Adjusts: `ShutdownAllDevices` (`JoyShockLibrary.cpp`) and the disconnect and timeout branches of `pollIndividualLoop` (`JoyShockPolling.cpp`).
@@ -113,15 +103,6 @@ Facts to start from (code review, 2026-10-25, not reproduced):
 - The startup thread checks `bShuttingDown` only before `IsSupported()`, which blocks. If the editor closes in that window, `SetDiscoveryCallback` and `StartScan` run after `Switch2Ble::Shutdown` and leave a scan running with a callback into a module that is gone.
 Tests (Pro Controller 2):
 - Open the editor and close it as soon as it finishes loading, with the controller advertising (hold SYNC). Repeat a few times: it always closes cleanly.
-
-### R-012 [adjustment] A Switch 2 command the controller refuses should fail at once
-Adjusts: `Switch2Ble::SendCommand` (`Switch2Bluetooth.cpp`).
-Expected: a refused Bluetooth command costs one round trip instead of a second's wait, so connecting a Switch 2 takes no longer than it needs to.
-Facts to start from (code review, 2026-10-25):
-- `SendCommand` accepts only a reply whose status byte is 0x01. A reply to the same command with any other status is thrown away and the wait goes on to the full timeout (1 s by default).
-- The init expects refusals ("not all of them implement all of it"), and each calibration read tries three times, so one refusal can cost up to 3 s. Combined with the retry in R-007, the polling thread spends most of each cycle waiting.
-Tests (Pro Controller 2 and, with Renan, a Joy-Con 2):
-- Connect over Bluetooth and read the log: no command takes about a full second to be reported as not acknowledged, and the controller responds within a couple of seconds of connecting.
 
 ### R-018 [adjustment] The demo's controller-name widget follows controller changes
 Adjusts: `WBP_ControllerName` (demo, `Content/`).
