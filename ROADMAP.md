@@ -4,6 +4,12 @@
 
 ## Testing
 
+### R-008 A controller dropping while the editor closes does not crash it
+1. With a controller connected, close the editor and pull its cable (or turn it off) at the same moment. Repeat several times: the editor always closes cleanly. Worth asking Renan, under the debugger.
+
+### R-010 Turning off a Switch 2 on Bluetooth never freezes the game
+1. With the Pro Controller 2 on Bluetooth and another controller in use, keep moving a stick on the other one and turn the Switch 2 off: the other controller never stops responding. Repeat a few times.
+
 ### R-009 Switch 2 stick calibration checked the same way on cable and Bluetooth
 1. Pro Controller 2 on the cable, then on Bluetooth, sticks at rest: both read centred on the controller mirror, and the log line "SW2 left/right stick cal" shows the same centre on both transports.
 
@@ -67,26 +73,6 @@ Tests:
 - A controller already paired with the PC reconnects on a button press, as before.
 - A controller paired with a Switch 2 console: pressing a button does not connect it to the PC, and the log says once that it is paired with another device; holding SYNC then connects it and pairs it with the PC.
 - A brand-new controller in SYNC mode connects and pairs, as before.
-
-### R-008 [adjustment] A controller that disconnects while the editor is closing must not crash it
-Adjusts: `ShutdownAllDevices` (`JoyShockLibrary.cpp`) and the disconnect and timeout branches of `pollIndividualLoop` (`JoyShockPolling.cpp`).
-Expected: closing the editor never crashes, even when a controller is unplugged, turned off or drops at that same moment.
-Facts to start from (code review, 2026-10-25, not reproduced):
-- `ShutdownAllDevices` sets `cancel_thread` and clears `delete_on_finish`/`remove_on_finish` on every device, then waits for `thread_exited`. Those three are plain `bool`s, written without any lock.
-- A polling thread that is already past its `cancel_thread` check -- its read just returned -1, or it hit the tenth timeout -- takes `_connectedLock` after shutdown has emptied the maps and sets `delete_on_finish = true`. It then frees the device itself and never sets `thread_exited`. Shutdown keeps reading `thread_exited` from freed memory and, after its 3 s deadline, may join and delete that device a second time.
-- Likely fix: the two branches check `cancel_thread` after taking the lock and leave the delete to shutdown, and the flags become atomic.
-- The kind of crash Renan's debugger stops on and the user's editor hides, since it was already closing.
-Tests (any controller; worth asking Renan, under the debugger):
-- With a controller connected, close the editor and pull its cable (or turn it off) at the same moment. Repeat several times: the editor always closes cleanly.
-
-### R-010 [adjustment] Close a Switch 2 Bluetooth connection outside the connected lock
-Adjusts: `finish_polling_thread` (`JoyShockPolling.cpp`) and the race-loser discard in phase 3 of `ConnectDevices` (`JoyShockEnumeration.cpp`).
-Expected: turning off a Switch 2 that is on Bluetooth never freezes the game, not even briefly.
-Facts to start from (code review, 2026-10-25, not measured):
-- Both places run `delete jc` while holding `_connectedLock`, which every device getter on the game thread waits for. For a Bluetooth Switch 2 the destructor calls `Switch2Ble::Disconnect`, which closes the connection-parameters request, the `GattSession` and the `BluetoothLEDevice` synchronously.
-- The "no blocking HID under `_connectedLock`" rule in `docs/architecture.md` was written for hidapi, but WinRT teardown is the same kind of risk. The transport-switch branches of the same loop already drop the lock before their slow work.
-Tests (Pro Controller 2 on Bluetooth):
-- While moving a stick on another controller, turn the Switch 2 off: the other controller never stops responding. Repeat a few times.
 
 ### R-011 [adjustment] Bluetooth callbacks must not look the module up during shutdown
 Adjusts: the discovery callback and the scan start in `StartupModule` (`JoyShockLibrary4Unreal.cpp`).
