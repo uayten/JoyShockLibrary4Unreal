@@ -4,6 +4,9 @@
 
 ## Testing
 
+### R-029 Joy-Con 2 halves registered as hardware devices (Renan)
+1. Connect a Joy-Con 2 half over Bluetooth: the log line "RegisterDevice: ... HardwareDeviceIdentifier=JoyCon2Left" (or Right) appears, and Project Settings > Input lists JoyCon2Left and JoyCon2Right among the hardware devices. They use the Pro Controller 2 mask (9477: no Lights), as the same family; Renan to say if the player LEDs should count as Lights.
+
 ### R-002 Over Bluetooth, a Switch 2 paired elsewhere is left alone
 1. The Pro Controller 2, already paired with this PC: turn it off, then press a button: it reconnects, as before.
 2. Pair it with something else (a Switch 2 console, if one is at hand), then press a button near the PC: it does not connect, and the log says once "paired with another device ... Hold SYNC on it". Hold SYNC: it connects and pairs with the PC.
@@ -142,12 +145,6 @@ Facts to start from:
 - Reported once with a Joy-Con 2: the mirror appeared and the motion readouts worked, but the pawn did not move. Stopping and re-playing fixed it, which is not an option in a packaged build.
 - Not diagnosed. Suspected the demo's assignment path rather than the plugin, since the controller was visibly connected and reporting. May share a cause with R-019.
 Origin: README *Planned future updates*, moved here by R-013.
-
-### R-029 [adjustment] Register the Joy-Con 2 halves in Config/Input.ini
-Adjusts: the plugin's hardware devices (`Config/Input.ini`).
-Expected: Unreal knows a Joy-Con 2 half as a hardware device of its own, the way it knows a Joy-Con half, so a game's input settings can pick it out.
-Facts to start from: F-008. `FJoyShockInterface` reports the halves as `JoyCon2Left` / `JoyCon2Right`, and `Config/Input.ini` has no entry for either. Which `SupportedFeaturesMask` they need is not settled: the Joy-Con entries use 9541, the Pro Controller 2 entry 9477.
-Tests: Renan, with a Joy-Con 2 pair (no Joy-Con 2 in Brazil).
 
 ### R-031 [adjustment] Switch 2 controllers report charging
 Adjusts: battery reporting (`docs/controllers.md` > *Battery*).
