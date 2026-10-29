@@ -159,6 +159,8 @@ Tests: Renan, with a Joy-Con 2 pair (no Joy-Con 2 in Brazil).
 Adjusts: battery reporting (`docs/controllers.md` > *Battery*).
 Expected: Is Charging on a Switch 2 controller turns true when its cable goes in and false when it comes out, and Wait For Battery Changes raises On Charging Changed for it.
 Facts to start from: F-009. `parse_switch2_report` (`InputHelpers.cpp`) fills voltage, percent and level but never `battery_charging`; where the report carries charging is not known yet (F-006's Switch2Connect is the reference to check).
+- Switch2Connect reads the two bytes after the voltage (packet[34..35] here) as `battery_current`, unsigned, divided by 100, and never uses it. Since 2026-10-29 the plugin reads them signed into `Battery Current` on Get Switch 2 Sensors (commit "read the Switch 2 battery current"); `battery_charging` is not derived from it yet.
+- Next: show Battery Current in the demo panel and read it with the cable in and out. NodeScribe cannot insert a node into an existing exec chain, and `replace` refuses on this EventGraph (its reading loses two reconvergences), so the row needs a hand edit in the editor or a NodeScribe change. Then set `battery_charging` from the sign that shows up while charging.
 Tests: the user, with the Pro Controller 2 over the cable and over Bluetooth.
 
 ### R-033 [adjustment] A Switch 2 on Bluetooth reaches a Standalone game launched from the editor
