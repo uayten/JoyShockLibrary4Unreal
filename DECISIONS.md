@@ -1,6 +1,6 @@
 # Decisions
 
-<!-- project-docs: only what holds now. Next ID: D-006 · Next fact: F-011 -->
+<!-- project-docs: only what holds now. Next ID: D-008 · Next fact: F-013 -->
 
 The invariants learned by breaking them (Bluetooth streams, `GetInstance`, the device mapper, the right
 stick's Y, Connection Id, no CoreRedirects) live in `CLAUDE.md`, with their reasons. They are not repeated
@@ -39,6 +39,18 @@ Affects: R-023, R-024
 Decision: the user forwards them saying they are Claude's, so they are written as Claude and address him directly. His public pseudonym is Agent Ottsel; his real name is not confidential and is not to be raised again.
 Why: the user said so on 2026-08-11.
 Origin: user
+
+### D-006 A report-mode recovery is paced, and never repeated freely on Bluetooth
+Decision: a recovery that re-sends configuration because a controller streams the wrong report runs a bounded number of times per episode (wrong report until the first right one), with a gap between tries -- `FModeRecoveryPacer` in `JoyShockPolling.cpp`. Switch 2 on USB streaming anything but 0x05: the USB set-up again every 0.75 s, ten times, the first only after 0.75 s. Switch 1 in 0x3F over Bluetooth: three tries 2 s apart, the first at once. The Switch 2 init retry is USB only (the WinUSB lease); a failed Bluetooth init is not retried, and a USB init that held the interface and still failed gets three retries.
+Why: configuration on a live Bluetooth stream has dropped working controllers four times (CLAUDE.md); the numbers come from the Unity port's measurements (0.75 s) and are the agent's choice otherwise.
+Origin: agent's choice, 2026-10-29, delivered for test with R-004, R-006 and R-007
+Affects: R-004, R-006, R-007
+
+### D-007 The Joy-Con 2 halves take the Pro Controller 2's feature mask
+Decision: `JoyCon2Left` and `JoyCon2Right` are registered in `Config/Input.ini` with `SupportedFeaturesMask=9477` (Keypress, Gamepad, ForceFeedback, Acceleration, Orientation), like `Switch2ProController`, not 9541 like the Switch 1 Joy-Cons (which adds Lights).
+Why: same family, same output path; whether player LEDs count as Lights is left to Renan's test.
+Origin: agent's choice, 2026-10-29
+Affects: R-029
 
 ## Verified facts
 
@@ -95,3 +107,15 @@ Fact: with the editor connected to a Pro Controller 2 over Bluetooth, a Standalo
 Source: editor and Standalone logs (`Saved/Logs/BossRush.log`, `BossRush_2.log`), 2026-10-25 23:15
 Verified: 2026-10-25
 Affects: R-033, docs/switch2.md
+
+### F-011 A Pro Controller 2 moved from Bluetooth to the cable keeps streaming report 0x09
+Fact: plugging the cable into a Pro Controller 2 connected over Bluetooth retired the Bluetooth controller; the USB init then got an ack for every command and the first USB report was still 0x09, so the parser dropped every report and the controller was never announced, until PIE ended and it was retired as "never delivered input". Matches FofuxoJoySense4Unity's F-010, where the same set-up run again a few seconds later switched it to 0x05.
+Source: `Saved/Logs/BossRush.log`, 2026-10-29 22:05:53, the user's Pro Controller 2
+Verified: 2026-10-29
+Affects: R-004
+
+### F-012 Switch2Connect reads a battery current after the voltage
+Fact: Switch2Connect's input parser reads the two bytes after the battery voltage (BLE offsets 33-34; packet[34..35] in this plugin's indexing) as `battery_current`, unsigned, divided by 100, and never uses the value. Nothing in it reads a charging flag.
+Source: https://github.com/TommyWabg/Switch2Connect `src/controller.py`, the input-report parser
+Verified: 2026-10-29
+Affects: R-031
