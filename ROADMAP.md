@@ -4,6 +4,19 @@
 
 ## Testing
 
+### R-006 A Joy-Con in 0x3F mode is recovered a few times, not on every report
+1. Four Joy-Cons on Bluetooth, play for a few minutes with gyro in use: gyro keeps working, and if the log shows "0x3F mode reset detected" it is followed by at most two "still in 0x3F" lines per episode.
+2. Turn a Joy-Con off and on while the game runs: it reconnects with gyro and does not disconnect again by itself.
+
+### R-007 The Switch 2 init runs once per connection
+1. Pro Controller 2 on the cable, then on Bluetooth: play for a few minutes. No freezes in the input, and the log shows "Running Switch 2 ... init sequence" once per connection.
+2. With the editor open, play in Standalone with the controller on the cable: rumble and player lights work in the Standalone window.
+
+### R-004 A Pro Controller 2 moved from Bluetooth to the cable keeps working
+1. With the Pro Controller 2 on Bluetooth, in PIE, plug its cable in: within about two seconds it works again over USB. The log (Window > Output Log) may show "streaming report 0x09 on USB instead of 0x05; running the USB set-up again" and then "now streaming report 0x05".
+2. Repeat a few times. If the log ever says "still streaming report 0x09 on USB after 10 set-ups", that is a failure: send the log.
+3. Pull the cable: it comes back on Bluetooth (after a button press, if it switched off).
+
 ### R-015 Joy-Con motion comes back by itself when the sensor starts dead
 1. Connect four Joy-Cons over Bluetooth, one after the other, and open the log (Window > Output Log): every Joy-Con shows moving gyro on its controller mirror within a few seconds.
 2. If one shows no gyro: the log says "toggling the IMU enable in-stream" and then "resumed IMU samples" for that controller, and its gyro starts moving.
@@ -53,19 +66,6 @@ Tests:
 - A controller paired with a Switch 2 console: pressing a button does not connect it to the PC, and the log says once that it is paired with another device; holding SYNC then connects it and pairs it with the PC.
 - A brand-new controller in SYNC mode connects and pairs, as before.
 
-### R-004 [adjustment] A Switch 2 that keeps its Bluetooth report mode on the cable must be set up again
-Adjusts: Switch 2 handling in `pollIndividualLoop` (`JoyShockPolling.cpp`), next to the existing init retry.
-Expected: plugging the cable into a Switch 2 Pro Controller connected over Bluetooth ends with it reading over USB within a couple of seconds, every time.
-Facts to start from (FofuxoJoySense4Unity F-010, 2026-10-12):
-- The Bluetooth init sets input report mode 0x09 (`03:0A` with `09`). The controller keeps that mode when the cable is plugged in: over USB it then sends report 0x09, whose USB layout is not 0x05's (the left stick sits where 0x05 has buttons).
-- The USB init that runs on plugging in completed with every command answered and the mode still stayed 0x09: it landed while the controller was still leaving the radio. Run again by hand a few seconds later, it switched to 0x05 at once.
-- `parse_switch2_report` drops anything that is not 0x05, so no wrong buttons reach the game -- but the existing retry in `pollIndividualLoop` only fires while `sw2_init_succeeded` is false, and here the init succeeded. The likely result is a controller that stays silent on the cable. Not verified on this plugin; the Unity port saw the 0x09 reports directly.
-- The Unity port re-runs the USB setup, at most every 0.75 s, for as long as non-0x05 reports arrive. The Switch 1 branch already does the same kind of recovery for report 0x3F (`recover_switch_mode`).
-- In that test plugging the cable dropped the Bluetooth link, and pulling it switched the controller off; a button press reconnected it over Bluetooth.
-Tests:
-- Connected over Bluetooth, plug the cable in: the controller works over USB within about two seconds. Repeat a few times.
-- Pull the cable: the controller comes back over Bluetooth (after a button press, if it switched off).
-
 ### R-005 [adjustment] Open the GATT session before looking up the Switch 2 service
 Adjusts: `Switch2Ble::Connect` (`Switch2Bluetooth.cpp`).
 Expected: a controller woken by a button connects on the first advertisement, also right after it leaves its cable.
@@ -74,32 +74,6 @@ Facts to start from (FofuxoJoySense4Unity, 2026-10-13):
 - After moving the session (with `MaintainConnection(true)`) before the lookup, and retrying the lookup three times 500 ms apart with the last one `Cached`, the same case connected. It is not proven which of the two changes did it, and that test ran in a fresh process, so the earlier failures may also have come from the leak in R-003.
 Tests:
 - Plug the cable in and pull it, then wake the controller with a button: it reconnects over Bluetooth. Repeat a few times.
-
-### R-006 [adjustment] Recover a Switch 1 controller from report 0x3F once, not on every report
-Adjusts: the 0x3F recovery from PR #7 (`recover_switch_mode` in `JoyShock.cpp`, called from `pollIndividualLoop` in `JoyShockPolling.cpp`).
-Expected: a Joy-Con or Pro Controller that drops into the simple 0x3F mode over Bluetooth gets its motion back, and a controller that stays in 0x3F is not sent configuration commands over and over, so it does not lose its Bluetooth link.
-Facts to start from (code review, 2026-10-25, not checked on hardware):
-- Every 0x3F report triggers subcommands 0x03 (report mode 0x30) and 0x40 (IMU on), plus a Warning in the log. Nothing limits how often: a controller that ignores the 0x03 gets both on every report it sends, for as long as it stays connected.
-- These are configuration subcommands on a live Bluetooth stream, the thing the plugin's CLAUDE.md lists as having dropped working controllers four times. Both go out as write-only (`write_subcommand`), which is what the IMU repair also uses, so the risk is the repetition rather than the form.
-- In 0x3F the report carries no IMU, so the IMU-repair toggle in the same loop (0x40 off, then on) also runs: two mechanisms writing 0x40 at the same time.
-- A failed write marks the motion sensor as blocked (`note_output_result`), which fires the "another application is holding this controller" event even when nothing else is.
-- R-004 points at this function as the model for its own recovery, so whatever limit is chosen here should apply there too.
-Tests (Joy-Con here; a Switch 1 Pro Controller is Renan's):
-- Over Bluetooth, play for a few minutes with gyro in use: gyro keeps working and the log shows at most one 0x3F line per episode.
-- Turn a Joy-Con off and on while the game runs: it reconnects with gyro and does not disconnect again by itself.
-
-### R-007 [adjustment] Stop re-running the Switch 2 init every 2 seconds on a controller that streams
-Adjusts: the Switch 2 init retry in `pollIndividualLoop` (`JoyShockPolling.cpp`), `init_switch2` and `init_switch2_bluetooth` (`JoyShock_Switch2.cpp`).
-Expected: a Switch 2 whose first init went wrong keeps responding without pauses, on cable and on Bluetooth; the retry only happens when it can actually help.
-Facts to start from (code review, 2026-10-25, not checked on hardware):
-- While `sw2_init_succeeded` is false, the polling thread re-runs the whole init every 2 s, forever, on a controller that is already sending input. Over USB a single failed `WinUsb_WritePipe` among the ten commands is enough; over Bluetooth, three unanswered commands in a row.
-- The retry exists for the WinUSB lease that the editor and its Standalone child pass between them. Over Bluetooth there is no lease, but the same retry runs `init_switch2_bluetooth` anyway: the configuration exchange on a live Bluetooth stream that the plugin's CLAUDE.md forbids.
-- Each retry blocks the polling thread: over Bluetooth every command waits up to 1 s for its answer, and each of the calibration reads tries three times. Input queued meanwhile is capped at 32 reports, oldest dropped. R-012 makes each refused command cost less, but not the repetition.
-- The timeout branch of the same loop says the Switch 2 handshake "resets the stream so it never settles".
-- R-004 needs a retry that fires even after a successful init; the two should be designed together.
-Tests (Pro Controller 2):
-- On cable and on Bluetooth: play for a few minutes: no freezes in the input, and the log shows the init sequence once per connection.
-- Open the editor and play in Standalone with the controller on the cable: rumble and player lights work in the Standalone window.
 
 ### R-008 [adjustment] A controller that disconnects while the editor is closing must not crash it
 Adjusts: `ShutdownAllDevices` (`JoyShockLibrary.cpp`) and the disconnect and timeout branches of `pollIndividualLoop` (`JoyShockPolling.cpp`).
