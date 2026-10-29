@@ -4,6 +4,11 @@
 
 ## Testing
 
+### R-032 The Switch 2 magnetometer over the cable
+1. Pro Controller 2 on the cable: the Magnetometer box in the demo panel moves when the controller turns (before, it stayed at zero on the cable).
+2. At rest, ZL and ZR read released -- check the controller mirror. If either reads held, that is the failure the item warns about: say which.
+3. Then update docs/hardware.md and docs/switch2.md, which still say "Bluetooth only".
+
 ### R-011 Closing the editor with a Switch 2 advertising never crashes
 1. Hold SYNC on the Pro Controller 2 so it advertises, open the editor and close it as soon as it finishes loading. Repeat a few times: it always closes cleanly.
 
@@ -155,12 +160,6 @@ Adjusts: battery reporting (`docs/controllers.md` > *Battery*).
 Expected: Is Charging on a Switch 2 controller turns true when its cable goes in and false when it comes out, and Wait For Battery Changes raises On Charging Changed for it.
 Facts to start from: F-009. `parse_switch2_report` (`InputHelpers.cpp`) fills voltage, percent and level but never `battery_charging`; where the report carries charging is not known yet (F-006's Switch2Connect is the reference to check).
 Tests: the user, with the Pro Controller 2 over the cable and over Bluetooth.
-
-### R-032 [adjustment] The Switch 2 magnetometer over the cable too
-Adjusts: the Switch 2 USB init (`JoyShock_Switch2.cpp`, the FEATSEL command).
-Expected: the magnetometer of a Switch 2 controller reads over the cable as it does over Bluetooth.
-Facts to start from: F-009. The USB init asks for features 0x27, the Bluetooth one for 0x94 (motion 0x04, mouse 0x10, magnetometer 0x80). The Bluetooth comment warns that asking for every feature turns on report fields the parser does not expect, read as stuck triggers -- add 0x80 alone and check the triggers.
-Tests: the user, with the Pro Controller 2 over the cable: the magnetometer moves when the controller turns, and ZL/ZR read released at rest.
 
 ### R-033 [adjustment] A Switch 2 on Bluetooth reaches a Standalone game launched from the editor
 Adjusts: `Switch2Bluetooth.cpp` / `discover_bluetooth_switch2`, next to the USB lease the editor and Standalone already pass between them.
