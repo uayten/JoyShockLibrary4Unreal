@@ -4,6 +4,9 @@
 
 ## Testing
 
+### R-011 Closing the editor with a Switch 2 advertising never crashes
+1. Hold SYNC on the Pro Controller 2 so it advertises, open the editor and close it as soon as it finishes loading. Repeat a few times: it always closes cleanly.
+
 ### R-008 A controller dropping while the editor closes does not crash it
 1. With a controller connected, close the editor and pull its cable (or turn it off) at the same moment. Repeat several times: the editor always closes cleanly. Worth asking Renan, under the debugger.
 
@@ -73,15 +76,6 @@ Tests:
 - A controller already paired with the PC reconnects on a button press, as before.
 - A controller paired with a Switch 2 console: pressing a button does not connect it to the PC, and the log says once that it is paired with another device; holding SYNC then connects it and pairs it with the PC.
 - A brand-new controller in SYNC mode connects and pairs, as before.
-
-### R-011 [adjustment] Bluetooth callbacks must not look the module up during shutdown
-Adjusts: the discovery callback and the scan start in `StartupModule` (`JoyShockLibrary4Unreal.cpp`).
-Expected: closing the editor with a Switch 2 advertising nearby, or right after opening it, never crashes.
-Facts to start from (code review, 2026-10-25, not reproduced):
-- The discovery callback runs on a WinRT thread and calls `IsAvailable()` (which asks `FModuleManager`), then `GetInstance()`. Once `ShutdownModule` has cleared `GLiveJoyShockModule`, `GetInstance` falls back to `LoadModuleChecked`, the very call the plugin's CLAUDE.md says fails its own check off the game thread during shutdown. `Switch2Ble::Shutdown` clears the callback before that, but a callback already running is not waited for.
-- The startup thread checks `bShuttingDown` only before `IsSupported()`, which blocks. If the editor closes in that window, `SetDiscoveryCallback` and `StartScan` run after `Switch2Ble::Shutdown` and leave a scan running with a callback into a module that is gone.
-Tests (Pro Controller 2):
-- Open the editor and close it as soon as it finishes loading, with the controller advertising (hold SYNC). Repeat a few times: it always closes cleanly.
 
 ### R-018 [adjustment] The demo's controller-name widget follows controller changes
 Adjusts: `WBP_ControllerName` (demo, `Content/`).
