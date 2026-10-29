@@ -4,6 +4,12 @@
 
 ## Testing
 
+### R-002 Over Bluetooth, a Switch 2 paired elsewhere is left alone
+1. The Pro Controller 2, already paired with this PC: turn it off, then press a button: it reconnects, as before.
+2. Pair it with something else (a Switch 2 console, if one is at hand), then press a button near the PC: it does not connect, and the log says once "paired with another device ... Hold SYNC on it". Hold SYNC: it connects and pairs with the PC.
+3. A controller in SYNC mode that was never paired connects and pairs, as before.
+Step 2 needs a second host; without one, steps 1 and 3 still check nothing broke.
+
 ### R-032 The Switch 2 magnetometer over the cable
 1. Pro Controller 2 on the cable: the Magnetometer box in the demo panel moves when the controller turns (before, it stayed at zero on the cable).
 2. At rest, ZL and ZR read released -- check the controller mirror. If either reads held, that is the failure the item warns about: say which.
@@ -69,18 +75,6 @@ Facts to start from:
 - `FJoyShockInterface` (`JoyShockInterface.cpp`, end of `PresentSticks`) negates the right Y again for every non-Sony pad (`bSonyPad ? State.stickRY : -State.stickRY`). The two negations cancel, which is why Unreal sees the right sign. Its own comment says the low-level layer disagrees between Sony and the other families.
 - The Switch 1 Pro Controller branch (`InputHelpers.cpp`, `left_right == 3`) adds the same negation with the same reasoning; the right Joy-Con is corrected once, in the interface. Check both against hardware before touching them.
 Before changing: anything reading the low-level state directly (`JoyShockBlueprintLibrary.cpp` builds `RightStick` from `stickRY`) will flip sign. Needs a Switch 2 Pro, a Switch 1 Pro, a right Joy-Con and a Sony pad to verify, tested in Standalone.
-
-### R-002 [adjustment] Over Bluetooth, only take Switch 2 controllers in pairing mode or paired with this PC
-Adjusts: `discover_bluetooth_switch2` (`Private/JoyShockEnumeration.cpp`) and the advertisement suppression in `Switch2Bluetooth.cpp`.
-Expected: a Switch 2 controller is connected only when its advertisement carries no host (SYNC held: it is then bonded to this PC, as today) or carries this PC's adapter address. One paired with another device -- a Switch 2 console in the same room -- is left alone, so a button pressed to use the console does not take the controller away from it; holding SYNC on it still pairs it with the PC.
-Facts to start from (measured with FofuxoJoySense4Unity, which already does this -- its D-008 and F-011, 2026-10-13):
-- In pairing mode the advertisement's reconnect address (manufacturer data bytes 10-15) is 0. After the bond commands, a controller woken by a button advertises this PC's adapter address there, the same value `Switch2Ble::GetHostAddress` returns, byte order included. So the comparison works as is.
-- Today `discover_bluetooth_switch2` connects whatever advertises and only uses the reconnect address to decide whether to bond.
-- `OnAdvertisementReceived` in `Switch2Bluetooth.cpp` suppresses an address forever once it has been offered, until a connection to it ends. A controller turned down by the new check would then never be offered again in the session, not even after its owner holds SYNC. It needs to be offered again after a short delay instead (FofuxoJoySense4Unity added `JsBle_SuppressFor(address, 2000)` for this).
-Tests:
-- A controller already paired with the PC reconnects on a button press, as before.
-- A controller paired with a Switch 2 console: pressing a button does not connect it to the PC, and the log says once that it is paired with another device; holding SYNC then connects it and pairs it with the PC.
-- A brand-new controller in SYNC mode connects and pairs, as before.
 
 ### R-018 [adjustment] The demo's controller-name widget follows controller changes
 Adjusts: `WBP_ControllerName` (demo, `Content/`).
