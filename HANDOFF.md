@@ -4,7 +4,7 @@ Updated: 2026-10-29
 
 ## State
 - Branch `batch/2026-10-29`, checked out, nothing pushed. `master` (`5e2ac56`) holds only validated work, up to R-030 (battery and Switch 2 sensors in the demo panel, approved on hardware).
-- The branch holds 13 roadmap items, one commit each, all compiled (unity and non-unity) and none tested on a controller: R-002, R-003, R-004, R-005, R-006, R-007, R-008, R-009, R-010, R-011, R-012, R-029, R-032. All are in *Em teste* with their steps. The editor binaries are already built from this branch.
+- The branch holds 13 roadmap items, one commit each, all compiled (unity and non-unity). R-004 was approved on hardware on 2026-10-30; the other 12 are untested: R-002, R-003, R-005, R-006, R-007, R-008, R-009, R-010, R-011, R-012, R-029, R-032. Those 12 are in *Em teste* with their steps. The editor binaries are already built from this branch.
 - R-031 is half done: `Battery Current` is read and published on Get Switch 2 Sensors, but not shown in the demo panel and not turned into Is Charging (see the item).
 - The user has a Portuguese checklist of these tests, `TESTES-2026-10-29.md` in the plugin root, excluded locally through `.git/info/exclude`.
 
@@ -23,4 +23,4 @@ If the user would rather start new work while testing: the demo items R-018 to R
 - `Content/BossRush/Testes/BP_TesteSensoresPro2` in BossRush can be deleted now that R-030 is approved; it was not, waiting for the user's ok.
 
 ## Read first
-`TESTES-2026-10-29.md` (what the user is testing), then the ROADMAP's *Em teste* section. Source only when a test fails: `JoyShockPolling.cpp` (R-004/6/7/8/10), `Switch2Bluetooth.cpp` (R-002/3/5/11/12), `JoyShock_Switch2.cpp` (R-009, R-032).
+`TESTES-2026-10-29.md` (what the user is testing), then the ROADMAP's *Em teste* section. Source only when a test fails: `JoyShockPolling.cpp` (R-006/7/8/10), `Switch2Bluetooth.cpp` (R-002/3/5/11/12), `JoyShock_Switch2.cpp` (R-009, R-032).

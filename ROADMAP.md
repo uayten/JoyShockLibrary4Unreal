@@ -48,11 +48,6 @@ O passo 2 precisa de um segundo aparelho; sem ele, os passos 1 e 3 ainda confirm
 1. Pro Controller 2 no cabo, depois no Bluetooth: jogar alguns minutos. Nenhum travamento no input, e o log mostra "Running Switch 2 ... init sequence" uma vez por conexão.
 2. Com o editor aberto, jogar em Standalone com o controle no cabo: vibração e luzes de jogador funcionam na janela do Standalone.
 
-### R-004 Um Pro Controller 2 que passa do Bluetooth para o cabo continua funcionando
-1. Com o Pro Controller 2 no Bluetooth, em PIE, ligar o cabo: em uns dois segundos ele volta a funcionar por USB. O log (Window > Output Log) pode mostrar "streaming report 0x09 on USB instead of 0x05; running the USB set-up again" e depois "now streaming report 0x05".
-2. Repetir algumas vezes. Se o log disser alguma vez "still streaming report 0x09 on USB after 10 set-ups", é falha: mandar o log.
-3. Puxar o cabo: ele volta pelo Bluetooth (depois de apertar um botão, se tiver desligado).
-
 ### R-015 O movimento do Joy-Con volta sozinho quando o sensor começa morto
 1. Conectar quatro Joy-Cons por Bluetooth, um depois do outro, e abrir o log (Window > Output Log): todo Joy-Con mostra o giroscópio se mexendo no espelho do controle em poucos segundos.
 2. Se algum ficar sem giroscópio: o log diz "toggling the IMU enable in-stream" e depois "resumed IMU samples" para aquele controle, e o giroscópio dele começa a se mexer.
