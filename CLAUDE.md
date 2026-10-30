@@ -117,6 +117,8 @@ placed instance in `Content/`, and those can only be repaired in the editor: fin
 ## Conventions
 
 - **Code, comments and commit messages are in English**, regardless of the language of the conversation.
+- **`ROADMAP.md` is the exception: it is in Portuguese.** It is the working list of the two maintainers,
+  both Brazilian, not documentation for users of the plugin; keep new items in Portuguese.
 - **Comments say why, not what.** The existing ones explain the constraint that made the code look like
   that — which invariant it protects, what broke when it was written differently. Match that; a comment
   restating the line below it is noise here.

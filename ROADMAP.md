@@ -1,165 +1,165 @@
 # Roadmap
 
-<!-- project-docs: pending work only; approved items are deleted. Order = priority. Next ID: R-035 -->
+<!-- project-docs: só pendências; aprovado é apagado. Ordem = prioridade. Próximo ID: R-035 -->
 
-## Testing
+## Em teste
 
-### R-029 Joy-Con 2 halves registered as hardware devices (Renan)
-1. Connect a Joy-Con 2 half over Bluetooth: the log line "RegisterDevice: ... HardwareDeviceIdentifier=JoyCon2Left" (or Right) appears, and Project Settings > Input lists JoyCon2Left and JoyCon2Right among the hardware devices. They use the Pro Controller 2 mask (9477: no Lights), as the same family; Renan to say if the player LEDs should count as Lights.
+### R-029 Metades do Joy-Con 2 registradas como dispositivos de hardware (Renan)
+1. Conectar uma metade de Joy-Con 2 por Bluetooth: aparece no log a linha "RegisterDevice: ... HardwareDeviceIdentifier=JoyCon2Left" (ou Right), e Project Settings > Input lista JoyCon2Left e JoyCon2Right entre os dispositivos de hardware. Eles usam a máscara do Pro Controller 2 (9477: sem Lights), por serem da mesma família; o Renan deve dizer se os LEDs de jogador deveriam contar como Lights.
 
-### R-002 Over Bluetooth, a Switch 2 paired elsewhere is left alone
-1. The Pro Controller 2, already paired with this PC: turn it off, then press a button: it reconnects, as before.
-2. Pair it with something else (a Switch 2 console, if one is at hand), then press a button near the PC: it does not connect, and the log says once "paired with another device ... Hold SYNC on it". Hold SYNC: it connects and pairs with the PC.
-3. A controller in SYNC mode that was never paired connects and pairs, as before.
-Step 2 needs a second host; without one, steps 1 and 3 still check nothing broke.
+### R-002 Por Bluetooth, um Switch 2 pareado com outro aparelho é deixado em paz
+1. O Pro Controller 2, já pareado com este PC: desligar e apertar um botão: ele reconecta, como antes.
+2. Parear com outro aparelho (um console Switch 2, se houver um à mão) e apertar um botão perto do PC: ele não conecta, e o log diz uma única vez "paired with another device ... Hold SYNC on it". Segurar o SYNC: ele conecta e pareia com o PC.
+3. Um controle em modo SYNC que nunca foi pareado conecta e pareia, como antes.
+O passo 2 precisa de um segundo aparelho; sem ele, os passos 1 e 3 ainda confirmam que nada quebrou.
 
-### R-032 The Switch 2 magnetometer over the cable
-1. Pro Controller 2 on the cable: the Magnetometer box in the demo panel moves when the controller turns (before, it stayed at zero on the cable).
-2. At rest, ZL and ZR read released -- check the controller mirror. If either reads held, that is the failure the item warns about: say which.
-3. Then update docs/hardware.md and docs/switch2.md, which still say "Bluetooth only".
+### R-032 O magnetômetro do Switch 2 pelo cabo
+1. Pro Controller 2 no cabo: o quadro Magnetometer do painel da demo se mexe quando o controle gira (antes ficava em zero no cabo).
+2. Em repouso, ZL e ZR aparecem soltos -- conferir no espelho do controle. Se algum aparecer apertado, é a falha de que o item avisa: dizer qual.
+3. Depois, atualizar `docs/hardware.md` e `docs/switch2.md`, que ainda dizem "Bluetooth only".
 
-### R-011 Closing the editor with a Switch 2 advertising never crashes
-1. Hold SYNC on the Pro Controller 2 so it advertises, open the editor and close it as soon as it finishes loading. Repeat a few times: it always closes cleanly.
+### R-011 Fechar o editor com um Switch 2 anunciando nunca dá crash
+1. Segurar o SYNC do Pro Controller 2 para ele ficar anunciando, abrir o editor e fechar assim que terminar de carregar. Repetir algumas vezes: ele sempre fecha limpo.
 
-### R-008 A controller dropping while the editor closes does not crash it
-1. With a controller connected, close the editor and pull its cable (or turn it off) at the same moment. Repeat several times: the editor always closes cleanly. Worth asking Renan, under the debugger.
+### R-008 Um controle caindo enquanto o editor fecha não dá crash
+1. Com um controle conectado, fechar o editor e puxar o cabo (ou desligar o controle) no mesmo instante. Repetir várias vezes: o editor sempre fecha limpo. Vale pedir ao Renan, com o depurador.
 
-### R-010 Turning off a Switch 2 on Bluetooth never freezes the game
-1. With the Pro Controller 2 on Bluetooth and another controller in use, keep moving a stick on the other one and turn the Switch 2 off: the other controller never stops responding. Repeat a few times.
+### R-010 Desligar um Switch 2 no Bluetooth nunca congela o jogo
+1. Com o Pro Controller 2 no Bluetooth e outro controle em uso, ficar mexendo um analógico do outro e desligar o Switch 2: o outro controle nunca para de responder. Repetir algumas vezes.
 
-### R-009 Switch 2 stick calibration checked the same way on cable and Bluetooth
-1. Pro Controller 2 on the cable, then on Bluetooth, sticks at rest: both read centred on the controller mirror, and the log line "SW2 left/right stick cal" shows the same centre on both transports.
+### R-009 Calibração dos analógicos do Switch 2 conferida do mesmo jeito no cabo e no Bluetooth
+1. Pro Controller 2 no cabo, depois no Bluetooth, analógicos em repouso: os dois aparecem centrados no espelho do controle, e a linha de log "SW2 left/right stick cal" mostra o mesmo centro nas duas conexões.
 
-### R-003 A failed Switch 2 Bluetooth connection leaves nothing behind
-1. Connect the Pro Controller 2 over Bluetooth, turn it off, connect it again -- several times in one editor session: every connection succeeds.
-2. Hold SYNC and turn the controller off right after the lights start moving, so the attempt fails; then connect normally: it succeeds without restarting the editor.
+### R-003 Uma conexão Bluetooth do Switch 2 que falha não deixa resto
+1. Conectar o Pro Controller 2 por Bluetooth, desligar, conectar de novo -- várias vezes na mesma sessão do editor: toda conexão dá certo.
+2. Segurar o SYNC e desligar o controle logo que as luzes começarem a correr, para a tentativa falhar; depois conectar normalmente: dá certo sem reiniciar o editor.
 
-### R-005 A Switch 2 reconnects over Bluetooth right after leaving its cable
-1. Plug the Pro Controller 2 in and pull the cable, then wake it with a button: it reconnects over Bluetooth. Repeat a few times.
+### R-005 Um Switch 2 reconecta por Bluetooth logo depois de sair do cabo
+1. Ligar o cabo do Pro Controller 2 e puxar, depois acordar o controle com um botão: ele reconecta por Bluetooth. Repetir algumas vezes.
 
-### R-012 A refused Switch 2 Bluetooth command fails at once
-1. Connect the Pro Controller 2 over Bluetooth and read the log: the init lines come out quickly, none waits about a second before "was not acknowledged", and the controller responds within a couple of seconds of connecting. (A Joy-Con 2 too, with Renan.)
+### R-012 Um comando Bluetooth recusado pelo Switch 2 falha na hora
+1. Conectar o Pro Controller 2 por Bluetooth e ler o log: as linhas de inicialização saem rápido, nenhuma espera cerca de um segundo antes de "was not acknowledged", e o controle responde em até uns dois segundos depois de conectar. (Um Joy-Con 2 também, com o Renan.)
 
-### R-006 A Joy-Con in 0x3F mode is recovered a few times, not on every report
-1. Four Joy-Cons on Bluetooth, play for a few minutes with gyro in use: gyro keeps working, and if the log shows "0x3F mode reset detected" it is followed by at most two "still in 0x3F" lines per episode.
-2. Turn a Joy-Con off and on while the game runs: it reconnects with gyro and does not disconnect again by itself.
+### R-006 Um Joy-Con no modo 0x3F é recuperado algumas vezes, não a cada relatório
+1. Quatro Joy-Cons no Bluetooth, jogar alguns minutos usando o giroscópio: o giroscópio continua funcionando, e se o log mostrar "0x3F mode reset detected", vêm depois no máximo duas linhas "still in 0x3F" por episódio.
+2. Desligar e ligar um Joy-Con com o jogo rodando: ele reconecta com giroscópio e não volta a desconectar sozinho.
 
-### R-007 The Switch 2 init runs once per connection
-1. Pro Controller 2 on the cable, then on Bluetooth: play for a few minutes. No freezes in the input, and the log shows "Running Switch 2 ... init sequence" once per connection.
-2. With the editor open, play in Standalone with the controller on the cable: rumble and player lights work in the Standalone window.
+### R-007 A inicialização do Switch 2 roda uma vez por conexão
+1. Pro Controller 2 no cabo, depois no Bluetooth: jogar alguns minutos. Nenhum travamento no input, e o log mostra "Running Switch 2 ... init sequence" uma vez por conexão.
+2. Com o editor aberto, jogar em Standalone com o controle no cabo: vibração e luzes de jogador funcionam na janela do Standalone.
 
-### R-004 A Pro Controller 2 moved from Bluetooth to the cable keeps working
-1. With the Pro Controller 2 on Bluetooth, in PIE, plug its cable in: within about two seconds it works again over USB. The log (Window > Output Log) may show "streaming report 0x09 on USB instead of 0x05; running the USB set-up again" and then "now streaming report 0x05".
-2. Repeat a few times. If the log ever says "still streaming report 0x09 on USB after 10 set-ups", that is a failure: send the log.
-3. Pull the cable: it comes back on Bluetooth (after a button press, if it switched off).
+### R-004 Um Pro Controller 2 que passa do Bluetooth para o cabo continua funcionando
+1. Com o Pro Controller 2 no Bluetooth, em PIE, ligar o cabo: em uns dois segundos ele volta a funcionar por USB. O log (Window > Output Log) pode mostrar "streaming report 0x09 on USB instead of 0x05; running the USB set-up again" e depois "now streaming report 0x05".
+2. Repetir algumas vezes. Se o log disser alguma vez "still streaming report 0x09 on USB after 10 set-ups", é falha: mandar o log.
+3. Puxar o cabo: ele volta pelo Bluetooth (depois de apertar um botão, se tiver desligado).
 
-### R-015 Joy-Con motion comes back by itself when the sensor starts dead
-1. Connect four Joy-Cons over Bluetooth, one after the other, and open the log (Window > Output Log): every Joy-Con shows moving gyro on its controller mirror within a few seconds.
-2. If one shows no gyro: the log says "toggling the IMU enable in-stream" and then "resumed IMU samples" for that controller, and its gyro starts moving.
+### R-015 O movimento do Joy-Con volta sozinho quando o sensor começa morto
+1. Conectar quatro Joy-Cons por Bluetooth, um depois do outro, e abrir o log (Window > Output Log): todo Joy-Con mostra o giroscópio se mexendo no espelho do controle em poucos segundos.
+2. Se algum ficar sem giroscópio: o log diz "toggling the IMU enable in-stream" e depois "resumed IMU samples" para aquele controle, e o giroscópio dele começa a se mexer.
 
-### R-016 A controller moves between cable and Bluetooth without disconnecting
-1. With a DualShock 4 on Bluetooth, plug its cable in: it keeps working, with the same player number.
-2. Pull the cable: it goes back to Bluetooth and keeps working, with the same player number.
-3. Repeat plugging and pulling ten times, quickly: the editor never freezes and the controller never needs to be turned off and on.
+### R-016 Um controle passa entre cabo e Bluetooth sem desconectar
+1. Com um DualShock 4 no Bluetooth, ligar o cabo: ele continua funcionando, com o mesmo número de jogador.
+2. Puxar o cabo: ele volta para o Bluetooth e continua funcionando, com o mesmo número de jogador.
+3. Ligar e puxar o cabo dez vezes, rápido: o editor nunca congela e o controle nunca precisa ser desligado e ligado.
 
-### R-017 Joy-Con 2 calibration read at every connection (Renan)
-1. Connect each Joy-Con 2 half over Bluetooth ten times: every time the log shows a stick calibration line, and the stick reaches the edge of its range on the controller mirror.
+### R-017 Calibração do Joy-Con 2 lida a cada conexão (Renan)
+1. Conectar cada metade do Joy-Con 2 por Bluetooth dez vezes: toda vez o log mostra uma linha de calibração do analógico, e o analógico chega à borda do alcance no espelho do controle.
 
-## In progress
+## Em andamento
 
-## To do
+## A fazer
 
-### R-001 [adjustment] One stick Y sign per layer, across controller families
-Adjusts: stick normalisation (`docs/architecture.md` > *Where to change what*).
-Expected: the low-level JSL state (`simple_state`, the direct getters and the Blueprint nodes that read it) reports the right stick's Y with the same sign as the left one on every family, and the comments say what the code actually does. `FJoyShockInterface` then presents the sticks without per-family corrections.
-Facts to start from:
-- Switch 2 Pro Controller over USB: in the raw report both sticks grow upwards; no axis needs negating. Measured on hardware with the Stick Overlay of FofuxoJoySense4Unity (its F-006), 2026-10-08.
-- `parse_switch2_report` (`InputHelpers.cpp`, the `bWhole` block) negates the right Y "to make up positive on both sticks". Given the fact above, it does the opposite: after it, the right stick reads up as negative.
-- `FJoyShockInterface` (`JoyShockInterface.cpp`, end of `PresentSticks`) negates the right Y again for every non-Sony pad (`bSonyPad ? State.stickRY : -State.stickRY`). The two negations cancel, which is why Unreal sees the right sign. Its own comment says the low-level layer disagrees between Sony and the other families.
-- The Switch 1 Pro Controller branch (`InputHelpers.cpp`, `left_right == 3`) adds the same negation with the same reasoning; the right Joy-Con is corrected once, in the interface. Check both against hardware before touching them.
-Before changing: anything reading the low-level state directly (`JoyShockBlueprintLibrary.cpp` builds `RightStick` from `stickRY`) will flip sign. Needs a Switch 2 Pro, a Switch 1 Pro, a right Joy-Con and a Sony pad to verify, tested in Standalone.
+### R-001 [ajuste] Um só sinal de Y do analógico por camada, em todas as famílias de controle
+Ajusta: a normalização dos analógicos (`docs/architecture.md` > *Where to change what*).
+Esperado: o estado de baixo nível do JSL (`simple_state`, os getters diretos e os nodes de Blueprint que o leem) informa o Y do analógico direito com o mesmo sinal do esquerdo em toda família, e os comentários dizem o que o código faz de fato. O `FJoyShockInterface` então apresenta os analógicos sem correções por família.
+Fatos de partida:
+- Pro Controller do Switch 2 por USB: no relatório cru, os dois analógicos crescem para cima; nenhum eixo precisa ser negado. Medido em hardware com o Stick Overlay do FofuxoJoySense4Unity (o F-006 dele), 2026-10-08.
+- `parse_switch2_report` (`InputHelpers.cpp`, o bloco `bWhole`) nega o Y direito "para fazer cima positivo nos dois analógicos". Pelo fato acima, faz o contrário: depois dele, o analógico direito lê cima como negativo.
+- `FJoyShockInterface` (`JoyShockInterface.cpp`, fim de `PresentSticks`) nega o Y direito de novo para todo controle que não é Sony (`bSonyPad ? State.stickRY : -State.stickRY`). As duas negações se cancelam, e por isso a Unreal vê o sinal certo. O próprio comentário diz que a camada de baixo nível discorda entre a Sony e as outras famílias.
+- O ramo do Pro Controller do Switch 1 (`InputHelpers.cpp`, `left_right == 3`) acrescenta a mesma negação, com o mesmo raciocínio; o Joy-Con direito é corrigido uma vez, na interface. Conferir os dois em hardware antes de mexer.
+Antes de mudar: tudo o que lê o estado de baixo nível diretamente (`JoyShockBlueprintLibrary.cpp` monta `RightStick` a partir de `stickRY`) vai inverter o sinal. Para verificar, precisa de um Pro do Switch 2, um Pro do Switch 1, um Joy-Con direito e um controle Sony, testados em Standalone.
 
-### R-018 [adjustment] The demo's controller-name widget follows controller changes
-Adjusts: `WBP_ControllerName` (demo, `Content/`).
-Expected: in Standalone, every character's widget shows the name of the controller driving it, including the first character and controllers that connect later.
-Facts to start from (diagnosed 2026-07-23):
-- The widget asks once, at Event Construct, which controllers belong to its player. In Standalone the first character is possessed before enumeration has found any controller, so it gets none and never asks again. PIE hides it because the editor process enumerated long before.
-- Fix prescribed, not applied: the widget subscribes to Listen For Controller Changes on the JoyShock Subsystem (and optionally Listen For Joy-Con Pairing Changes) and re-runs the name lookup on each event. The user edits the Blueprint.
-Tests:
-- In Standalone with two controllers: both widgets show their controller's name; turn one controller off and on: its widget follows.
+### R-018 [ajuste] O widget de nome do controle da demo acompanha as trocas de controle
+Ajusta: `WBP_ControllerName` (demo, `Content/`).
+Esperado: em Standalone, o widget de cada personagem mostra o nome do controle que o comanda, inclusive o primeiro personagem e os controles que conectam depois.
+Fatos de partida (diagnosticado em 2026-07-23):
+- O widget pergunta uma única vez, no Event Construct, quais controles pertencem ao jogador dele. Em Standalone, o primeiro personagem é possuído antes de a enumeração achar qualquer controle, então ele não recebe nenhum e nunca mais pergunta. O PIE esconde isso porque o processo do editor enumerou muito antes.
+- Correção receitada, não aplicada: o widget assina o Listen For Controller Changes do JoyShock Subsystem (e, opcionalmente, o Listen For Joy-Con Pairing Changes) e refaz a busca do nome a cada evento. O usuário edita o Blueprint.
+Testes:
+- Em Standalone com dois controles: os dois widgets mostram o nome do seu controle; desligar e ligar um controle: o widget dele acompanha.
 
-### R-019 [adjustment] The demo creates one local player per controller, no more
-Adjusts: the demo's player initialiser.
-Expected: with one controller connected there is one local player, and the controller drives player 0.
-Facts to start from (log of 2026-07-22, not fixed):
-- With one controller, the initialiser created two local players and put the controller on index 1, leaving player 0 without one.
-- Suspected: the branch "first controller reuses player 0, the rest create a new one" does not work, or the handler runs twice (an old ForEach plus Listen For Controllers). The target index should come from an idempotent counter per Connection Id, not from a live count.
-- Proven by measurement, not to re-investigate: the plugin dispatches the second controller's input correctly (F-004).
-Tests:
-- In Standalone, one controller: one character, driven by it. Connect a second: a second character appears, driven by the second controller.
+### R-019 [ajuste] A demo cria um jogador local por controle, nada além
+Ajusta: o inicializador de jogadores da demo.
+Esperado: com um controle conectado há um jogador local, e o controle comanda o jogador 0.
+Fatos de partida (log de 2026-07-22, não corrigido):
+- Com um controle, o inicializador criou dois jogadores locais e pôs o controle no índice 1, deixando o jogador 0 sem controle.
+- Suspeita: o ramo "o primeiro controle reaproveita o jogador 0, os outros criam um novo" não funciona, ou o handler roda duas vezes (um ForEach antigo mais o Listen For Controllers). O índice de destino deveria vir de um contador idempotente por Connection Id, não de uma contagem ao vivo.
+- Provado por medição, não reinvestigar: o plugin despacha corretamente o input do segundo controle (F-004).
+Testes:
+- Em Standalone, um controle: um personagem, comandado por ele. Conectar um segundo: aparece um segundo personagem, comandado pelo segundo controle.
 
-### R-020 [research] Are the plugin's controllers cleared between PIE sessions?
-Expected: answer whether `_joyshocks` and the player slots survive from one Play In Editor session to the next, and whether that matters. Counts as an answer: a log of two PIE sessions in a row with the same controllers, showing their ids and player slots.
-Facts to start from: `JslDisconnectAndDisposeAll` exists but may not be wired to the end of PIE (noted 2026-07-19).
+### R-020 [pesquisa] Os controles do plugin são limpos entre sessões de PIE?
+Esperado: responder se `_joyshocks` e as vagas de jogador sobrevivem de uma sessão de Play In Editor para a seguinte, e se isso importa. Vale como resposta: um log de duas sessões de PIE seguidas com os mesmos controles, mostrando os ids e as vagas de jogador deles.
+Fatos de partida: `JslDisconnectAndDisposeAll` existe, mas talvez não esteja ligado ao fim do PIE (anotado em 2026-07-19).
 
-### R-021 [feature] Joy-Con strap accessory in the demo
-Expected: the demo has a model of the strap accessory that slides onto a Joy-Con's rail, for sideways one-handed play.
-How: the user models it.
+### R-021 [feature] Acessório de alça do Joy-Con na demo
+Esperado: a demo tem um modelo da alça que desliza no trilho do Joy-Con, para jogar de lado com uma mão.
+Como: o usuário modela.
 
-### R-022 [feature] Joy-Con Grip model with both Joy-Cons seated
-Expected: the demo's Joy-Con Grip model shows both Joy-Cons seated in it, rather than the grip alone.
-How: the user models it.
+### R-022 [feature] Modelo do Joy-Con Grip com os dois Joy-Cons encaixados
+Esperado: o modelo do Joy-Con Grip da demo mostra os dois Joy-Cons encaixados nele, em vez do grip sozinho.
+Como: o usuário modela.
 
-### R-023 [feature] A demo pawn driven by several controllers at once
-Expected: the demo has a pawn that one or more controllers can drive at the same time.
-How:
-- Composed in the game, not in the plugin: one pawn reads several Connection Ids and is fed by all of them. The plugin's Joy-Con join already merges a left and right half into one player slot (agent's choice).
-Open: or should the plugin generalise the join to any set of controllers?
+### R-023 [feature] Um pawn da demo comandado por vários controles ao mesmo tempo
+Esperado: a demo tem um pawn que um ou mais controles podem comandar ao mesmo tempo.
+Como:
+- Montado no jogo, não no plugin: um pawn lê vários Connection Ids e é alimentado por todos. A junção de Joy-Cons do plugin já funde uma metade esquerda e uma direita numa vaga de jogador (escolha do agente).
+Em aberto: ou o plugin deveria generalizar a junção para qualquer conjunto de controles?
 
-### R-024 [feature] Demo HUD buttons to create, delete and reassign a pawn
-Expected: the demo HUD has buttons to create a playable pawn, delete it, and assign it to another controller.
-How:
-- Reassigning keeps the plugin's player routing and remaps identity in the game ("player 1 is the red chef"), the way most party games do. The plugin has no node to pin a controller to a chosen player slot: its player index is what routes input, so `Create Player` must be given that index (agent's choice).
-- Follows the demo architecture in D-004.
-Depends on: R-023
+### R-024 [feature] Botões no HUD da demo para criar, apagar e reatribuir um pawn
+Esperado: o HUD da demo tem botões para criar um pawn jogável, apagá-lo e atribuí-lo a outro controle.
+Como:
+- Reatribuir mantém o roteamento de jogadores do plugin e remapeia a identidade no jogo ("o jogador 1 é o chef vermelho"), como faz a maioria dos party games. O plugin não tem node para prender um controle numa vaga de jogador escolhida: é o índice de jogador dele que roteia o input, então o `Create Player` tem que receber esse índice (escolha do agente).
+- Segue a arquitetura da demo do D-004.
+Depende de: R-023
 
-### R-025 [feature] Joy-Con LED materials follow the controller
-Expected: the player LEDs on the demo's controller models light up exactly like the physical controller's.
-How: read `FJSL4UControllerInfo.PlayerLedNumber`, which is a position (1-4).
-Open: the demo rework of 2026-07-19 already mirrors the pairing LED on the model -- is anything left of this item?
+### R-025 [feature] Os materiais de LED do Joy-Con acompanham o controle
+Esperado: os LEDs de jogador nos modelos de controle da demo acendem exatamente como os do controle físico.
+Como: ler `FJSL4UControllerInfo.PlayerLedNumber`, que é uma posição (1-4).
+Em aberto: a reformulação da demo de 2026-07-19 já espelha o LED de pareamento no modelo -- sobrou alguma coisa deste item?
 
-### R-026 [feature] Pro Controller and Xbox models in the demo's controller mirror
-Expected: the demo's controller mirror has a model for the Nintendo Switch Pro Controller, the Nintendo Switch 2 Pro Controller and an Xbox pad; today only the Joy-Con pair, the Joy-Con grip, the DualShock 4 and the DualSense are modelled, and the Joy-Con 2 borrow the Switch 1 Joy-Con models.
-How: the user models them.
-Origin: README *Planned future updates*, moved here by R-013.
+### R-026 [feature] Modelos do Pro Controller e do Xbox no espelho de controles da demo
+Esperado: o espelho de controles da demo tem um modelo para o Pro Controller do Nintendo Switch, o Pro Controller do Nintendo Switch 2 e um controle Xbox; hoje só o par de Joy-Cons, o Joy-Con Grip, o DualShock 4 e o DualSense estão modelados, e os Joy-Con 2 pegam emprestados os modelos do Joy-Con do Switch 1.
+Como: o usuário modela.
+Origem: README *Planned future updates*, trazido para cá pelo R-013.
 
-### R-027 [feature] Switch 2 battery percentage from a charge curve
-Expected: a Switch 2 controller's Battery Percent follows a lithium cell's discharge curve instead of a straight line between 3.0 V and 4.2 V, so the number is worth showing and not only a bar.
-Facts to start from: the controller reports its cell voltage and nothing else, and the voltage sags under load -- it reads low mid-rumble.
-Origin: README *Planned future updates*, moved here by R-013.
+### R-027 [feature] Porcentagem de bateria do Switch 2 por curva de carga
+Esperado: o Battery Percent de um controle do Switch 2 segue a curva de descarga de uma célula de lítio em vez de uma reta entre 3,0 V e 4,2 V, para o número valer a pena ser mostrado e não só uma barra.
+Fatos de partida: o controle informa a tensão da célula e mais nada, e a tensão cai sob carga -- lê baixo no meio da vibração.
+Origem: README *Planned future updates*, trazido para cá pelo R-013.
 
-### R-028 [adjustment] A controller that arrives must drive its character
-Adjusts: the demo's player initialiser.
-Expected: every controller that connects drives its character, without stopping and re-playing.
-Facts to start from:
-- Reported once with a Joy-Con 2: the mirror appeared and the motion readouts worked, but the pawn did not move. Stopping and re-playing fixed it, which is not an option in a packaged build.
-- Not diagnosed. Suspected the demo's assignment path rather than the plugin, since the controller was visibly connected and reporting. May share a cause with R-019.
-Origin: README *Planned future updates*, moved here by R-013.
+### R-028 [ajuste] Um controle que chega tem que comandar o seu personagem
+Ajusta: o inicializador de jogadores da demo.
+Esperado: todo controle que conecta comanda o seu personagem, sem parar e dar play de novo.
+Fatos de partida:
+- Relatado uma vez com um Joy-Con 2: o espelho apareceu e as leituras de movimento funcionaram, mas o pawn não se mexeu. Parar e dar play de novo resolveu, o que não é opção num build empacotado.
+- Não diagnosticado. Suspeita no caminho de atribuição da demo, não no plugin, já que o controle estava visivelmente conectado e mandando dados. Pode ter a mesma causa do R-019.
+Origem: README *Planned future updates*, trazido para cá pelo R-013.
 
-### R-031 [adjustment] Switch 2 controllers report charging
-Adjusts: battery reporting (`docs/controllers.md` > *Battery*).
-Expected: Is Charging on a Switch 2 controller turns true when its cable goes in and false when it comes out, and Wait For Battery Changes raises On Charging Changed for it.
-Facts to start from: F-009. `parse_switch2_report` (`InputHelpers.cpp`) fills voltage, percent and level but never `battery_charging`; where the report carries charging is not known yet (F-006's Switch2Connect is the reference to check).
-- Switch2Connect reads the two bytes after the voltage (packet[34..35] here) as `battery_current`, unsigned, divided by 100, and never uses it. Since 2026-10-29 the plugin reads them signed into `Battery Current` on Get Switch 2 Sensors (commit "read the Switch 2 battery current"); `battery_charging` is not derived from it yet.
-- Next: show Battery Current in the demo panel and read it with the cable in and out. NodeScribe cannot insert a node into an existing exec chain, and `replace` refuses on this EventGraph (its reading loses two reconvergences), so the row needs a hand edit in the editor or a NodeScribe change. Then set `battery_charging` from the sign that shows up while charging.
-Tests: the user, with the Pro Controller 2 over the cable and over Bluetooth.
+### R-031 [ajuste] Controles do Switch 2 informam que estão carregando
+Ajusta: o informe de bateria (`docs/controllers.md` > *Battery*).
+Esperado: o Is Charging de um controle do Switch 2 vira verdadeiro quando o cabo entra e falso quando sai, e o Wait For Battery Changes dispara o On Charging Changed para ele.
+Fatos de partida: F-009. `parse_switch2_report` (`InputHelpers.cpp`) preenche tensão, porcentagem e nível, mas nunca `battery_charging`; ainda não se sabe onde o relatório traz o carregamento (o Switch2Connect do F-006 é a referência a conferir).
+- O Switch2Connect lê os dois bytes depois da tensão (packet[34..35] aqui) como `battery_current`, sem sinal, dividido por 100, e nunca usa. Desde 2026-10-29 o plugin os lê com sinal em `Battery Current` no Get Switch 2 Sensors (commit "read the Switch 2 battery current"); o `battery_charging` ainda não é derivado disso.
+- Próximo: mostrar o Battery Current no painel da demo e ler com o cabo ligado e desligado. O NodeScribe não consegue inserir um node numa cadeia de execução existente, e o `replace` recusa neste EventGraph (a leitura dele perde duas reconvergências), então a linha precisa de uma edição à mão no editor ou de uma mudança no NodeScribe. Depois, definir o `battery_charging` pelo sinal que aparecer durante a carga.
+Testes: o usuário, com o Pro Controller 2 no cabo e no Bluetooth.
 
-### R-033 [adjustment] A Switch 2 on Bluetooth reaches a Standalone game launched from the editor
-Adjusts: `Switch2Bluetooth.cpp` / `discover_bluetooth_switch2`, next to the USB lease the editor and Standalone already pass between them.
-Expected: with the editor holding a Switch 2 controller over Bluetooth, playing in Standalone gives the controller to the game, and it comes back to the editor when the game closes.
-Facts to start from: F-010.
-Tests: the user, with the Pro Controller 2 over Bluetooth, in Standalone launched from the editor.
+### R-033 [ajuste] Um Switch 2 no Bluetooth chega a um jogo Standalone aberto pelo editor
+Ajusta: `Switch2Bluetooth.cpp` / `discover_bluetooth_switch2`, junto ao empréstimo de USB que o editor e o Standalone já passam um para o outro.
+Esperado: com o editor segurando um controle do Switch 2 por Bluetooth, jogar em Standalone entrega o controle ao jogo, e ele volta para o editor quando o jogo fecha.
+Fatos de partida: F-010.
+Testes: o usuário, com o Pro Controller 2 no Bluetooth, em Standalone aberto pelo editor.
 
-### R-034 [research] Does the Pro Controller 2 report temperature, and where?
-Expected: whether the Pro Controller 2's report carries a temperature, at which bytes and with which scale; the answer counts when the reading rises while the controller is held for a few minutes.
-Facts to start from: F-009. The parser reads bytes 47-48 as `25 + raw / 127`; on the Pro 2 the raw value sits around 9-15 and only flickers.
+### R-034 [pesquisa] O Pro Controller 2 informa temperatura, e onde?
+Esperado: se o relatório do Pro Controller 2 traz uma temperatura, em quais bytes e com qual escala; a resposta vale quando a leitura sobe enquanto o controle fica na mão por alguns minutos.
+Fatos de partida: F-009. O parser lê os bytes 47-48 como `25 + raw / 127`; no Pro 2 o valor cru fica em torno de 9-15 e só oscila.
