@@ -33,6 +33,7 @@ O passo 2 precisa de um segundo aparelho; sem ele, os passos 1 e 3 ainda confirm
 
 ### R-005 Um Switch 2 reconecta por Bluetooth logo depois de sair do cabo
 1. Ligar o cabo do Pro Controller 2 e puxar, depois acordar o controle com um botão: ele reconecta por Bluetooth. Repetir algumas vezes.
+- Tentativa de 2026-10-31 sem valor: as conexões terminaram em "is missing one of the Switch 2 characteristics" e voltaram a funcionar no mesmo editor, sem reiniciá-lo. O usuário atribui isso à Unity aberta, com a variante do plugin ligada ao mesmo controle. Refazer com a Unity fechada.
 
 ### R-012 Um comando Bluetooth recusado pelo Switch 2 falha na hora
 1. Conectar o Pro Controller 2 por Bluetooth e ler o log: as linhas de inicialização saem rápido, nenhuma espera cerca de um segundo antes de "was not acknowledged", e o controle responde em até uns dois segundos depois de conectar. (Um Joy-Con 2 também, com o Renan.)
@@ -135,14 +136,6 @@ Fatos de partida:
 - Relatado uma vez com um Joy-Con 2: o espelho apareceu e as leituras de movimento funcionaram, mas o pawn não se mexeu. Parar e dar play de novo resolveu, o que não é opção num build empacotado.
 - Não diagnosticado. Suspeita no caminho de atribuição da demo, não no plugin, já que o controle estava visivelmente conectado e mandando dados. Pode ter a mesma causa do R-019.
 Origem: README *Planned future updates*, trazido para cá pelo R-013.
-
-### R-031 [ajuste] Controles do Switch 2 informam que estão carregando
-Ajusta: o informe de bateria (`docs/controllers.md` > *Battery*).
-Esperado: o Is Charging de um controle do Switch 2 vira verdadeiro quando o cabo entra e falso quando sai, e o Wait For Battery Changes dispara o On Charging Changed para ele.
-Fatos de partida: F-009. `parse_switch2_report` (`InputHelpers.cpp`) preenche tensão, porcentagem e nível, mas nunca `battery_charging`; ainda não se sabe onde o relatório traz o carregamento (o Switch2Connect do F-006 é a referência a conferir).
-- O Switch2Connect lê os dois bytes depois da tensão (packet[34..35] aqui) como `battery_current`, sem sinal, dividido por 100, e nunca usa. Desde 2026-10-29 o plugin os lê com sinal em `Battery Current` no Get Switch 2 Sensors (commit "read the Switch 2 battery current"); o `battery_charging` ainda não é derivado disso.
-- Próximo: mostrar o Battery Current no painel da demo e ler com o cabo ligado e desligado. O NodeScribe não consegue inserir um node numa cadeia de execução existente, e o `replace` recusa neste EventGraph (a leitura dele perde duas reconvergências), então a linha precisa de uma edição à mão no editor ou de uma mudança no NodeScribe. Depois, definir o `battery_charging` pelo sinal que aparecer durante a carga.
-Testes: o usuário, com o Pro Controller 2 no cabo e no Bluetooth.
 
 ### R-033 [ajuste] Um Switch 2 no Bluetooth chega a um jogo Standalone aberto pelo editor
 Ajusta: `Switch2Bluetooth.cpp` / `discover_bluetooth_switch2`, junto ao empréstimo de USB que o editor e o Standalone já passam um para o outro.

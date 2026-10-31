@@ -97,7 +97,7 @@ Source: code and config read, 2026-10-25
 Verified: 2026-10-25
 
 ### F-009 What the Pro Controller 2 reports beyond input
-Fact: battery voltage, percent and level read correctly over the cable (3.747 V, 62%, Medium) and over Bluetooth (3.652 V, 54%, Medium). Is Charging stays false even on the cable: `parse_switch2_report` never fills it. The magnetometer is present: over Bluetooth it reads non-zero and moves as the controller turns; over the cable it reads zero because the USB init does not ask for it (FEATSEL 0x27, against 0x94 over Bluetooth). The mouse fields read zero on both, as the Pro 2 has no mouse sensor. The temperature reads 25.07-25.12 and does not warm in the hand, so it is not a temperature as parsed.
+Fact: battery voltage, percent and level read correctly over the cable (3.747 V, 62%, Medium) and over Bluetooth (3.652 V, 54%, Medium). The report has no charging flag, but the two bytes after the voltage read +0.52 A on the cable at 3.746 V and exactly 0 on Bluetooth at 3.655 V (2026-10-31), so Is Charging is current above zero. The magnetometer is present: over Bluetooth it reads non-zero and moves as the controller turns; over the cable it reads zero because the USB init does not ask for it (FEATSEL 0x27, against 0x94 over Bluetooth). The mouse fields read zero on both, as the Pro 2 has no mouse sensor. The temperature reads 25.07-25.12 and does not warm in the hand, so it is not a temperature as parsed.
 Source: the user's Pro Controller 2 with a test Blueprint printing JSL4U Get Switch 2 Sensors and the controller info, PIE; `JoyShock_Switch2.cpp` read for the FEATSEL values
 Verified: 2026-10-25
 Affects: R-031, R-032, R-034, docs/hardware.md

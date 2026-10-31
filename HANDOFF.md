@@ -5,7 +5,8 @@ Updated: 2026-10-31
 ## State
 - Branch `batch/2026-10-29`, checked out, nothing pushed. `master` (`5e2ac56`) holds only validated work, up to R-030 (battery and Switch 2 sensors in the demo panel, approved on hardware).
 - The branch holds 13 roadmap items, one commit each, all compiled (unity and non-unity). R-004 (2026-10-30) and R-009 (2026-10-31) were approved on hardware; the other 11 are untested: R-002, R-003, R-005, R-006, R-007, R-008, R-010, R-011, R-012, R-029, R-032. Those 11 are in *Em teste* with their steps. The editor binaries are already built from this branch.
-- R-031 is half done: `Battery Current` is read and published on Get Switch 2 Sensors, but not shown in the demo panel and not turned into Is Charging (see the item).
+- R-031 approved on hardware on 2026-10-31 (Is Charging on the Pro Controller 2, cable and Bluetooth). The HUD's On Charging Changed now passes its controller; that wire compiled but was not exercised on hardware.
+- R-005 has to be redone with Unity closed: the 2026-10-31 attempt failed with "is missing one of the Switch 2 characteristics" while Unity's port of this plugin was open.
 - The user has a Portuguese checklist of these tests, `TESTES-2026-10-29.md` in the plugin root, excluded locally through `.git/info/exclude`.
 
 ## Next step
@@ -17,7 +18,7 @@ If the user would rather start new work while testing: the demo items R-018 to R
 - R-001 needs a Switch 1 Pro, a right Joy-Con, a Pro Controller 2 and a Sony pad tested together; Renan has the full set.
 
 ## Notes for the next session
-- NodeScribe cannot add a node inside an existing exec chain, and `replace` refuses on `WBP_ConnectedJoyShockInfo`'s EventGraph (trail learning of 2026-10-29). This blocks R-031's panel row; it is NodeScribe's R-015 now.
+- NodeScribe's `after` inserts into an existing exec chain. It cannot set a pin on a node that already exists; `BlueprintTools.connect_pins` can (`find_nodes`, then `get_node_infos` for the pin ids).
 - After restarting the editor, the `unreal-mcp` connection may need the user to reconnect it with `/mcp`; this time it came back by itself.
 - Build from PowerShell (`& "...Build.bat" ...`); from Git Bash the quoted path fails.
 
