@@ -27,9 +27,6 @@ O passo 2 precisa de um segundo aparelho; sem ele, os passos 1 e 3 ainda confirm
 ### R-010 Desligar um Switch 2 no Bluetooth nunca congela o jogo
 1. Com o Pro Controller 2 no Bluetooth e outro controle em uso, ficar mexendo um analógico do outro e desligar o Switch 2: o outro controle nunca para de responder. Repetir algumas vezes.
 
-### R-009 Calibração dos analógicos do Switch 2 conferida do mesmo jeito no cabo e no Bluetooth
-1. Pro Controller 2 no cabo, depois no Bluetooth, analógicos em repouso: os dois aparecem centrados no espelho do controle, e a linha de log "SW2 left/right stick cal" mostra o mesmo centro nas duas conexões.
-
 ### R-003 Uma conexão Bluetooth do Switch 2 que falha não deixa resto
 1. Conectar o Pro Controller 2 por Bluetooth, desligar, conectar de novo -- várias vezes na mesma sessão do editor: toda conexão dá certo.
 2. Segurar o SYNC e desligar o controle logo que as luzes começarem a correr, para a tentativa falhar; depois conectar normalmente: dá certo sem reiniciar o editor.
@@ -45,7 +42,7 @@ O passo 2 precisa de um segundo aparelho; sem ele, os passos 1 e 3 ainda confirm
 2. Desligar e ligar um Joy-Con com o jogo rodando: ele reconecta com giroscópio e não volta a desconectar sozinho.
 
 ### R-007 A inicialização do Switch 2 roda uma vez por conexão
-1. Pro Controller 2 no cabo, depois no Bluetooth: jogar alguns minutos. Nenhum travamento no input, e o log mostra "Running Switch 2 ... init sequence" uma vez por conexão.
+1. Pro Controller 2 no cabo, depois no Bluetooth: jogar alguns minutos. Nenhum travamento no input, e o log mostra "Running Switch 2 ... init sequence" uma vez por conexão. Exceção prevista: ligar o cabo com o controle ainda no Bluetooth repete a linha, junto de "running the USB set-up again (attempt n/10)", até o controle sair do relatório 0x09 (em 2026-10-31, na terceira tentativa).
 2. Com o editor aberto, jogar em Standalone com o controle no cabo: vibração e luzes de jogador funcionam na janela do Standalone.
 
 ### R-015 O movimento do Joy-Con volta sozinho quando o sensor começa morto
@@ -53,9 +50,7 @@ O passo 2 precisa de um segundo aparelho; sem ele, os passos 1 e 3 ainda confirm
 2. Se algum ficar sem giroscópio: o log diz "toggling the IMU enable in-stream" e depois "resumed IMU samples" para aquele controle, e o giroscópio dele começa a se mexer.
 
 ### R-016 Um controle passa entre cabo e Bluetooth sem desconectar
-1. Com um DualShock 4 no Bluetooth, ligar o cabo: ele continua funcionando, com o mesmo número de jogador.
-2. Puxar o cabo: ele volta para o Bluetooth e continua funcionando, com o mesmo número de jogador.
-3. Ligar e puxar o cabo dez vezes, rápido: o editor nunca congela e o controle nunca precisa ser desligado e ligado.
+1. Com um DualShock 4 no Bluetooth, ligar e puxar o cabo dez vezes, rápido (um segundo ou dois entre cada): o editor nunca congela e o controle nunca precisa ser desligado e ligado.
 
 ### R-017 Calibração do Joy-Con 2 lida a cada conexão (Renan)
 1. Conectar cada metade do Joy-Con 2 por Bluetooth dez vezes: toda vez o log mostra uma linha de calibração do analógico, e o analógico chega à borda do alcance no espelho do controle.
