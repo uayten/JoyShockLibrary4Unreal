@@ -1,6 +1,6 @@
 # Roadmap
 
-<!-- project-docs: só pendências; aprovado é apagado. Ordem = prioridade. Próximo ID: R-040 -->
+<!-- project-docs: só pendências; aprovado é apagado. Ordem = prioridade. Próximo ID: R-042 -->
 
 ## Em teste
 
@@ -13,10 +13,10 @@
 3. Um controle em modo SYNC que nunca foi pareado conecta e pareia, como antes.
 O passo 2 precisa de um segundo aparelho; sem ele, os passos 1 e 3 ainda confirmam que nada quebrou.
 
-### R-032 O magnetômetro do Switch 2 pelo cabo
-1. Pro Controller 2 no cabo: o quadro Magnetometer do painel da demo se mexe quando o controle gira (antes ficava em zero no cabo).
-2. Em repouso, ZL e ZR aparecem soltos -- conferir no espelho do controle. Se algum aparecer apertado, é a falha de que o item avisa: dizer qual.
-3. Depois, atualizar `docs/hardware.md` e `docs/switch2.md`, que ainda dizem "Bluetooth only".
+### R-041 A demo mostra os botões apertados de cada controle
+1. Pro Controller 2, demo em Standalone, painel do controle aberto: apertar GL, GR e C, um por vez: cada um aparece na linha Pressed Buttons enquanto está apertado.
+2. DualShock 4: os botões aparecem com os nomes do PlayStation (Cross, Circle, L2, Options, PS, Touchpad...).
+3. Um Joy-Con sozinho: SL e SR aparecem, cada um com o seu nome.
 
 ### R-011 Fechar o editor com um Switch 2 anunciando nunca dá crash
 1. Segurar o SYNC do Pro Controller 2 para ele ficar anunciando, abrir o editor e fechar assim que terminar de carregar. Repetir algumas vezes: ele sempre fecha limpo.
@@ -167,3 +167,12 @@ Verificar aqui: a taxa no Bluetooth; e se algum caminho do JSL4U entrega giro ac
 Esperado: a luz de jogador acende pelo cabo como no console, venha o controle desligado ou do Bluetooth.
 Fatos de partida, do JoySense: o setup do cabo não acendia a luz, e ela ficava apagada ligando direto no cabo e acesa, sobra do Bluetooth, vindo dele; o controle guarda a luz que recebeu. O comando `09:07` pelo cabo funciona com o controle já ligado (as quatro luzes acenderam), mas enviado no fim da lista do setup não acendeu: o primeiro comando depois do último da lista (`03:0D`) fica sem resposta e não faz nada, e o seguinte é aceito, mesmo sem espera. O JoySense passou a mandar a luz depois da lista e repetir até a resposta chegar. O JSL4U manda a luz pelo polling, depois do setup e com nova tentativa a cada 2 s, então provavelmente já está certo.
 Verificar aqui: plugar o cabo com o controle desligado e ver a luz acender; e vindo do Bluetooth. E se algum outro comando enviado logo depois do setup do cabo (vibração, luz) se perde do mesmo jeito.
+
+### R-040 [feature] Uma opção do editor para não procurar nem conectar controles
+Esperado: uma opção que só vale no editor e desliga a busca e a conexão de controles do plugin, para o controle poder ser usado em outro programa com o editor aberto.
+Como:
+- Ao desligar, os controles já conectados são soltos, inclusive o link Bluetooth do Switch 2 (escolha do agente)
+- Jogo empacotado e Standalone continuam procurando controles normalmente (escolha do agente)
+- A opção fica guardada por usuário, não no projeto (escolha do agente)
+Fatos de partida: o JoySense4Unity ganhou a mesma opção, e foi ela que acabou com a Unity aberta atrapalhando a Unreal. Hoje o editor segura o link Bluetooth do Pro Controller 2 e o Standalone aberto por ele nunca o vê (R-033); com a busca desligada no editor, o Standalone deve ficar com o controle.
+Em aberto: onde a opção fica (Editor Preferences ou um botão na barra do editor) e se vale na hora ou só ao reabrir o editor.
