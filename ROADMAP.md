@@ -23,23 +23,14 @@ O passo 2 precisa de um segundo aparelho; sem ele, os passos 1 e 3 ainda confirm
 1. Com o Pro Controller 2 no Bluetooth e outro controle em uso, ficar mexendo um analógico do outro e desligar o Switch 2: o outro controle nunca para de responder. Repetir algumas vezes.
 
 ### R-003 Uma conexão Bluetooth do Switch 2 que falha não deixa resto
-1. Conectar o Pro Controller 2 por Bluetooth, desligar, conectar de novo -- várias vezes na mesma sessão do editor: toda conexão dá certo.
-2. Segurar o SYNC e desligar o controle logo que as luzes começarem a correr, para a tentativa falhar; depois conectar normalmente: dá certo sem reiniciar o editor.
+1. Segurar o SYNC e desligar o controle logo que as luzes começarem a correr, para a tentativa falhar; depois conectar normalmente: dá certo sem reiniciar o editor.
 
-### R-005 Um Switch 2 reconecta por Bluetooth logo depois de sair do cabo
-1. Ligar o cabo do Pro Controller 2 e puxar, depois acordar o controle com um botão: ele reconecta por Bluetooth. Repetir algumas vezes.
-- Tentativa de 2026-10-31 sem valor: as conexões terminaram em "is missing one of the Switch 2 characteristics" e voltaram a funcionar no mesmo editor, sem reiniciá-lo. O usuário atribui isso à Unity aberta, com a variante do plugin ligada ao mesmo controle. Refazer com a Unity fechada.
-
-### R-012 Um comando Bluetooth recusado pelo Switch 2 falha na hora
-1. Conectar o Pro Controller 2 por Bluetooth e ler o log: as linhas de inicialização saem rápido, nenhuma espera cerca de um segundo antes de "was not acknowledged", e o controle responde em até uns dois segundos depois de conectar. (Um Joy-Con 2 também, com o Renan.)
+### R-012 Um comando Bluetooth recusado pelo Switch 2 falha na hora (Renan)
+1. Conectar cada metade do Joy-Con 2 por Bluetooth: o controle responde em até uns dois segundos, e o log não mostra nenhuma espera de cerca de um segundo antes de "was not acknowledged".
 
 ### R-006 Um Joy-Con no modo 0x3F é recuperado algumas vezes, não a cada relatório
 1. Quatro Joy-Cons no Bluetooth, jogar alguns minutos usando o giroscópio: o giroscópio continua funcionando, e se o log mostrar "0x3F mode reset detected", vêm depois no máximo duas linhas "still in 0x3F" por episódio.
 2. Desligar e ligar um Joy-Con com o jogo rodando: ele reconecta com giroscópio e não volta a desconectar sozinho.
-
-### R-007 A inicialização do Switch 2 roda uma vez por conexão
-1. Pro Controller 2 no cabo, depois no Bluetooth: jogar alguns minutos. Nenhum travamento no input, e o log mostra "Running Switch 2 ... init sequence" uma vez por conexão. Exceção prevista: ligar o cabo com o controle ainda no Bluetooth repete a linha, junto de "running the USB set-up again (attempt n/10)", até o controle sair do relatório 0x09 (em 2026-10-31, na terceira tentativa).
-2. Com o editor aberto, jogar em Standalone com o controle no cabo: vibração e luzes de jogador funcionam na janela do Standalone.
 
 ### R-015 O movimento do Joy-Con volta sozinho quando o sensor começa morto
 1. Conectar quatro Joy-Cons por Bluetooth, um depois do outro, e abrir o log (Window > Output Log): todo Joy-Con mostra o giroscópio se mexendo no espelho do controle em poucos segundos.
