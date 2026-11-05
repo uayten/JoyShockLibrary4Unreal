@@ -1,6 +1,6 @@
 # Decisions
 
-<!-- project-docs: only what holds now. Next ID: D-008 · Next fact: F-013 -->
+<!-- project-docs: only what holds now. Next ID: D-010 · Next fact: F-013 -->
 
 The invariants learned by breaking them (Bluetooth streams, `GetInstance`, the device mapper, the right
 stick's Y, Connection Id, no CoreRedirects) live in `CLAUDE.md`, with their reasons. They are not repeated
@@ -51,6 +51,19 @@ Decision: `JoyCon2Left` and `JoyCon2Right` are registered in `Config/Input.ini` 
 Why: same family, same output path; whether player LEDs count as Lights is left to Renan's test.
 Origin: agent's choice, 2026-10-29
 Affects: R-029
+
+### D-008 The editor yields its Bluetooth Switch 2 controllers to any game with the plugin
+Decision: a game process (not the editor, not a commandlet) holds the named mutex `Local\JoyShockLibrary4Unreal.GameWantsBluetooth` while it runs; the editor checks for it every 0.5 s, and while it exists releases every Switch 2 it holds on Bluetooth (each polling thread reads it as a disconnect) and does not scan.
+Why: a Bluetooth link belongs to the process that opened it and a connected controller stops advertising, so a Standalone game could never get a controller the editor held (F-010). A named object needs nothing from the editor modules in a runtime module, and also covers a packaged build started beside the editor.
+Not chosen: the editor's Standalone-launch delegate (editor-only dependency, misses games started any other way); only a manual editor option (R-040), which still stays on the roadmap for using the controller in another program.
+Origin: agent's choice, accepted by the user as "a automática", 2026-11-05
+Affects: R-033, R-040, docs/switch2.md
+
+### D-009 A Switch 2 USB init with an unanswered command counts as failed
+Decision: in `init_switch2`, a command that gets no acknowledgement makes the init fail, so the poll loop's bounded USB retry (three tries, two seconds apart) runs it again.
+Why: every healthy USB init in the logs had all ten commands acknowledged; the one with five unanswered (cable plugged while the Bluetooth link was opening) left the controller with no motion and no player light. Cable only: Bluetooth init is never re-run (CLAUDE.md).
+Origin: agent's choice, 2026-11-05
+Affects: R-007
 
 ## Verified facts
 

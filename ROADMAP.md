@@ -132,12 +132,6 @@ Fatos de partida:
 - Não diagnosticado. Suspeita no caminho de atribuição da demo, não no plugin, já que o controle estava visivelmente conectado e mandando dados. Pode ter a mesma causa do R-019.
 Origem: README *Planned future updates*, trazido para cá pelo R-013.
 
-### R-033 [ajuste] Um Switch 2 no Bluetooth chega a um jogo Standalone aberto pelo editor
-Ajusta: `Switch2Bluetooth.cpp` / `discover_bluetooth_switch2`, junto ao empréstimo de USB que o editor e o Standalone já passam um para o outro.
-Esperado: com o editor segurando um controle do Switch 2 por Bluetooth, jogar em Standalone entrega o controle ao jogo, e ele volta para o editor quando o jogo fecha.
-Fatos de partida: F-010.
-Testes: o usuário, com o Pro Controller 2 no Bluetooth, em Standalone aberto pelo editor.
-
 ### R-034 [pesquisa] O Pro Controller 2 informa temperatura, e onde?
 Esperado: se o relatório do Pro Controller 2 traz uma temperatura, em quais bytes e com qual escala; a resposta vale quando a leitura sobe enquanto o controle fica na mão por alguns minutos.
 Fatos de partida: F-009. O parser lê os bytes 47-48 como `25 + raw / 127`; no Pro 2 o valor cru fica em torno de 9-15 e só oscila.
@@ -169,5 +163,5 @@ Como:
 - Ao desligar, os controles já conectados são soltos, inclusive o link Bluetooth do Switch 2 (escolha do agente)
 - Jogo empacotado e Standalone continuam procurando controles normalmente (escolha do agente)
 - A opção fica guardada por usuário, não no projeto (escolha do agente)
-Fatos de partida: o JoySense4Unity ganhou a mesma opção, e foi ela que acabou com a Unity aberta atrapalhando a Unreal. Hoje o editor segura o link Bluetooth do Pro Controller 2 e o Standalone aberto por ele nunca o vê (R-033); com a busca desligada no editor, o Standalone deve ficar com o controle.
+Fatos de partida: o JoySense4Unity ganhou a mesma opção, e foi ela que acabou com a Unity aberta atrapalhando a Unreal. Um jogo com o plugin já recebe os controles Bluetooth do editor sozinho (D-008); esta opção é para um programa que não seja o plugin, como a Unity.
 Em aberto: onde a opção fica (Editor Preferences ou um botão na barra do editor) e se vale na hora ou só ao reabrir o editor.

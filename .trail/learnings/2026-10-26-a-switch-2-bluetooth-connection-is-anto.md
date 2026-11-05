@@ -19,3 +19,6 @@ touches:
 
 ## Decided
 - Documented as a limitation in docs/switch2.md; a handover between editor and Standalone would be a roadmap item, not yet accepted.
+
+## Update 2026-11-05
+- R-033 adds a handover: a game process holds the named mutex `Local\JoyShockLibrary4Unreal.GameWantsBluetooth`, and the editor, which checks for it twice a second, releases its Bluetooth Switch 2 controllers and stops scanning while it exists. Tested on the Pro Controller 2 on 2026-11-05: the controller moves to the Standalone and back to the editor on a button press, so the limitation above no longer holds.
