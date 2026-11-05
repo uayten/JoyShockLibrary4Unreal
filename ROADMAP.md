@@ -1,6 +1,6 @@
 # Roadmap
 
-<!-- project-docs: só pendências; aprovado é apagado. Ordem = prioridade. Próximo ID: R-035 -->
+<!-- project-docs: só pendências; aprovado é apagado. Ordem = prioridade. Próximo ID: R-040 -->
 
 ## Em teste
 
@@ -146,3 +146,24 @@ Testes: o usuário, com o Pro Controller 2 no Bluetooth, em Standalone aberto pe
 ### R-034 [pesquisa] O Pro Controller 2 informa temperatura, e onde?
 Esperado: se o relatório do Pro Controller 2 traz uma temperatura, em quais bytes e com qual escala; a resposta vale quando a leitura sobe enquanto o controle fica na mão por alguns minutos.
 Fatos de partida: F-009. O parser lê os bytes 47-48 como `25 + raw / 127`; no Pro 2 o valor cru fica em torno de 9-15 e só oscila.
+
+### R-036 [pesquisa] Um Switch 2 no Bluetooth que conecta e fica mudo, e o Windows que não solta o link
+Esperado: saber se o JSL4U tem o mesmo silêncio e, se tiver, que ele se recupere sozinho e que um botão reconecte o controle depois.
+Fatos de partida, vindos do Fofuxo's JoySense4Unity (F-013 de lá), no Pro Controller 2:
+- Acontece ao tirar o cabo e acordar o controle por botão (duas vezes em 2026-11-01; na terceira, funcionou). A conexão abre, os comandos de setup são todos respondidos, mas a leitura da calibração dos analógicos falha e nenhum relatório de entrada chega, nem à DLL. Reenviar o setup não traz os relatórios de volta.
+- O JoySense passou a tratar 3 s sem relatório (não só antes do primeiro) assim: reenvia o setup e, se continuar mudo, derruba o link para um botão reconectar.
+- Derrubado o link, com a DLL sem nenhuma conexão aberta, o Windows seguiu com o controle conectado (`IsConnected` verdadeiro no nó `BTHLE\DEV_<endereço>`, lido com `Get-PnpDeviceProperty`). Conectado, o controle não anuncia, e o botão não o reconecta. Desligar e ligar o Bluetooth do Windows soltou. Quem segurava o link não se sabe; fechar o processo com o caso na mão responde se é um objeto WinRT esquecido aberto.
+Verificar aqui: a sequência cabo, tirar o cabo, botão, algumas vezes; se o JSL4U detecta o silêncio; e se, ao desconectar, o nó `BTHLE\DEV_` deixa de estar conectado.
+Testes: o usuário, com o Pro Controller 2 e o Steam fechado.
+
+### R-037 [pesquisa] Quantos relatórios por segundo o Switch 2 entrega no Bluetooth, e se o gyro anda liso
+Esperado: a taxa medida no JSL4U, e nenhum degrau no giro da câmera pelo Bluetooth.
+Fatos de partida, do JoySense:
+- Lá foram medidos uns 70 relatórios por segundo em 2026-11-01 de manhã e uns 225 a 240 à tarde, com a mesma DLL (que já pede `ThroughputOptimized`); não se sabe o que mudou. A DLL de diagnóstico tinha visto uns 250.
+- Com menos relatórios que frames, um giro somado por relatório deixa frames com giro zero e outros com o dobro, e a câmera anda em degraus. O JoySense resolveu segurando a velocidade da última amostra até a próxima (no máximo 50 ms) e dando a cada frame o trecho de tempo que ele cobre.
+Verificar aqui: a taxa no Bluetooth; e se algum caminho do JSL4U entrega giro acumulado por frame (um valor em graus/s lido a cada frame, como o Rotation Rate, já se comporta como a velocidade segurada).
+
+### R-039 [ajuste] A luz de jogador do Switch 2 no cabo
+Esperado: a luz de jogador acende pelo cabo como no console, venha o controle desligado ou do Bluetooth.
+Fatos de partida, do JoySense: o setup do cabo não acendia a luz, e ela ficava apagada ligando direto no cabo e acesa, sobra do Bluetooth, vindo dele; o controle guarda a luz que recebeu. O comando `09:07` pelo cabo funciona com o controle já ligado (as quatro luzes acenderam), mas enviado no fim da lista do setup não acendeu: o primeiro comando depois do último da lista (`03:0D`) fica sem resposta e não faz nada, e o seguinte é aceito, mesmo sem espera. O JoySense passou a mandar a luz depois da lista e repetir até a resposta chegar. O JSL4U manda a luz pelo polling, depois do setup e com nova tentativa a cada 2 s, então provavelmente já está certo.
+Verificar aqui: plugar o cabo com o controle desligado e ver a luz acender; e vindo do Bluetooth. E se algum outro comando enviado logo depois do setup do cabo (vibração, luz) se perde do mesmo jeito.
