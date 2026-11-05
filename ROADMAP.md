@@ -13,11 +13,6 @@
 3. Um controle em modo SYNC que nunca foi pareado conecta e pareia, como antes.
 O passo 2 precisa de um segundo aparelho; sem ele, os passos 1 e 3 ainda confirmam que nada quebrou.
 
-### R-041 A demo mostra os botões apertados de cada controle
-1. Pro Controller 2, demo em Standalone, painel do controle aberto: apertar GL, GR e C, um por vez: cada um aparece na linha Pressed Buttons enquanto está apertado.
-2. DualShock 4: os botões aparecem com os nomes do PlayStation (Cross, Circle, L2, Options, PS, Touchpad...).
-3. Um Joy-Con sozinho: SL e SR aparecem, cada um com o seu nome.
-
 ### R-011 Fechar o editor com um Switch 2 anunciando nunca dá crash
 1. Segurar o SYNC do Pro Controller 2 para ele ficar anunciando, abrir o editor e fechar assim que terminar de carregar. Repetir algumas vezes: ele sempre fecha limpo.
 
