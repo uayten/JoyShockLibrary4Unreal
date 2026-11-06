@@ -1,17 +1,14 @@
 # Roadmap
 
-<!-- project-docs: só pendências; aprovado é apagado. Ordem = prioridade. Próximo ID: R-044 -->
+<!-- project-docs: só pendências; aprovado é apagado. Ordem = prioridade. Próximo ID: R-045 -->
 
 ## Em teste
 
 ### R-029 Metades do Joy-Con 2 registradas como dispositivos de hardware (Renan)
 1. Conectar uma metade de Joy-Con 2 por Bluetooth: aparece no log a linha "RegisterDevice: ... HardwareDeviceIdentifier=JoyCon2Left" (ou Right), e Project Settings > Input lista JoyCon2Left e JoyCon2Right entre os dispositivos de hardware. Eles usam a máscara do Pro Controller 2 (9477: sem Lights), por serem da mesma família; o Renan deve dizer se os LEDs de jogador deveriam contar como Lights.
 
-### R-002 Por Bluetooth, um Switch 2 pareado com outro aparelho é deixado em paz
-1. O Pro Controller 2, já pareado com este PC: desligar e apertar um botão: ele reconecta, como antes.
-2. Parear com outro aparelho (um console Switch 2, se houver um à mão) e apertar um botão perto do PC: ele não conecta, e o log diz uma única vez "paired with another device ... Hold SYNC on it". Segurar o SYNC: ele conecta e pareia com o PC.
-3. Um controle em modo SYNC que nunca foi pareado conecta e pareia, como antes.
-O passo 2 precisa de um segundo aparelho; sem ele, os passos 1 e 3 ainda confirmam que nada quebrou.
+### R-002 Por Bluetooth, um Switch 2 pareado com outro aparelho é deixado em paz (Renan)
+1. Precisa do console Switch 2. Parear o controle com o console e apertar um botão perto do PC: ele não conecta, e o log diz uma única vez "paired with another device ... Hold SYNC on it". Segurar o SYNC: ele conecta e pareia com o PC.
 
 ### R-011 Fechar o editor com um Switch 2 anunciando nunca dá crash
 1. Segurar o SYNC do Pro Controller 2 para ele ficar anunciando, abrir o editor e fechar assim que terminar de carregar. Repetir algumas vezes: ele sempre fecha limpo.
@@ -19,8 +16,12 @@ O passo 2 precisa de um segundo aparelho; sem ele, os passos 1 e 3 ainda confirm
 ### R-008 Um controle caindo enquanto o editor fecha não dá crash
 1. Com um controle conectado, fechar o editor e puxar o cabo (ou desligar o controle) no mesmo instante. Repetir várias vezes: o editor sempre fecha limpo. Vale pedir ao Renan, com o depurador.
 
-### R-003 Uma conexão Bluetooth do Switch 2 que falha não deixa resto
-1. Segurar o SYNC e desligar o controle logo que as luzes começarem a correr, para a tentativa falhar; depois conectar normalmente: dá certo sem reiniciar o editor.
+### R-003 Uma conexão Bluetooth do Switch 2 que falha não deixa resto (Renan)
+Com a mão não dá: a conexão inteira leva meio segundo (medido em 2026-11-06, quatro tentativas, todas completas antes do controle desligar). Precisa do depurador, com qualquer controle Switch 2 no Bluetooth.
+1. Pôr um breakpoint em `Switch2Ble::Connect`, na linha `Connection->Service = ServicesResult.Services().GetAt(0);` (`Switch2Bluetooth.cpp`, por volta da 593), abrir o editor e segurar o SYNC do controle: o depurador para ali.
+2. Com o depurador parado, desligar o controle segurando o SYNC até as luzes apagarem, esperar uns 5 segundos e continuar (F5): o Output Log mostra um aviso de falha de `LogSwitch2Bluetooth` (falta de característica, inscrição recusada ou "Bluetooth connection to ... failed") e o editor segue rodando.
+3. Tirar o breakpoint, ligar o controle e segurar o SYNC de novo: o log diz "Connected to Switch 2 controller ... over Bluetooth.", o controle aparece na demo, e nada no log fala em sharing violation ou acesso negado. Sem reiniciar o editor.
+4. Repetir os passos 1 a 3 com o breakpoint na linha `if (!Subscribe(Connection->InputCharacteristic))` (por volta da 733), que é outra saída de falha: mesmo resultado.
 
 ### R-012 Um comando Bluetooth recusado pelo Switch 2 falha na hora (Renan)
 1. Conectar cada metade do Joy-Con 2 por Bluetooth: o controle responde em até uns dois segundos, e o log não mostra nenhuma espera de cerca de um segundo antes de "was not acknowledged".
@@ -167,3 +168,11 @@ Como:
 - Na saída, cada thread de leitura manda uma última vez "luz de jogador apagada", que é só escrita e não mexe na conexão; no Bluetooth, depois fecha o link, o que já acontece hoje (escolha do agente)
 Fatos de partida: em 2026-11-05, com o Pro Controller 2 no cabo, depois de fechar o editor a luz de jogador 1 continuou acesa e a de carregamento ficou apagada. O controle guarda a última luz que recebeu (R-039).
 Em aberto: se a luz de carregamento apagada era bateria cheia e não o controle preso ao editor; o Is Charging nunca foi medido com bateria cheia no cabo.
+
+### R-044 [feature] O editor ignora os controles enquanto o jogo aberto por ele está na frente
+Esperado: com um jogo em Standalone aberto a partir do editor, o controle comanda só o jogo; o editor não reage a ele (a borda azul dos menus não se mexe).
+Como:
+- O editor continua conectado ao controle e só deixa de repassar a entrada à Unreal enquanto nenhuma janela dele está em primeiro plano (escolha do agente)
+- No PIE o jogo roda dentro da janela do editor, então a entrada continua chegando como hoje (escolha do agente)
+Fatos de partida: em 2026-11-06, com o Standalone aberto, o DualShock 4 no cabo comandava o personagem e ao mesmo tempo movia a borda azul de navegação dos menus do editor. O plugin hoje não olha qual janela está na frente. Não conferido se um controle de Xbox, que é da própria Unreal, faz o mesmo. Perto do R-040, que é para um programa que não seja o plugin.
+Em aberto: se um jogo empacotado em segundo plano também deve ignorar os controles.
