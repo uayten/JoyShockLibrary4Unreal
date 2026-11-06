@@ -37,15 +37,6 @@ Fatos de partida:
 - O ramo do Pro Controller do Switch 1 (`InputHelpers.cpp`, `left_right == 3`) acrescenta a mesma negação, com o mesmo raciocínio; o Joy-Con direito é corrigido uma vez, na interface. Conferir os dois em hardware antes de mexer.
 Antes de mudar: tudo o que lê o estado de baixo nível diretamente (`JoyShockBlueprintLibrary.cpp` monta `RightStick` a partir de `stickRY`) vai inverter o sinal. Para verificar, precisa de um Pro do Switch 2, um Pro do Switch 1, um Joy-Con direito e um controle Sony, testados em Standalone.
 
-### R-018 [ajuste] O widget de nome do controle da demo acompanha as trocas de controle
-Ajusta: `WBP_ControllerName` (demo, `Content/`).
-Esperado: em Standalone, o widget de cada personagem mostra o nome do controle que o comanda, inclusive o primeiro personagem e os controles que conectam depois.
-Fatos de partida (diagnosticado em 2026-07-23):
-- O widget pergunta uma única vez, no Event Construct, quais controles pertencem ao jogador dele. Em Standalone, o primeiro personagem é possuído antes de a enumeração achar qualquer controle, então ele não recebe nenhum e nunca mais pergunta. O PIE esconde isso porque o processo do editor enumerou muito antes.
-- Correção receitada, não aplicada: o widget assina o Listen For Controller Changes do JoyShock Subsystem (e, opcionalmente, o Listen For Joy-Con Pairing Changes) e refaz a busca do nome a cada evento. O usuário edita o Blueprint.
-Testes:
-- Em Standalone com dois controles: os dois widgets mostram o nome do seu controle; desligar e ligar um controle: o widget dele acompanha.
-
 ### R-019 [ajuste] A demo cria um jogador local por controle, nada além
 Ajusta: o inicializador de jogadores da demo.
 Esperado: com um controle conectado há um jogador local, e o controle comanda o jogador 0.
