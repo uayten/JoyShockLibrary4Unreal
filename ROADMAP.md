@@ -53,7 +53,8 @@ Como:
 Testes: em Standalone, com o Pro Controller 2 no Bluetooth e o DualShock 4 no cabo, girar devagar e rápido diante da grade.
 Já aprovado em hardware (2026-11-06): câmera lisa no cabo e boa no Bluetooth, botões que trocam o controle, tiro vermelho, analógicos e gyro juntos.
 Também aprovado (2026-11-06, com o R-001): a câmera sobe com os dois analógicos para cima, com o pawn invertendo só o esquerdo.
-Falta: testar os botões coloridos com a cor de cada controle.
+Botões coloridos aprovados (2026-11-06).
+Falta: testar que um par de Joy-Cons juntos vira um botão só, *Joy-Con pair #A + #B*, e volta a dois ao separar (pedido do usuário, 2026-11-06).
 
 ## A fazer
 
