@@ -23,6 +23,23 @@ Com a mão não dá: a conexão inteira leva meio segundo (medido em 2026-11-06,
 ### R-017 Calibração do Joy-Con 2 lida a cada conexão (Renan)
 1. Conectar cada metade do Joy-Con 2 por Bluetooth dez vezes: toda vez o log mostra uma linha de calibração do analógico, e o analógico chega à borda do alcance no espelho do controle.
 
+### R-001 [ajuste] Uma tabela por controle para o sinal e a pegada dos analógicos (Renan)
+Ajusta: os sinais dos analógicos, que estavam espalhados entre os leitores de `InputHelpers.cpp` e o `PresentSticks` de `JoyShockInterface.cpp`; agora ficam em `JoyShockStickTable.cpp` (`docs/architecture.md` > *Where to change what*).
+Esperado: todo controle entrega os dois analógicos à Unreal com para cima = +1 e direita = +1, a convenção do XInput, e os nodes `JSL4U Get Left/Right Stick` (e o `JSL4U Get Controller State`) dão os mesmos valores, inclusive o Joy-Con deitado girado para a pegada. O sinal de cada eixo de cada controle está escrito num lugar só, e mudar a linha de um controle não mexe em nenhum outro.
+Como (escolha do usuário, 2026-11-06):
+- Três passos, sempre nesta ordem: o leitor do protocolo deixa o número no sinal que o hardware manda, só com a calibração; a linha do controle na tabela dá o sinal de cada eixo (LX, LY, RX, RY); se é um Joy-Con deitado, o vetor já corrigido gira pelo sentido da linha (L anti-horário, R horário).
+- Uma linha por controle que o plugin distingue; o DualSense Edge se apresenta como DualSense e usa a linha dele. O gyro do Joy-Con deitado (`GetJoyConGripUndoRotation`) lê o sentido da mesma tabela.
+- Cada linha anota quem mediu e com qual controle, ou que é derivada do código anterior e falta medir.
+- Os nodes devolvem para cima = +1 nos dois analógicos, e não o −1 que o jogo vê no direito (escolha do usuário, 2026-11-06): é o que o plugin manda, antes da inversão da Unreal.
+Fatos:
+- A Unreal inverte o `Gamepad_RightY` de todo controle, Xbox incluído, antes de entregá-lo ao jogo: `FSceneViewport::OnAnalogValueChanged` (`SceneViewport.cpp`, linha 1352 na 5.8). Por isso a leitura do `LV_JoyShockGyroAim` mostra −1 no direito para cima, e é o certo. Não houve regressão: o `21c383a` estava certo, e a hipótese de "Y direito negado duas vezes" era a soma de duas negações que se anulavam de propósito.
+- Medido pelo Antônio em 2026-11-06 nessa leitura, em Standalone, empurrando para cima e para a direita: Pro Controller 2 (cabo e Bluetooth), DualShock 4 e par de Joy-Cons dão esquerdo +1 / +1 e direito −1 / +1; Joy-Con L e R deitados dão +1 / +1 como analógico esquerdo. Ou seja, o input da Unreal já estava certo em todos.
+- O que estava errado eram os nodes: devolviam o `simple_state` cru, sem o giro do Joy-Con deitado e com o sinal do vertical direito diferente por família.
+- Nos Joy-Cons os valores ficaram entre +0,7 e +0,9 em vez de 1: curso curto, fora do sinal, a investigar à parte (calibração? zona morta de 0,25 que a Unreal aplica no `Get Input Analog Key State`?).
+- O pawn do `LV_JoyShockGyroAim` (R-049) invertia o vertical dos dois analógicos; o certo é inverter só um, porque a Unreal já inverte o direito.
+Testes: no `LV_JoyShockGyroAim`, em Standalone, empurrar cada analógico para cima e para a direita: a seção de cima dá esquerdo +1 / +1 e direito −1 / +1, e a de baixo (os nodes) +1 em tudo, inclusive no Joy-Con deitado. A câmera sobe com os dois analógicos para cima. Aqui: Pro Controller 2 (USB e Bluetooth), Joy-Con L e R deitados e juntos, DualShock 4. Com o Renan: Pro do Switch 1, Joy-Con 2, DualSense, DualSense Edge, e o gyro do Joy-Con deitado.
+Aprovado aqui em 2026-11-06, em Standalone: Pro Controller 2, DualShock 4, Joy-Cons deitados e em par, nas duas seções da leitura e na câmera. Falta só o que é do Renan.
+
 ## Em andamento
 
 ### R-049 [feature] Um level de mira por gyro na demo
@@ -35,35 +52,10 @@ Como:
 - A rotação da câmera é graus/s × tempo do frame × sensibilidade, aplicada na Control Rotation, sem as escalas legadas de input da Unreal (escolha do agente).
 Testes: em Standalone, com o Pro Controller 2 no Bluetooth e o DualShock 4 no cabo, girar devagar e rápido diante da grade.
 Já aprovado em hardware (2026-11-06): câmera lisa no cabo e boa no Bluetooth, botões que trocam o controle, tiro vermelho, analógicos e gyro juntos.
-Falta: testar os botões coloridos com a cor de cada controle; tirar do pawn a inversão provisória do vertical dos analógicos quando o R-001 entrar (hoje o Joy-Con deitado e o analógico esquerdo do Pro Controller 2 saem invertidos no level, e o direito do Pro sai certo).
+Também aprovado (2026-11-06, com o R-001): a câmera sobe com os dois analógicos para cima, com o pawn invertendo só o esquerdo.
+Falta: testar os botões coloridos com a cor de cada controle.
 
 ## A fazer
-
-### R-001 [ajuste] Uma tabela por controle para o sinal e a pegada dos analógicos
-Ajusta: a normalização dos analógicos (`docs/architecture.md` > *Where to change what*), hoje espalhada entre os leitores de `InputHelpers.cpp` e o `PresentSticks` de `JoyShockInterface.cpp`.
-Esperado: todo controle entrega os dois analógicos à Unreal com para cima = +1 e direita = +1 em cada eixo, a convenção do XInput, e os nodes `JSL4U Get Left/Right Stick` dão o mesmo sinal que o input da Unreal. O sinal de cada eixo de cada controle está escrito num lugar só, uma tabela, e mudar a linha de um controle não mexe em nenhum outro.
-Como (escolha do usuário, 2026-11-06):
-- Três passos, sempre nesta ordem: o leitor do protocolo transforma bytes em número cru, no sinal que o hardware manda, só com a calibração; a linha do controle na tabela dá o sinal de cada eixo (LX, LY, RX, RY); se o controle está deitado, o vetor já corrigido gira pelo sentido que a linha indica.
-- Leitura por protocolo (Switch 1, Switch 2, DualShock 4, DualSense), porque controles que falam a mesma língua dividem o leitor; a tabela tem uma linha por controle (Joy-Con L, Joy-Con R, Pro do Switch 1, Joy-Con 2 L e R, Pro Controller 2, DualShock 4, DualSense, DualSense Edge), porque é o controle que define o comportamento.
-- A tabela tem uma coluna para o sentido do quarto de volta ao deitar (L anti-horário, R horário). O gyro do Joy-Con deitado (`GetJoyConGripUndoRotation`) passa a ler o mesmo sentido, para analógico e gyro não discordarem.
-- A tabela fica num arquivo próprio, aplicada num ponto por onde passam o input da Unreal e os getters diretos.
-- Cada linha anota quem mediu e com qual controle.
-- Separar os quatro leitores de `InputHelpers.cpp` em arquivos próprios é opcional; o que resolve é a correção de sinal sair deles.
-Fatos de partida:
-- Medido em 2026-11-06 no `LV_JoyShockGyroAim`, com o To World Space do mapeamento compartilhado e a inversão provisória do pawn: analógico esquerdo do Pro Controller 2, do Joy-Con L deitado e do Joy-Con R deitado concordam entre si; o analógico direito do Pro Controller 2 vai ao contrário do esquerdo do mesmo controle. Na Unreal os dois analógicos têm a mesma convenção, então o direito do Pro Controller 2 chega invertido.
-- É regressão: o `21c383a` (2026-07-31) alinhou o analógico direito à convenção da Unreal e registrou que, num Pro Controller, os dois analógicos passaram a concordar.
-- Hoje o Y direito do Pro Controller 2 é negado duas vezes: em `parse_switch2_report` (bloco `bWhole`, "confirmado num Pro Controller 2") e em `PresentSticks` (`bSonyPad ? stickRY : -stickRY`). O F-006 do FofuxoJoySense4Unity (2026-10-08) mediu que no relatório cru do Pro Controller 2 por USB os dois analógicos crescem para cima. O Pro do Switch 1 (`left_right == 3`) tem negação parecida no leitor; o Joy-Con direito é corrigido só na interface; a Sony é a exceção do `bSonyPad`.
-- Medido pelo Antônio em 2026-11-06 com a leitura do `LV_JoyShockGyroAim` (o que a Unreal recebe em Gamepad Left/Right X/Y, antes de modificador), em Standalone, empurrando para cima e para a direita:
-  - Pro Controller 2, no cabo e no Bluetooth: esquerdo +1 / +1; direito **−1** para cima, +1 para a direita.
-  - DualShock 4: esquerdo +1 / +1; direito **−1** para cima, +1 para a direita. Logo não é só o Pro Controller 2: o `bSonyPad` do `PresentSticks` também erra.
-  - Joy-Con L deitado e Joy-Con R deitado: +1 / +1, os dois como analógico esquerdo. Para cima chegou a +0,82 (L) e +0,7 (R), e não a 1: o sinal está certo; o curso curto é outra questão.
-  - Par de Joy-Cons junto, em pé: esquerdo +1 / +1; direito **−1** para cima, +1 para a direita.
-  - Nos Joy-Cons, sozinhos ou em par, os valores ficaram entre +0,7 e +0,9 em vez de 1, em todas as direções: curso curto, a investigar à parte (calibração?), fora do sinal.
-  - Resumo: todo analógico direito usado como direito sai invertido no vertical — Pro Controller 2, DualShock 4 e o Joy-Con R no par —, e todo o resto chega certo, inclusive o Joy-Con R deitado, que a Unreal recebe como esquerdo. Pro do Switch 1, Joy-Con 2, DualSense e DualSense Edge são do Renan.
-- `JSL4U Get Left/Right Stick` devolvem o `simple_state` cru, sem a correção de sinal nem o quarto de volta do `PresentSticks`: no Joy-Con L deitado, para cima a Unreal recebeu Y +0,82 e o node deu X +0,86. A tabela tem que passar pelos dois caminhos, como o Esperado já pede.
-- O pawn do `LV_JoyShockGyroAim` (R-049) inverte o vertical dos analógicos para compensar; sai quando a tabela entrar.
-Primeiro passo: no `LV_JoyShockGyroAim`, uma leitura do que a Unreal recebe em Gamepad Left X/Y e Right X/Y, antes de qualquer modificador. Como para cima = +1 vale para todo controle, cada um se mede sozinho, sem controle de referência; é ela que preenche a tabela.
-Testes: com a leitura na tela, empurrar cada analógico para cima e para a direita e ver +1 nos dois eixos. Aqui: Pro Controller 2 (USB e Bluetooth), Joy-Con L e R deitados e juntos, DualShock 4. Com o Renan: Pro do Switch 1, Joy-Con 2, DualSense, DualSense Edge. Os nodes `JSL4U Get Left/Right Stick` dão o mesmo sinal. Em Standalone.
 
 ### R-020 [pesquisa] Os controles do plugin são limpos entre sessões de PIE?
 Esperado: responder se `_joyshocks` e as vagas de jogador sobrevivem de uma sessão de Play In Editor para a seguinte, e se isso importa. Vale como resposta: um log de duas sessões de PIE seguidas com os mesmos controles, mostrando os ids e as vagas de jogador deles.

@@ -92,12 +92,13 @@ and drain it from a ticker on a later frame, the way `SendControllerEvents` and
 `UJSL4UWaitForAnyControllerChanges::DrainPending` already do. Getting this wrong cost a full debugging
 round: spawning failed in standalone only, and looked like a demo bug.
 
-**A right stick's Y is normalised in exactly one place.** Every family flips it somewhere, and two flips
-that each look correct in isolation cancel out. A whole controller (Pro, Pro 2, DS4, DualSense) is flipped
-in the parser, `InputHelpers.cpp`; a Joy-Con half is flipped **only** in the interface,
-`ProcessAnalogInputs` — so the parser must leave a Joy-Con's `stickRY` alone. This has bitten twice: once
-a family normalised nowhere, once a Joy-Con 2 normalised twice. Check both places before touching either
-sign.
+**A stick's sign is written in exactly one place, `JoyShockStickTable.cpp`.** Every family used to flip an
+axis somewhere -- parser, interface, or both -- and two flips that each looked correct cancelled out: once a
+family normalised nowhere, once a Joy-Con 2 normalised twice. The parsers now leave the hardware's sign,
+and a controller's row gives each axis's sign and its sideways quarter turn; Unreal input and the `JSL4U`
+getters both go through `PresentSticks`. Never add a flip outside the table. And never "fix" a game reading
+the right stick's vertical as -1 for up: Unreal's game viewport negates `Gamepad_RightY` for every device,
+Xbox included (`FSceneViewport::OnAnalogValueChanged`). That cost R-001 a wrong diagnosis.
 
 **An editor with a game running beside it stays out of that game's way.** Both processes read the same
 HID controllers. While a game with the plugin runs (the D-008 flag, `Switch2Ble::IsYieldedToGame`), the
