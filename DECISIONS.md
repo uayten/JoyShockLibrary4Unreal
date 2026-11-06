@@ -1,6 +1,6 @@
 # Decisions
 
-<!-- project-docs: only what holds now. Next ID: D-013 · Next fact: F-013 -->
+<!-- project-docs: only what holds now. Next ID: D-014 · Next fact: F-014 -->
 
 The invariants learned by breaking them (Bluetooth streams, `GetInstance`, the device mapper, the right
 stick's Y, Connection Id, no CoreRedirects) live in `CLAUDE.md`, with their reasons. They are not repeated
@@ -84,7 +84,13 @@ Decision: when a Pro Controller 2 whose info-block identity is known disconnects
 Why: the user's rule is that a cable never disconnects a controller, for every family (2026-11-06). A Switch 2 cannot hold both links like a DualShock 4 -- the cable ends Bluetooth, and Bluetooth back is a fresh connection -- and the cable exposes no MAC to match on. Measured gaps: 3.5 s to the cable, 4.6 s back.
 Not chosen: a transport swap inside one JoyShock, as the DualShock 4 does (the two transports are different objects, a BLE link and a HID+WinUSB pair, each with its own init); not parked when the editor yields its Bluetooth controllers to a game (D-008), which is a real departure.
 Origin: agent's choice, 2026-11-06
-Affects: R-045
+Affects: R-045, F-013
+
+### D-013 The unservable-id warning is for a reader that keeps going, not for the frame a controller leaves in
+Decision: `HandleForConnection` does not warn for 2 s after a connection ends (`HasConnectionJustEnded`); a read after that is warned about as before, once per id. `JSL4U Is Controller Connected` never warns. The warning carries the Blueprint call stack (`FFrame::GetScriptCallstack`; empty in Shipping).
+Why: a controller leaves the interface in `SendControllerEvents`, but Wait For Any Controller Changes reports it on a later core tick (on purpose, for the re-entrancy invariant), so every per-frame reader asks for it once after it is gone -- a warning there told a correct game to hunt for an unset variable. Asking whether a stored id is live is exactly what a game should do with it. Without the call stack the warning named no reader; with it, the demo's real one was found in one test.
+Origin: agent's choice, tested by the user in Standalone, 2026-11-06
+Not chosen: stopping the demo panel's reader from its Destruct event -- `WBP_ConnectedJoyShockInfo`'s looping timer kept reading after the HUD removed the panel with Clear Children, and Destruct did not stop it; the reader now checks Is Controller Connected first.
 
 ## Verified facts
 
@@ -153,3 +159,9 @@ Fact: Switch2Connect's input parser reads the two bytes after the battery voltag
 Source: https://github.com/TommyWabg/Switch2Connect `src/controller.py`, the input-report parser
 Verified: 2026-10-29
 Affects: R-031
+
+### F-013 The first USB read of a Pro Controller 2 cabled before a Standalone starts can fail
+Fact: with the controller on the cable before a Standalone started beside the editor, the first transfer on the freshly opened WinUSB interface -- the SPI read of block 0x013000 -- failed silently, while every read after it in the same init succeeded. Plugged in after the start, it never failed. `init_switch2` now retries that read once and logs "the info block read failed on the first try"; the retry succeeded. Cause not proven; a reply left in the pipe by its previous owner fits.
+Source: BossRush_2.log, reproduced on purpose by the user and fixed in Standalone, 2026-11-06
+Verified: 2026-11-06
+Affects: D-012
