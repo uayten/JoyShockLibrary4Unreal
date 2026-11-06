@@ -31,9 +31,6 @@ Com a mão não dá: a conexão inteira leva meio segundo (medido em 2026-11-06,
 1. Conectar quatro Joy-Cons por Bluetooth, um depois do outro, e abrir o log (Window > Output Log): todo Joy-Con mostra o giroscópio se mexendo no espelho do controle em poucos segundos.
 2. Se algum ficar sem giroscópio: o log diz "toggling the IMU enable in-stream" e depois "resumed IMU samples" para aquele controle, e o giroscópio dele começa a se mexer.
 
-### R-016 Um controle passa entre cabo e Bluetooth sem desconectar
-1. Com um DualShock 4 no Bluetooth, ligar e puxar o cabo dez vezes, rápido (um segundo ou dois entre cada): o editor nunca congela e o controle nunca precisa ser desligado e ligado.
-
 ### R-017 Calibração do Joy-Con 2 lida a cada conexão (Renan)
 1. Conectar cada metade do Joy-Con 2 por Bluetooth dez vezes: toda vez o log mostra uma linha de calibração do analógico, e o analógico chega à borda do alcance no espelho do controle.
 
