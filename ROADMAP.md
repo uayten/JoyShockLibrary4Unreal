@@ -95,7 +95,8 @@ Esperado: a taxa medida no JSL4U, e nenhum degrau no giro da câmera pelo Blueto
 Fatos de partida, do JoySense:
 - Lá foram medidos uns 70 relatórios por segundo em 2026-11-01 de manhã e uns 225 a 240 à tarde, com a mesma DLL (que já pede `ThroughputOptimized`); não se sabe o que mudou. A DLL de diagnóstico tinha visto uns 250.
 - Com menos relatórios que frames, um giro somado por relatório deixa frames com giro zero e outros com o dobro, e a câmera anda em degraus. O JoySense resolveu segurando a velocidade da última amostra até a próxima (no máximo 50 ms) e dando a cada frame o trecho de tempo que ele cobre.
-Verificar aqui: a taxa no Bluetooth; e se algum caminho do JSL4U entrega giro acumulado por frame (um valor em graus/s lido a cada frame, como o Rotation Rate, já se comporta como a velocidade segurada).
+Medido no JSL4U com o JSL4U Get Reports Per Second (R-042), em 2026-11-06, em Standalone: Pro Controller 2 no cabo 500 por segundo, no Bluetooth 80 a 90; DualShock 4 no cabo 500 fixo, no Bluetooth perto de 500 oscilando; Joy-Con 50 a 70. Parados, os controles no Bluetooth oscilam um pouco.
+Verificar aqui: se algum caminho do JSL4U entrega giro acumulado por frame (um valor em graus/s lido a cada frame, como o Rotation Rate, já se comporta como a velocidade segurada).
 
 ### R-040 [feature] Uma opção do editor para não procurar nem conectar controles
 Esperado: uma opção que só vale no editor e desliga a busca e a conexão de controles do plugin, para o controle poder ser usado em outro programa com o editor aberto.
@@ -105,13 +106,6 @@ Como:
 - A opção fica guardada por usuário, não no projeto (escolha do agente)
 Fatos de partida: o JoySense4Unity ganhou a mesma opção, e foi ela que acabou com a Unity aberta atrapalhando a Unreal. Um jogo com o plugin já recebe os controles Bluetooth do editor sozinho (D-008); esta opção é para um programa que não seja o plugin, como a Unity.
 Em aberto: onde a opção fica (Editor Preferences ou um botão na barra do editor) e se vale na hora ou só ao reabrir o editor.
-
-### R-042 [feature] A demo mostra quantos relatórios por segundo cada controle entrega
-Esperado: no painel de cada controle, ver quantos dados por segundo a Unreal está recebendo dele, para comparar cabo com Bluetooth e um Bluetooth bom com um ruim.
-Como:
-- Contados no plugin, no ponto em que cada relatório chega, e não por frame do jogo, para a taxa não depender do FPS (escolha do agente)
-- Um node `JSL4U*` que devolve a taxa de um Connection Id, e uma linha no painel da demo com o valor atualizado uma vez por segundo (escolha do agente)
-Fatos de partida: é a medida de que o R-037 precisa (lá, de 70 a 240 relatórios por segundo no Bluetooth do Switch 2, conforme o dia).
 
 ### R-048 [pesquisa] O Pro Controller 2 pode manter o Bluetooth com o cabo ligado?
 Esperado: saber se dá para o Pro Controller 2 voltar ao Bluetooth sozinho ao tirar o cabo, como o DualShock 4, sem apertar botão. Conta como resposta um teste com o Pro Controller 2 do usuário que mostre quem derruba o Bluetooth quando o cabo entra (o próprio controle ou um comando da preparação USB do plugin) e se algum comando ou ordem de preparação o mantém.
