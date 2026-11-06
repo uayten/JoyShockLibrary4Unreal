@@ -10,9 +10,6 @@
 ### R-002 Por Bluetooth, um Switch 2 pareado com outro aparelho é deixado em paz (Renan)
 1. Precisa do console Switch 2. Parear o controle com o console e apertar um botão perto do PC: ele não conecta, e o log diz uma única vez "paired with another device ... Hold SYNC on it". Segurar o SYNC: ele conecta e pareia com o PC.
 
-### R-011 Fechar o editor com um Switch 2 anunciando nunca dá crash
-1. Segurar o SYNC do Pro Controller 2 para ele ficar anunciando, abrir o editor e fechar assim que terminar de carregar. Repetir algumas vezes: ele sempre fecha limpo.
-
 ### R-008 Um controle caindo enquanto o editor fecha não dá crash
 1. Com um controle conectado, fechar o editor e puxar o cabo (ou desligar o controle) no mesmo instante. Repetir várias vezes: o editor sempre fecha limpo. Vale pedir ao Renan, com o depurador.
 
