@@ -1,6 +1,6 @@
 # Roadmap
 
-<!-- project-docs: só pendências; aprovado é apagado. Ordem = prioridade. Próximo ID: R-046 -->
+<!-- project-docs: só pendências; aprovado é apagado. Ordem = prioridade. Próximo ID: R-047 -->
 
 ## Em teste
 
@@ -19,14 +19,6 @@ Com a mão não dá: a conexão inteira leva meio segundo (medido em 2026-11-06,
 
 ### R-012 Um comando Bluetooth recusado pelo Switch 2 falha na hora (Renan)
 1. Conectar cada metade do Joy-Con 2 por Bluetooth: o controle responde em até uns dois segundos, e o log não mostra nenhuma espera de cerca de um segundo antes de "was not acknowledged".
-
-### R-006 Um Joy-Con no modo 0x3F é recuperado algumas vezes, não a cada relatório
-1. Quatro Joy-Cons no Bluetooth, jogar alguns minutos usando o giroscópio: o giroscópio continua funcionando, e se o log mostrar "0x3F mode reset detected", vêm depois no máximo duas linhas "still in 0x3F" por episódio.
-2. Desligar e ligar um Joy-Con com o jogo rodando: ele reconecta com giroscópio e não volta a desconectar sozinho.
-
-### R-015 O movimento do Joy-Con volta sozinho quando o sensor começa morto
-1. Conectar quatro Joy-Cons por Bluetooth, um depois do outro, e abrir o log (Window > Output Log): todo Joy-Con mostra o giroscópio se mexendo no espelho do controle em poucos segundos.
-2. Se algum ficar sem giroscópio: o log diz "toggling the IMU enable in-stream" e depois "resumed IMU samples" para aquele controle, e o giroscópio dele começa a se mexer.
 
 ### R-017 Calibração do Joy-Con 2 lida a cada conexão (Renan)
 1. Conectar cada metade do Joy-Con 2 por Bluetooth dez vezes: toda vez o log mostra uma linha de calibração do analógico, e o analógico chega à borda do alcance no espelho do controle.
@@ -176,3 +168,8 @@ Como:
 - No PIE o jogo roda dentro da janela do editor, então a entrada continua chegando como hoje (escolha do agente)
 Fatos de partida: em 2026-11-06, com o Standalone aberto, o DualShock 4 no cabo comandava o personagem e ao mesmo tempo movia a borda azul de navegação dos menus do editor. O plugin hoje não olha qual janela está na frente. Não conferido se um controle de Xbox, que é da própria Unreal, faz o mesmo. Perto do R-040, que é para um programa que não seja o plugin.
 Em aberto: se um jogo empacotado em segundo plano também deve ignorar os controles.
+
+### R-046 [ajuste] Um controle que reconecta nasce num lugar livre da demo
+Ajusta: o inicializador de jogadores da demo.
+Esperado: um controle que desliga e liga de novo com o jogo rodando aparece num lugar vazio da cena, não em cima de um personagem que já está lá.
+Fatos de partida: em 2026-11-06, em Standalone com quatro Joy-Cons, o Joy-Con (R) desligado e religado reapareceu sobreposto a outro controle já na cena. O plugin o reconectou em meio segundo, com giroscópio. Pode ter a mesma causa do R-019 e do R-028: a posição sairia de uma contagem ao vivo de jogadores, não de uma vaga livre.
