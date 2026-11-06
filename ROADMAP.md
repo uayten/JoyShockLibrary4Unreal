@@ -1,6 +1,6 @@
 # Roadmap
 
-<!-- project-docs: só pendências; aprovado é apagado. Ordem = prioridade. Próximo ID: R-042 -->
+<!-- project-docs: só pendências; aprovado é apagado. Ordem = prioridade. Próximo ID: R-044 -->
 
 ## Em teste
 
@@ -18,9 +18,6 @@ O passo 2 precisa de um segundo aparelho; sem ele, os passos 1 e 3 ainda confirm
 
 ### R-008 Um controle caindo enquanto o editor fecha não dá crash
 1. Com um controle conectado, fechar o editor e puxar o cabo (ou desligar o controle) no mesmo instante. Repetir várias vezes: o editor sempre fecha limpo. Vale pedir ao Renan, com o depurador.
-
-### R-010 Desligar um Switch 2 no Bluetooth nunca congela o jogo
-1. Com o Pro Controller 2 no Bluetooth e outro controle em uso, ficar mexendo um analógico do outro e desligar o Switch 2: o outro controle nunca para de responder. Repetir algumas vezes.
 
 ### R-003 Uma conexão Bluetooth do Switch 2 que falha não deixa resto
 1. Segurar o SYNC e desligar o controle logo que as luzes começarem a correr, para a tentativa falhar; depois conectar normalmente: dá certo sem reiniciar o editor.
@@ -156,3 +153,17 @@ Como:
 - A opção fica guardada por usuário, não no projeto (escolha do agente)
 Fatos de partida: o JoySense4Unity ganhou a mesma opção, e foi ela que acabou com a Unity aberta atrapalhando a Unreal. Um jogo com o plugin já recebe os controles Bluetooth do editor sozinho (D-008); esta opção é para um programa que não seja o plugin, como a Unity.
 Em aberto: onde a opção fica (Editor Preferences ou um botão na barra do editor) e se vale na hora ou só ao reabrir o editor.
+
+### R-042 [feature] A demo mostra quantos relatórios por segundo cada controle entrega
+Esperado: no painel de cada controle, ver quantos dados por segundo a Unreal está recebendo dele, para comparar cabo com Bluetooth e um Bluetooth bom com um ruim.
+Como:
+- Contados no plugin, no ponto em que cada relatório chega, e não por frame do jogo, para a taxa não depender do FPS (escolha do agente)
+- Um node `JSL4U*` que devolve a taxa de um Connection Id, e uma linha no painel da demo com o valor atualizado uma vez por segundo (escolha do agente)
+Fatos de partida: é a medida de que o R-037 precisa (lá, de 70 a 240 relatórios por segundo no Bluetooth do Switch 2, conforme o dia).
+
+### R-043 [feature] Fechar a Unreal solta o controle
+Esperado: ao fechar a Unreal, o controle volta ao estado de quem não está conectado a nada: a luz de jogador apaga e, no cabo, ele mostra só que está carregando.
+Como:
+- Na saída, cada thread de leitura manda uma última vez "luz de jogador apagada", que é só escrita e não mexe na conexão; no Bluetooth, depois fecha o link, o que já acontece hoje (escolha do agente)
+Fatos de partida: em 2026-11-05, com o Pro Controller 2 no cabo, depois de fechar o editor a luz de jogador 1 continuou acesa e a de carregamento ficou apagada. O controle guarda a última luz que recebeu (R-039).
+Em aberto: se a luz de carregamento apagada era bateria cheia e não o controle preso ao editor; o Is Charging nunca foi medido com bateria cheia no cabo.
