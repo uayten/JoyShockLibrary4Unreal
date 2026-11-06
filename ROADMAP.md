@@ -4,11 +4,6 @@
 
 ## Em teste
 
-### R-044 O editor ignora os controles enquanto o jogo aberto por ele está na frente
-1. Com o Standalone aberto, clicar no editor para trazê-lo à frente, segurar um analógico para um lado (a borda azul anda pelos menus) e, sem soltar, clicar na janela do Standalone: a borda para na hora e não volta a andar sozinha.
-2. Fechar o Standalone, clicar no editor e usar o controle: a borda azul volta a andar pelos menus.
-3. Rodar a demo no Play dentro do editor (PIE): o controle comanda o personagem, como antes.
-
 ### R-029 Metades do Joy-Con 2 registradas como dispositivos de hardware (Renan)
 1. Conectar uma metade de Joy-Con 2 por Bluetooth: aparece no log a linha "RegisterDevice: ... HardwareDeviceIdentifier=JoyCon2Left" (ou Right), e Project Settings > Input lista JoyCon2Left e JoyCon2Right entre os dispositivos de hardware. Eles usam a máscara do Pro Controller 2 (9477: sem Lights), por serem da mesma família; o Renan deve dizer se os LEDs de jogador deveriam contar como Lights.
 

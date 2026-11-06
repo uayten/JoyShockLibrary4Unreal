@@ -65,11 +65,12 @@ Why: every healthy USB init in the logs had all ten commands acknowledged; the o
 Origin: agent's choice, 2026-11-05
 Affects: R-007
 
-### D-010 The editor holds controller input back while none of its windows is in front
-Decision: in the editor, with no editor window in front and no Play-In-Editor session, `SendControllerEvents` keeps reading every controller but dispatches nothing, releasing held input on the frame it stops. Games keep Unreal's default and answer from the background.
-Why: a Standalone game launched from the editor is a second process on the same controllers, and Unreal dispatches gamepad input regardless of focus (`Slate.RequireFocusForGamepadInput` is off), so the controller drove the editor's menu navigation behind the game. Staying connected keeps the player slot for when the editor returns; PIE runs inside the editor process, so holding back there would hold back the game too.
-Origin: agent's choice, 2026-11-06
-Affects: R-044
+### D-010 Only the application in front hands controller input to Unreal
+Decision: `SendControllerEvents` dispatches input only while `FPlatformApplicationMisc::IsThisApplicationForeground()`; otherwise it keeps reading every controller but dispatches nothing, releasing held input on the frame it stops. Editor and games alike, packaged ones included; PIE needs no exception, being the editor process.
+Why: Unreal dispatches gamepad input regardless of focus (`Slate.RequireFocusForGamepadInput` is off), and the editor and a Standalone it launched share the controllers: the controller walked Slate's navigation frame across the editor behind the game, and moved the game on the other monitor while the editor was in front (2026-11-06). Staying connected keeps the player slot for the return.
+Not chosen: holding back only the editor (the first version, which the hardware test turned down); Unreal's default for games, which lets a stream or second-monitor game be played from behind another window, and multi-process network sessions on one PC take input in both windows.
+Origin: agent's proposal, the user's call ("só quem está na frente"), 2026-11-06
+Affects: R-044, docs/input.md
 
 ### D-011 With a game running beside it, the editor writes nothing to any controller
 Decision: while the D-008 flag says a game with the plugin is running, the editor's polling threads send no player lights, light bar or rumble, and it skips the DualShock 4's connect-time light. When the game closes, each thread sends the editor's player light and rumble once more; the HOME light clear is not repeated.
