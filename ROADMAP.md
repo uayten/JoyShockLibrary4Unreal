@@ -25,6 +25,15 @@ Com a mão não dá: a conexão inteira leva meio segundo (medido em 2026-11-06,
 
 ## Em andamento
 
+### R-043 [feature] Fechar a Unreal solta o controle
+Esperado: ao fechar a Unreal, o controle volta ao estado de quem não está conectado a nada: a luz de jogador apaga e, no cabo, ele mostra só que está carregando.
+Como:
+- Na saída, cada thread de leitura manda uma última vez "luz de jogador apagada", que é só escrita e não mexe na conexão; no Bluetooth, depois fecha o link, o que já acontece hoje (escolha do agente)
+Fatos de partida:
+- Em 2026-11-05, com o Pro Controller 2 no cabo, depois de fechar o editor a luz de jogador 1 continuou acesa e a de carregamento ficou apagada. O controle guarda a última luz que recebeu.
+- Em 2026-11-06, mesmo teste: a luz de jogador 1 continuou acesa e a de carregamento também, acesa. Tirar e pôr o cabo apagou a de jogador. Então só a luz de jogador fica presa; a de carregamento apagada no dia 5 era provavelmente bateria cheia.
+- Até aqui o plugin não manda nada ao fechar: a thread de leitura sai e a conexão é fechada.
+
 ## A fazer
 
 ### R-001 [ajuste] Um só sinal de Y do analógico por camada, em todas as famílias de controle
@@ -97,11 +106,6 @@ Fatos de partida, do JoySense:
 - Com menos relatórios que frames, um giro somado por relatório deixa frames com giro zero e outros com o dobro, e a câmera anda em degraus. O JoySense resolveu segurando a velocidade da última amostra até a próxima (no máximo 50 ms) e dando a cada frame o trecho de tempo que ele cobre.
 Verificar aqui: a taxa no Bluetooth; e se algum caminho do JSL4U entrega giro acumulado por frame (um valor em graus/s lido a cada frame, como o Rotation Rate, já se comporta como a velocidade segurada).
 
-### R-039 [ajuste] A luz de jogador do Switch 2 no cabo
-Esperado: a luz de jogador acende pelo cabo como no console, venha o controle desligado ou do Bluetooth.
-Fatos de partida, do JoySense: o setup do cabo não acendia a luz, e ela ficava apagada ligando direto no cabo e acesa, sobra do Bluetooth, vindo dele; o controle guarda a luz que recebeu. O comando `09:07` pelo cabo funciona com o controle já ligado (as quatro luzes acenderam), mas enviado no fim da lista do setup não acendeu: o primeiro comando depois do último da lista (`03:0D`) fica sem resposta e não faz nada, e o seguinte é aceito, mesmo sem espera. O JoySense passou a mandar a luz depois da lista e repetir até a resposta chegar. O JSL4U manda a luz pelo polling, depois do setup e com nova tentativa a cada 2 s, então provavelmente já está certo.
-Verificar aqui: plugar o cabo com o controle desligado e ver a luz acender; e vindo do Bluetooth. E se algum outro comando enviado logo depois do setup do cabo (vibração, luz) se perde do mesmo jeito.
-
 ### R-040 [feature] Uma opção do editor para não procurar nem conectar controles
 Esperado: uma opção que só vale no editor e desliga a busca e a conexão de controles do plugin, para o controle poder ser usado em outro programa com o editor aberto.
 Como:
@@ -117,13 +121,6 @@ Como:
 - Contados no plugin, no ponto em que cada relatório chega, e não por frame do jogo, para a taxa não depender do FPS (escolha do agente)
 - Um node `JSL4U*` que devolve a taxa de um Connection Id, e uma linha no painel da demo com o valor atualizado uma vez por segundo (escolha do agente)
 Fatos de partida: é a medida de que o R-037 precisa (lá, de 70 a 240 relatórios por segundo no Bluetooth do Switch 2, conforme o dia).
-
-### R-043 [feature] Fechar a Unreal solta o controle
-Esperado: ao fechar a Unreal, o controle volta ao estado de quem não está conectado a nada: a luz de jogador apaga e, no cabo, ele mostra só que está carregando.
-Como:
-- Na saída, cada thread de leitura manda uma última vez "luz de jogador apagada", que é só escrita e não mexe na conexão; no Bluetooth, depois fecha o link, o que já acontece hoje (escolha do agente)
-Fatos de partida: em 2026-11-05, com o Pro Controller 2 no cabo, depois de fechar o editor a luz de jogador 1 continuou acesa e a de carregamento ficou apagada. O controle guarda a última luz que recebeu (R-039).
-Em aberto: se a luz de carregamento apagada era bateria cheia e não o controle preso ao editor; o Is Charging nunca foi medido com bateria cheia no cabo.
 
 ### R-048 [pesquisa] O Pro Controller 2 pode manter o Bluetooth com o cabo ligado?
 Esperado: saber se dá para o Pro Controller 2 voltar ao Bluetooth sozinho ao tirar o cabo, como o DualShock 4, sem apertar botão. Conta como resposta um teste com o Pro Controller 2 do usuário que mostre quem derruba o Bluetooth quando o cabo entra (o próprio controle ou um comando da preparação USB do plugin) e se algum comando ou ordem de preparação o mantém.
