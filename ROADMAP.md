@@ -55,19 +55,14 @@ Falta: ver a volta ao automático acontecer. Só compilou: nenhum level da demo 
 
 ## A fazer
 
-### R-021 [feature] Acessório de alça do Joy-Con na demo
-Esperado: a demo tem um modelo da alça que desliza no trilho do Joy-Con, para jogar de lado com uma mão.
-Como: o usuário modela.
-
-### R-022 [feature] Modelo do Joy-Con Grip com os dois Joy-Cons encaixados
-Esperado: o modelo do Joy-Con Grip da demo mostra os dois Joy-Cons encaixados nele, em vez do grip sozinho.
-Como: o usuário modela.
-
 ### R-023 [feature] Um pawn da demo comandado por vários controles ao mesmo tempo
 Esperado: a demo tem um pawn que um ou mais controles podem comandar ao mesmo tempo.
 Como:
-- Montado no jogo, não no plugin: um pawn lê vários Connection Ids e é alimentado por todos. A junção de Joy-Cons do plugin já funde uma metade esquerda e uma direita numa vaga de jogador (escolha do agente).
-Em aberto: ou o plugin deveria generalizar a junção para qualquer conjunto de controles?
+- Vaga compartilhada, que o plugin já tem: os controles vão para o mesmo jogador com `JSL4U Assign Controller To Player Index` e todos comandam o pawn dele, por Enhanced Input, sem nada novo no plugin. As luzes mostram o mesmo número, porque viram um jogador só (escolha do usuário, 2026-11-06; descartados: o pawn ler vários Connection Ids, que tiraria o Enhanced Input, e generalizar a junção no plugin).
+- No `LV_JoyShockLocalMultiplayer`, botões no HUD por controle: um manda o controle para o jogador 1, outro devolve ao automático (escolha do usuário, 2026-11-06).
+Aprovado em hardware (2026-11-06): os botões, a luz e o nome em cima do personagem, que se atualiza quando os botões são clicados (pedido do usuário, em vez de um timer).
+Falta: os nomes em cima do personagem crescerem para cima, e não para baixo (pedido do usuário, 2026-11-06).
+Testes: no `LV_JoyShockLocalMultiplayer`, com dois ou mais controles, clicar **Share player 1** no painel de um deles: os dois mexem o personagem do jogador 1, a luz do controle passa para 1 e o cabeçalho do painel diz *Player 1*; **Own player** devolve o controle ao personagem dele. Também com um par de Joy-Cons, e em Standalone.
 
 ### R-024 [feature] Botões no HUD da demo para criar, apagar e reatribuir um pawn
 Esperado: o HUD da demo tem botões para criar um pawn jogável, apagá-lo e atribuí-lo a outro controle.
