@@ -99,6 +99,13 @@ in the parser, `InputHelpers.cpp`; a Joy-Con half is flipped **only** in the int
 a family normalised nowhere, once a Joy-Con 2 normalised twice. Check both places before touching either
 sign.
 
+**An editor with a game running beside it stays out of that game's way.** Both processes read the same
+HID controllers. While a game with the plugin runs (the D-008 flag, `Switch2Ble::IsYieldedToGame`), the
+editor writes no output and runs no Pro Controller 2 USB init: the WinUSB command interface has one owner,
+and the editor used to win it from the game on every plug. And only the application in front dispatches
+input, games included. Each of these was found on hardware as a controller doing two things at once
+(D-010, D-011); a new output or init path has to check the same flag.
+
 **Connection Id is the only address a game is given.** The `JSL4U*` nodes take an `int64 ConnectionId`;
 the library's own `int32` handle is internal and gets reused, so the controller it names today is not
 necessarily the one it named a moment ago. Functions ending in `...ForHandle` are the inside of the

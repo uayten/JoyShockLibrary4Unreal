@@ -1,28 +1,25 @@
 # Handoff
 
-Updated: 2026-11-05
+Updated: 2026-11-06
 
 ## State
-- Branch `master`, nothing pushed; approved and still-untested work both live there. The editor binaries are built from it (unity and non-unity both green).
-- Approved on hardware and closed: R-004, R-009, R-031, R-032, R-041 (Pressed Buttons row in the demo panel), R-005, R-007, R-033 (the editor hands its Bluetooth Switch 2 controllers to a running game, D-008). R-035 and R-038 (gyro dead zones) were dropped: the READMEs now say the plugin follows GyroWiki.
-- Still in *Em teste*: the user's Pro Controller 2 items R-002, R-003 (only the SYNC-failure step left), R-010, R-011; R-008 (any controller); R-006 and R-015 (Joy-Cons); R-016 (DualShock 4); Renan's R-029, R-012 (Joy-Con 2 only) and R-017.
-- The USB-init retry on an unanswered command (D-009) is in, but the controller answered every command in the retest, so that path has never run.
-- The user's Portuguese checklist `TESTES-2026-10-29.md` (plugin root, excluded via `.git/info/exclude`) is stale: it predates everything approved since 2026-10-31.
+- Branch `master`, nothing pushed. Editor binaries are built from HEAD (unity and non-unity green).
+- Approved on hardware this session and closed: R-006, R-008, R-010, R-011, R-015, R-016, R-044 (only the application in front answers the controllers, D-010), R-045 (a Pro Controller 2 moving between cable and Bluetooth stays the same controller, D-012), R-047 (with a game running, the editor writes nothing to the controllers and skips the Pro Controller 2 USB init, D-011).
+- *Em teste* holds only Renan's items: R-029, R-002 (console step), R-003 (debugger steps), R-012, R-017. They reach him only after a push, which the user decides.
+- Outside this repo: the BossRush `CLAUDE.md` gained Renan's Switch 2 console and is uncommitted there, next to unrelated user changes in `Content/BossRush/Testes/`. The BossRush pointer to this submodule is not updated either; both are the user's call.
 
 ## Next step
-Collect the remaining test results, starting with the Pro Controller 2 ones (R-002, R-003, R-010, R-011). Each pass: delete the item, fix docs that changed. Renan's three need a push first, and the user decides when.
+R-046: a controller that reconnects spawns on top of a character already in the demo. It is the demo's player setup Blueprint, not the plugin; read it with NodeScribe before proposing anything, and check whether R-019 and R-028 share the cause.
 
 ## Open questions
-- R-040 (editor option to leave controllers alone): where it lives (Editor Preferences or a toolbar button) and whether it applies at once.
-- R-027 (battery percentage curve) needs a reference reading or the user's call before coding.
-- R-001 needs a Switch 1 Pro, a right Joy-Con, a Pro Controller 2 and a Sony pad together (Renan).
-- Is Charging is unmeasured at full battery on the cable and on Joy-Con 2 (Renan).
+- R-048 (research): can the Pro Controller 2 keep its Bluetooth link while cabled, so it returns by itself like a DualShock 4?
+- R-040, R-027, R-001 and Is Charging at full battery: unchanged.
 
 ## Notes for the next session
-- The user's Unity port has its controller option switched on for good; do not tell them to close Unity before tests.
-- Log timestamps are UTC: 18:39 in `Saved/Logs/BossRush.log` is 15:39 for the user. The Standalone writes `BossRush_2.log`.
-- `quit` in `Saved/NodeScribe/command.txt` is refused while PIE runs; stop it first with `EditorToolset.EditorAppToolset.StopPIE`.
-- Build from PowerShell; from Git Bash the quoted path fails.
+- NodeScribe (`unreal-mcp`) only connects if the editor is already open when the session starts. Without it, stop and say so rather than reading `.uasset` files.
+- In the editor, which controller moves the menus is Slate focus: player 1 follows the mouse click, the others keep their own focus. That is Unreal's behaviour, kept on purpose.
+- With a Standalone open, the controllers' lights show the game's players, not the editor's.
+- Log timestamps are UTC (user's time + 3 h). The Standalone writes `BossRush_2.log`.
 
 ## Read first
-The ROADMAP's *Em teste* section. Source only when a test fails: `Switch2Bluetooth.cpp` (R-002/3/11/12), `JoyShockPolling.cpp` (R-006/8/10/16), `JoyShockEnumeration.cpp` (R-002).
+The R-046 item in ROADMAP.md, then NodeScribe's `Docs/FORMAT.md`, then the demo's player setup Blueprint. Plugin source only if the demo turns out to need something from it.
