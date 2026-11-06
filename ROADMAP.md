@@ -42,20 +42,6 @@ Aprovado aqui em 2026-11-06, em Standalone: Pro Controller 2, DualShock 4, Joy-C
 
 ## Em andamento
 
-### R-049 [feature] Um level de mira por gyro na demo
-Esperado: a demo tem um segundo level, `LV_JoyShockGyroAim`, em primeira pessoa: o controle escolhido entre botões empilhados à direita, um por controle conectado, gira a câmera pelo Rotation Rate do Enhanced Input, diante de uma parede com grade e alvos, com a mira no centro e os relatórios por segundo do controle na tela. Serve de teste do R-037 e de exemplo de mira por gyro para quem usa o plugin.
-Como:
-- Level à parte, não uma adaptação do `LV_JoyShockLocalMultiplayer` (antes `LV_JoyShockDemo`, renomeado em 2026-11-06): aquele tem câmera fixa e vários jogadores de propósito (escolha do usuário, 2026-11-06).
-- Só Enhanced Input no pawn, sem node do plugin no caminho do gyro, para o exemplo valer para qualquer projeto; reaproveita a `JoyShock-GyroscopeRotation` e o `JoyShockInputMappingContext` (escolha do agente).
-- Só o controle escolhido mira: ele vai para o jogador 0 e os outros para o jogador 1, que não tem pawn (pedido do usuário, 2026-11-06).
-- Os dois analógicos também giram a câmera (o esquerdo porque um Joy-Con de lado, sozinho, entrega o analógico dele como esquerdo), para trazer a mira de volta quando o gyro se afasta; o A (botão da direita) marca por 3 s onde a mira bate (pedido do usuário, 2026-11-06). Usa o mesmo `JoyShockInputMappingContext` do outro level (pedido do usuário).
-- A rotação da câmera é graus/s × tempo do frame × sensibilidade, aplicada na Control Rotation, sem as escalas legadas de input da Unreal (escolha do agente).
-Testes: em Standalone, com o Pro Controller 2 no Bluetooth e o DualShock 4 no cabo, girar devagar e rápido diante da grade.
-Já aprovado em hardware (2026-11-06): câmera lisa no cabo e boa no Bluetooth, botões que trocam o controle, tiro vermelho, analógicos e gyro juntos.
-Também aprovado (2026-11-06, com o R-001): a câmera sobe com os dois analógicos para cima, com o pawn invertendo só o esquerdo.
-Botões coloridos aprovados (2026-11-06).
-Falta: testar que um par de Joy-Cons juntos vira um botão só, *Joy-Con pair #A + #B*, e volta a dois ao separar (pedido do usuário, 2026-11-06).
-
 ## A fazer
 
 ### R-020 [pesquisa] Os controles do plugin são limpos entre sessões de PIE?
