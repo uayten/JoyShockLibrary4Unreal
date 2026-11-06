@@ -1,6 +1,6 @@
 # Roadmap
 
-<!-- project-docs: só pendências; aprovado é apagado. Ordem = prioridade. Próximo ID: R-045 -->
+<!-- project-docs: só pendências; aprovado é apagado. Ordem = prioridade. Próximo ID: R-046 -->
 
 ## Em teste
 
@@ -9,9 +9,6 @@
 
 ### R-002 Por Bluetooth, um Switch 2 pareado com outro aparelho é deixado em paz (Renan)
 1. Precisa do console Switch 2. Parear o controle com o console e apertar um botão perto do PC: ele não conecta, e o log diz uma única vez "paired with another device ... Hold SYNC on it". Segurar o SYNC: ele conecta e pareia com o PC.
-
-### R-008 Um controle caindo enquanto o editor fecha não dá crash
-1. Com um controle conectado, fechar o editor e puxar o cabo (ou desligar o controle) no mesmo instante. Repetir várias vezes: o editor sempre fecha limpo. Vale pedir ao Renan, com o depurador.
 
 ### R-003 Uma conexão Bluetooth do Switch 2 que falha não deixa resto (Renan)
 Com a mão não dá: a conexão inteira leva meio segundo (medido em 2026-11-06, quatro tentativas, todas completas antes do controle desligar). Precisa do depurador, com qualquer controle Switch 2 no Bluetooth.
@@ -37,6 +34,15 @@ Com a mão não dá: a conexão inteira leva meio segundo (medido em 2026-11-06,
 ## Em andamento
 
 ## A fazer
+
+### R-045 [ajuste] O Pro Controller 2 troca entre cabo e Bluetooth sem desconectar
+Ajusta: Plugging in a cable while on Bluetooth (docs/troubleshooting.md), que hoje não vale para o Switch 2.
+Esperado: os dois tipos de controle seguem o mesmo padrão: ligar e tirar o cabo de um Pro Controller 2 mantém a conexão, com o mesmo jogador e o mesmo personagem, como já acontece com o DualShock 4.
+Como:
+- O jogo não recebe desconexão nem conexão na troca; o Connection Id e a vaga de jogador ficam os mesmos (escolha do agente)
+- Uma pausa na entrada durante a troca é aceita: o Bluetooth do Switch 2 é uma conexão nova a cada vez, e subir leva alguns segundos (escolha do agente)
+- Tirado o cabo, se o Bluetooth não voltar em 10 segundos (controle desligado, longe do PC), aí sim o jogo recebe a desconexão (escolha do agente)
+Fatos de partida: em 2026-11-06, ligar o cabo deu "controle 1 desconectou" e "controle 2 conectou", com 3,5 s sem entrada; tirar deu o mesmo ao contrário, com 4,6 s. A vaga de jogador (jogador 2) se manteve, porque a identidade é o endereço do controle. O DualShock 4 troca sem pausa porque o cabo não derruba o Bluetooth dele.
 
 ### R-001 [ajuste] Um só sinal de Y do analógico por camada, em todas as famílias de controle
 Ajusta: a normalização dos analógicos (`docs/architecture.md` > *Where to change what*).
