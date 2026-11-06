@@ -27,11 +27,6 @@ Com a mão não dá: a conexão inteira leva meio segundo (medido em 2026-11-06,
 
 ## A fazer
 
-### R-046 [ajuste] Um controle que reconecta nasce num lugar livre da demo
-Ajusta: o inicializador de jogadores da demo.
-Esperado: um controle que desliga e liga de novo com o jogo rodando aparece num lugar vazio da cena, não em cima de um personagem que já está lá.
-Fatos de partida: em 2026-11-06, em Standalone com quatro Joy-Cons, o Joy-Con (R) desligado e religado reapareceu sobreposto a outro controle já na cena. O plugin o reconectou em meio segundo, com giroscópio. Pode ter a mesma causa do R-019 e do R-028: a posição sairia de uma contagem ao vivo de jogadores, não de uma vaga livre.
-
 ### R-001 [ajuste] Um só sinal de Y do analógico por camada, em todas as famílias de controle
 Ajusta: a normalização dos analógicos (`docs/architecture.md` > *Where to change what*).
 Esperado: o estado de baixo nível do JSL (`simple_state`, os getters diretos e os nodes de Blueprint que o leem) informa o Y do analógico direito com o mesmo sinal do esquerdo em toda família, e os comentários dizem o que o código faz de fato. O `FJoyShockInterface` então apresenta os analógicos sem correções por família.
