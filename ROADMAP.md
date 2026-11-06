@@ -37,16 +37,6 @@ Fatos de partida:
 - O ramo do Pro Controller do Switch 1 (`InputHelpers.cpp`, `left_right == 3`) acrescenta a mesma negação, com o mesmo raciocínio; o Joy-Con direito é corrigido uma vez, na interface. Conferir os dois em hardware antes de mexer.
 Antes de mudar: tudo o que lê o estado de baixo nível diretamente (`JoyShockBlueprintLibrary.cpp` monta `RightStick` a partir de `stickRY`) vai inverter o sinal. Para verificar, precisa de um Pro do Switch 2, um Pro do Switch 1, um Joy-Con direito e um controle Sony, testados em Standalone.
 
-### R-019 [ajuste] A demo cria um jogador local por controle, nada além
-Ajusta: o inicializador de jogadores da demo.
-Esperado: com um controle conectado há um jogador local, e o controle comanda o jogador 0.
-Fatos de partida (log de 2026-07-22, não corrigido):
-- Com um controle, o inicializador criou dois jogadores locais e pôs o controle no índice 1, deixando o jogador 0 sem controle.
-- Suspeita: o ramo "o primeiro controle reaproveita o jogador 0, os outros criam um novo" não funciona, ou o handler roda duas vezes (um ForEach antigo mais o Listen For Controllers). O índice de destino deveria vir de um contador idempotente por Connection Id, não de uma contagem ao vivo.
-- Provado por medição, não reinvestigar: o plugin despacha corretamente o input do segundo controle (F-004).
-Testes:
-- Em Standalone, um controle: um personagem, comandado por ele. Conectar um segundo: aparece um segundo personagem, comandado pelo segundo controle.
-
 ### R-020 [pesquisa] Os controles do plugin são limpos entre sessões de PIE?
 Esperado: responder se `_joyshocks` e as vagas de jogador sobrevivem de uma sessão de Play In Editor para a seguinte, e se isso importa. Vale como resposta: um log de duas sessões de PIE seguidas com os mesmos controles, mostrando os ids e as vagas de jogador deles.
 Fatos de partida: `JslDisconnectAndDisposeAll` existe, mas talvez não esteja ligado ao fim do PIE (anotado em 2026-07-19).
@@ -85,14 +75,6 @@ Origem: README *Planned future updates*, trazido para cá pelo R-013.
 ### R-027 [feature] Porcentagem de bateria do Switch 2 por curva de carga
 Esperado: o Battery Percent de um controle do Switch 2 segue a curva de descarga de uma célula de lítio em vez de uma reta entre 3,0 V e 4,2 V, para o número valer a pena ser mostrado e não só uma barra.
 Fatos de partida: o controle informa a tensão da célula e mais nada, e a tensão cai sob carga -- lê baixo no meio da vibração.
-Origem: README *Planned future updates*, trazido para cá pelo R-013.
-
-### R-028 [ajuste] Um controle que chega tem que comandar o seu personagem
-Ajusta: o inicializador de jogadores da demo.
-Esperado: todo controle que conecta comanda o seu personagem, sem parar e dar play de novo.
-Fatos de partida:
-- Relatado uma vez com um Joy-Con 2: o espelho apareceu e as leituras de movimento funcionaram, mas o pawn não se mexeu. Parar e dar play de novo resolveu, o que não é opção num build empacotado.
-- Não diagnosticado. Suspeita no caminho de atribuição da demo, não no plugin, já que o controle estava visivelmente conectado e mandando dados. Pode ter a mesma causa do R-019.
 Origem: README *Planned future updates*, trazido para cá pelo R-013.
 
 ### R-034 [pesquisa] O Pro Controller 2 informa temperatura, e onde?
