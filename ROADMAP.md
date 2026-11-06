@@ -25,15 +25,6 @@ Com a mão não dá: a conexão inteira leva meio segundo (medido em 2026-11-06,
 
 ## Em andamento
 
-### R-043 [feature] Fechar a Unreal solta o controle
-Esperado: ao fechar a Unreal, o controle volta ao estado de quem não está conectado a nada: a luz de jogador apaga e, no cabo, ele mostra só que está carregando.
-Como:
-- Na saída, cada thread de leitura manda uma última vez "luz de jogador apagada", que é só escrita e não mexe na conexão; no Bluetooth, depois fecha o link, o que já acontece hoje (escolha do agente)
-Fatos de partida:
-- Em 2026-11-05, com o Pro Controller 2 no cabo, depois de fechar o editor a luz de jogador 1 continuou acesa e a de carregamento ficou apagada. O controle guarda a última luz que recebeu.
-- Em 2026-11-06, mesmo teste: a luz de jogador 1 continuou acesa e a de carregamento também, acesa. Tirar e pôr o cabo apagou a de jogador. Então só a luz de jogador fica presa; a de carregamento apagada no dia 5 era provavelmente bateria cheia.
-- Até aqui o plugin não manda nada ao fechar: a thread de leitura sai e a conexão é fechada.
-
 ## A fazer
 
 ### R-001 [ajuste] Um só sinal de Y do analógico por camada, em todas as famílias de controle
