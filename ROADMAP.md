@@ -1,8 +1,13 @@
 # Roadmap
 
-<!-- project-docs: só pendências; aprovado é apagado. Ordem = prioridade. Próximo ID: R-047 -->
+<!-- project-docs: só pendências; aprovado é apagado. Ordem = prioridade. Próximo ID: R-048 -->
 
 ## Em teste
+
+### R-044 O editor ignora os controles enquanto o jogo aberto por ele está na frente
+1. Com o Standalone aberto, clicar no editor para trazê-lo à frente, segurar um analógico para um lado (a borda azul anda pelos menus) e, sem soltar, clicar na janela do Standalone: a borda para na hora e não volta a andar sozinha.
+2. Fechar o Standalone, clicar no editor e usar o controle: a borda azul volta a andar pelos menus.
+3. Rodar a demo no Play dentro do editor (PIE): o controle comanda o personagem, como antes.
 
 ### R-029 Metades do Joy-Con 2 registradas como dispositivos de hardware (Renan)
 1. Conectar uma metade de Joy-Con 2 por Bluetooth: aparece no log a linha "RegisterDevice: ... HardwareDeviceIdentifier=JoyCon2Left" (ou Right), e Project Settings > Input lista JoyCon2Left e JoyCon2Right entre os dispositivos de hardware. Eles usam a máscara do Pro Controller 2 (9477: sem Lights), por serem da mesma família; o Renan deve dizer se os LEDs de jogador deveriam contar como Lights.
@@ -160,14 +165,6 @@ Como:
 - Na saída, cada thread de leitura manda uma última vez "luz de jogador apagada", que é só escrita e não mexe na conexão; no Bluetooth, depois fecha o link, o que já acontece hoje (escolha do agente)
 Fatos de partida: em 2026-11-05, com o Pro Controller 2 no cabo, depois de fechar o editor a luz de jogador 1 continuou acesa e a de carregamento ficou apagada. O controle guarda a última luz que recebeu (R-039).
 Em aberto: se a luz de carregamento apagada era bateria cheia e não o controle preso ao editor; o Is Charging nunca foi medido com bateria cheia no cabo.
-
-### R-044 [feature] O editor ignora os controles enquanto o jogo aberto por ele está na frente
-Esperado: com um jogo em Standalone aberto a partir do editor, o controle comanda só o jogo; o editor não reage a ele (a borda azul dos menus não se mexe).
-Como:
-- O editor continua conectado ao controle e só deixa de repassar a entrada à Unreal enquanto nenhuma janela dele está em primeiro plano (escolha do agente)
-- No PIE o jogo roda dentro da janela do editor, então a entrada continua chegando como hoje (escolha do agente)
-Fatos de partida: em 2026-11-06, com o Standalone aberto, o DualShock 4 no cabo comandava o personagem e ao mesmo tempo movia a borda azul de navegação dos menus do editor. O plugin hoje não olha qual janela está na frente. Não conferido se um controle de Xbox, que é da própria Unreal, faz o mesmo. Perto do R-040, que é para um programa que não seja o plugin.
-Em aberto: se um jogo empacotado em segundo plano também deve ignorar os controles.
 
 ### R-046 [ajuste] Um controle que reconecta nasce num lugar livre da demo
 Ajusta: o inicializador de jogadores da demo.

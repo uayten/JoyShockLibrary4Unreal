@@ -1,6 +1,6 @@
 # Decisions
 
-<!-- project-docs: only what holds now. Next ID: D-010 · Next fact: F-013 -->
+<!-- project-docs: only what holds now. Next ID: D-012 · Next fact: F-013 -->
 
 The invariants learned by breaking them (Bluetooth streams, `GetInstance`, the device mapper, the right
 stick's Y, Connection Id, no CoreRedirects) live in `CLAUDE.md`, with their reasons. They are not repeated
@@ -64,6 +64,19 @@ Decision: in `init_switch2`, a command that gets no acknowledgement makes the in
 Why: every healthy USB init in the logs had all ten commands acknowledged; the one with five unanswered (cable plugged while the Bluetooth link was opening) left the controller with no motion and no player light. Cable only: Bluetooth init is never re-run (CLAUDE.md).
 Origin: agent's choice, 2026-11-05
 Affects: R-007
+
+### D-010 The editor holds controller input back while none of its windows is in front
+Decision: in the editor, with no editor window in front and no Play-In-Editor session, `SendControllerEvents` keeps reading every controller but dispatches nothing, releasing held input on the frame it stops. Games keep Unreal's default and answer from the background.
+Why: a Standalone game launched from the editor is a second process on the same controllers, and Unreal dispatches gamepad input regardless of focus (`Slate.RequireFocusForGamepadInput` is off), so the controller drove the editor's menu navigation behind the game. Staying connected keeps the player slot for when the editor returns; PIE runs inside the editor process, so holding back there would hold back the game too.
+Origin: agent's choice, 2026-11-06
+Affects: R-044
+
+### D-011 With a game running beside it, the editor writes nothing to any controller
+Decision: while the D-008 flag says a game with the plugin is running, the editor's polling threads send no player lights, light bar or rumble, and it skips the DualShock 4's connect-time light. When the game closes, each thread sends the editor's player light and rumble once more; the HOME light clear is not repeated.
+Why: both processes read the same HID controllers and each keeps its own player list, so both wrote player lights: a Joy-Con pair joined in both at once showed two different players, whichever write landed last (2026-11-06). The game is what is being played.
+Not chosen: writing only from the process whose window is in front (a game answers from the background, D-010, and would lose its lights whenever the editor is clicked).
+Origin: agent's choice, 2026-11-06
+Affects: R-047, D-008
 
 ## Verified facts
 
