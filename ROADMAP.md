@@ -1,6 +1,6 @@
 # Roadmap
 
-<!-- project-docs: só pendências; aprovado é apagado. Ordem = prioridade. Próximo ID: R-048 -->
+<!-- project-docs: só pendências; aprovado é apagado. Ordem = prioridade. Próximo ID: R-049 -->
 
 ## Em teste
 
@@ -27,14 +27,10 @@ Com a mão não dá: a conexão inteira leva meio segundo (medido em 2026-11-06,
 
 ## A fazer
 
-### R-045 [ajuste] O Pro Controller 2 troca entre cabo e Bluetooth sem desconectar
-Ajusta: Plugging in a cable while on Bluetooth (docs/troubleshooting.md), que hoje não vale para o Switch 2.
-Esperado: os dois tipos de controle seguem o mesmo padrão: ligar e tirar o cabo de um Pro Controller 2 mantém a conexão, com o mesmo jogador e o mesmo personagem, como já acontece com o DualShock 4.
-Como:
-- O jogo não recebe desconexão nem conexão na troca; o Connection Id e a vaga de jogador ficam os mesmos (escolha do agente)
-- Uma pausa na entrada durante a troca é aceita: o Bluetooth do Switch 2 é uma conexão nova a cada vez, e subir leva alguns segundos (escolha do agente)
-- Tirado o cabo, se o Bluetooth não voltar em 10 segundos (controle desligado, longe do PC), aí sim o jogo recebe a desconexão (escolha do agente)
-Fatos de partida: em 2026-11-06, ligar o cabo deu "controle 1 desconectou" e "controle 2 conectou", com 3,5 s sem entrada; tirar deu o mesmo ao contrário, com 4,6 s. A vaga de jogador (jogador 2) se manteve, porque a identidade é o endereço do controle. O DualShock 4 troca sem pausa porque o cabo não derruba o Bluetooth dele.
+### R-046 [ajuste] Um controle que reconecta nasce num lugar livre da demo
+Ajusta: o inicializador de jogadores da demo.
+Esperado: um controle que desliga e liga de novo com o jogo rodando aparece num lugar vazio da cena, não em cima de um personagem que já está lá.
+Fatos de partida: em 2026-11-06, em Standalone com quatro Joy-Cons, o Joy-Con (R) desligado e religado reapareceu sobreposto a outro controle já na cena. O plugin o reconectou em meio segundo, com giroscópio. Pode ter a mesma causa do R-019 e do R-028: a posição sairia de uma contagem ao vivo de jogadores, não de uma vaga livre.
 
 ### R-001 [ajuste] Um só sinal de Y do analógico por camada, em todas as famílias de controle
 Ajusta: a normalização dos analógicos (`docs/architecture.md` > *Where to change what*).
@@ -161,7 +157,6 @@ Como:
 Fatos de partida: em 2026-11-05, com o Pro Controller 2 no cabo, depois de fechar o editor a luz de jogador 1 continuou acesa e a de carregamento ficou apagada. O controle guarda a última luz que recebeu (R-039).
 Em aberto: se a luz de carregamento apagada era bateria cheia e não o controle preso ao editor; o Is Charging nunca foi medido com bateria cheia no cabo.
 
-### R-046 [ajuste] Um controle que reconecta nasce num lugar livre da demo
-Ajusta: o inicializador de jogadores da demo.
-Esperado: um controle que desliga e liga de novo com o jogo rodando aparece num lugar vazio da cena, não em cima de um personagem que já está lá.
-Fatos de partida: em 2026-11-06, em Standalone com quatro Joy-Cons, o Joy-Con (R) desligado e religado reapareceu sobreposto a outro controle já na cena. O plugin o reconectou em meio segundo, com giroscópio. Pode ter a mesma causa do R-019 e do R-028: a posição sairia de uma contagem ao vivo de jogadores, não de uma vaga livre.
+### R-048 [pesquisa] O Pro Controller 2 pode manter o Bluetooth com o cabo ligado?
+Esperado: saber se dá para o Pro Controller 2 voltar ao Bluetooth sozinho ao tirar o cabo, como o DualShock 4, sem apertar botão. Conta como resposta um teste com o Pro Controller 2 do usuário que mostre quem derruba o Bluetooth quando o cabo entra (o próprio controle ou um comando da preparação USB do plugin) e se algum comando ou ordem de preparação o mantém.
+Fatos de partida: em 2026-11-06 o Bluetooth caiu 13 ms depois de o plugin abrir o USB, e depois de tirar o cabo o controle não anunciou no Bluetooth em nenhum dos 10 s seguintes até um botão ser apertado. Com o R-045, apertar um botão o traz de volta como o mesmo jogador.

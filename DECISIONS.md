@@ -1,6 +1,6 @@
 # Decisions
 
-<!-- project-docs: only what holds now. Next ID: D-012 · Next fact: F-013 -->
+<!-- project-docs: only what holds now. Next ID: D-013 · Next fact: F-013 -->
 
 The invariants learned by breaking them (Bluetooth streams, `GetInstance`, the device mapper, the right
 stick's Y, Connection Id, no CoreRedirects) live in `CLAUDE.md`, with their reasons. They are not repeated
@@ -73,11 +73,18 @@ Origin: agent's proposal, the user's call ("só quem está na frente"), 2026-11-
 Affects: R-044, docs/input.md
 
 ### D-011 With a game running beside it, the editor writes nothing to any controller
-Decision: while the D-008 flag says a game with the plugin is running, the editor's polling threads send no player lights, light bar or rumble, and it skips the DualShock 4's connect-time light. When the game closes, each thread sends the editor's player light and rumble once more; the HOME light clear is not repeated.
+Decision: while the D-008 flag says a game with the plugin is running, the editor's polling threads send no player lights, light bar or rumble, and it skips the DualShock 4's connect-time light. When the game closes, each thread sends the editor's player light and rumble once more; the HOME light clear is not repeated. It also skips the Pro Controller 2's USB init, which takes the WinUSB command interface only one process can hold: the editor won that race by milliseconds on every plug, leaving the game without stick calibration (the character walked on the fixed-centre fallback) or identity for 2 s. The polling thread's retry runs the init once the game closes.
 Why: both processes read the same HID controllers and each keeps its own player list, so both wrote player lights: a Joy-Con pair joined in both at once showed two different players, whichever write landed last (2026-11-06). The game is what is being played.
 Not chosen: writing only from the process whose window is in front (a game answers from the background, D-010, and would lose its lights whenever the editor is clicked).
 Origin: agent's choice, 2026-11-06
 Affects: R-047, D-008
+
+### D-012 A Pro Controller 2 moving between cable and Bluetooth is held, then carried on
+Decision: when a Pro Controller 2 whose info-block identity is known disconnects, the interface parks it for 10 s instead of announcing it: input released, Connection Id, input device (still mapped and registered) and player slot kept. If a Pro Controller 2 with the same identity connects meanwhile, it takes all of that over under its new handle and nothing is announced; `OnDeviceHandedOver` tells the subsystem to re-key its cache. Otherwise the disconnect goes out when the time runs out. The identity is the hex of the bytes before the colours in block 0x013000 (serial and ids), read on both transports. A Pro Controller 2 that connects while another is parked, before its identity is read, waits unannounced for up to 5 s: over the cable the read waits for the USB command interface, which the editor beside a Standalone held for 2 s on 2026-11-06, and announcing it first made it a new controller for good. The parked controller's library handle is held under a key of its own meanwhile; freed, it went to a Joy-Con switched on during the wait, which ended the wait early and inherited the player. While parked it stays in Get Connected Controllers and Get Controller Info, described as it was at its connect: dropped from the list, its still-mapped input device came back from Get All Connected Controllers as an undriven "XInput Controller", and the demo gave it a second mirror.
+Why: the user's rule is that a cable never disconnects a controller, for every family (2026-11-06). A Switch 2 cannot hold both links like a DualShock 4 -- the cable ends Bluetooth, and Bluetooth back is a fresh connection -- and the cable exposes no MAC to match on. Measured gaps: 3.5 s to the cable, 4.6 s back.
+Not chosen: a transport swap inside one JoyShock, as the DualShock 4 does (the two transports are different objects, a BLE link and a HID+WinUSB pair, each with its own init); not parked when the editor yields its Bluetooth controllers to a game (D-008), which is a real departure.
+Origin: agent's choice, 2026-11-06
+Affects: R-045
 
 ## Verified facts
 
