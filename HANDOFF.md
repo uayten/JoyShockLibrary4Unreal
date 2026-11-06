@@ -3,21 +3,19 @@
 Updated: 2026-11-06
 
 ## State
-- Branch `master`, nothing pushed. Editor binaries built from this commit (unity build; the non-unity include check passed for the gyro change).
-- Approved on hardware and closed this session: R-039 (no code change), R-043 (Nintendo player lights off on exit), R-042 (`JSL4U Get Reports Per Second`), R-037 (gyro as time slices, D-014).
-- R-049 in progress: `LV_JoyShockGyroAim`, a gyro-aim demo level with per-controller buttons, A to mark the crosshair, both sticks turning the camera. Approved except the button colours, untested. The pawn's stick pitch inversion is provisional, waiting on R-001.
-- `LV_JoyShockDemo` was renamed `LV_JoyShockLocalMultiplayer` (duplicated and the old one deleted: Unreal refused to move the map; nothing referenced it). Not yet opened in Play after the rename.
-- R-001 rewritten into the user's design: bytes per protocol, one table with a row per controller for each axis's sign and the quarter turn when held sideways.
-- *Em teste* still holds only Renan's items (R-029, R-002, R-003, R-012, R-017); they reach him after a push.
+- Branch `master`, nothing pushed. Editor binaries built from this code (unity; the non-unity include check passed for the stick table).
+- Approved on hardware and closed this session: R-049 (gyro-aim level), R-021 and R-022 (done by the user). R-001 (stick table, D-015) is approved here and waits only on Renan's controllers; R-020 (slots reset at the end of a game, D-016) is answered but the reset is compiled only.
+- R-023 in progress: in `LV_JoyShockLocalMultiplayer` each controller panel has **Share player 1** / **Own player**, approved; the names above a character refresh when those buttons are clicked.
+- `LV_JoyShockGyroAim` now hands its one pawn to the picked controller's player (D-017); the demo's rumble test is on L (light) and R (strong).
 
 ## Next step
-R-001, first step: in `LV_JoyShockGyroAim`, show what Unreal receives on Gamepad Left X/Y and Right X/Y before any modifier (`Get Input Analog Key State` on the player controller), so each controller measures itself against up = +1. Then the table, then drop the pawn's inversion.
+R-023, last item: the controller names above a character (`WBP_ControllerName`, one `WBP_ControllerNameText` per controller in `ControllerInfoVerticalBox`) should grow upwards, not downwards, as controllers are added. Read the widget's designer with `read_object` first; it sits in the character's `Controller Name Widget` component.
 
 ## Notes for the next session
-- Measured 2026-11-06 with the pawn's inversion: Pro Controller 2 left, Joy-Con L sideways and Joy-Con R sideways agree; the Pro Controller 2 right stick goes the other way. The user has no Xbox pad at hand for a reference.
-- NodeScribe: a quoted literal on a Text pin does not come back in the reading (nor through `Conv_StringToText`); `Append` a string and convert with `(String -> Text)`. A custom event's parameters change only by rewriting the graph with `replace`.
-- Blueprint compile errors from `BlueprintTools.compile_blueprint` show only in the log (`LogBlueprint: Error`); the tool returns null either way.
-- Plugin content can't be created directly: `create_asset` in `/Game/BossRush/Testes/`, then `AssetTools.move` to `/JoyShockLibrary4Unreal/`.
+- NodeScribe limits met today: a `True:`/`False:` label on bool-as-exec nodes (Ensure Local Player For Controller) is mapped to `then` and fails, link that pin with BlueprintTools `connect_pins`; engine events go by function name (`event K2_PostLogin`); `after X (...)` cannot tell apart two nodes that differ only in a default-valued pin; orphans after a failed write block `replace`, remove them with BlueprintTools `delete_node`. All in `.trail/learnings/`.
+- BlueprintTools' compile returns null either way; errors show only as `LogBlueprint: Error` in `Saved/Logs/BossRush.log`.
+- Unreal negates Gamepad Right Y for every gamepad (F-015): a game reading -1 there is correct.
+- Joy-Con sticks read 0.7-0.9 at full travel in the stick check; not investigated (calibration, or the 0.25 AxisConfig dead zone the readout sees).
 
 ## Read first
-CLAUDE.md, then R-001 in ROADMAP.md. For the code: `PresentSticks` in `JoyShockInterface.cpp` and the stick blocks of the parsers in `InputHelpers.cpp` (trail ask). `docs/demo.md` > *Gyro aim level* for the level's Blueprints. Not needed: the gyro slicer (`GyroTimeSlicer.h`) unless motion is touched.
+CLAUDE.md, then R-023 in ROADMAP.md and `docs/demo.md` > *Local multiplayer level*. Not needed for R-023: the stick table, the parsers, the gyro slicer.

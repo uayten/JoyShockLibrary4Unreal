@@ -1,6 +1,6 @@
 # Decisions
 
-<!-- project-docs: only what holds now. Next ID: D-015 · Next fact: F-015 -->
+<!-- project-docs: only what holds now. Next ID: D-018 · Next fact: F-017 -->
 
 The invariants learned by breaking them (Bluetooth streams, `GetInstance`, the device mapper, the right
 stick's Y, Connection Id, no CoreRedirects) live in `CLAUDE.md`, with their reasons. They are not repeated
@@ -98,6 +98,27 @@ Why: report rates range from 80-90 a second (Pro Controller 2 on Bluetooth, belo
 Origin: user's choice (R-037), approved on hardware 2026-11-06 in `LV_JoyShockGyroAim`: smooth on the cable, good but less so on Bluetooth
 Not chosen: the latest report each frame (above); a plain average of the samples since the last frame -- weighs samples equally whatever time they cover and also repeats without limit. GyroWiki only says velocity times the time since the last sample; it does not cover reports slower than frames.
 
+### D-015 Stick signs live in one table, and the stick getters return what the plugin sends
+Decision: protocol readers leave every axis in the sign the hardware sends; `JoyShockStickTable.cpp` has one row per controller with each axis's sign, the sideways quarter turn of a Joy-Con half (L counter-clockwise, R clockwise) and who measured it. `JSL4UStickTable::PresentSticks` serves Unreal input and `JSL4U Get Left/Right Stick` and `Get Controller State` alike, so the getters read up = +1 on both sticks, a sideways Joy-Con turned into its grip. The sideways motion undo reads its direction from the same table.
+Why: flips spread over readers and interface cancelled out more than once; the getters disagreed with input for sideways Joy-Cons and between families.
+Origin: user's design (R-001), approved on hardware 2026-11-06 here; rows for the Switch 1 Pro, Joy-Con 2 and DualSense are derived and await Renan
+Not chosen: getters matching what a game reads (right stick up = -1) -- that sign is the engine's viewport flip (F-015), downstream of the plugin.
+Affects: CLAUDE.md, docs/input.md, docs/architecture.md
+
+### D-016 The player slots a game assigned end with it; controllers and pairings stay
+Decision: `UJoyShockSubsystem::Deinitialize` calls `ResetPlayerAssignmentsToAutomatic`, which drops every assigned slot and hands out automatic ones in handle order. Connections, Joy-Con pairings and a parked Pro Controller 2's slot are untouched.
+Why: slots live in the module, so the next Play In Editor session, in any level, inherited the last one's choices (F-016), where a packaged game starts from automatic slots. Reconnecting to start clean would rerun init on live Bluetooth links.
+Origin: user's choice (R-020), 2026-11-06; compiled only, since nothing in the demo assigns a slot any more
+Not chosen: only documenting it; separating joined pairs too -- joining is the player's gesture.
+Affects: docs/players.md
+
+### D-017 A demo level that changes who drives a pawn moves the pawn, not the controllers
+Decision: in `LV_JoyShockGyroAim`, picking a controller finds or creates that controller's player (`Ensure Local Player For Controller`) and it possesses the level's single pawn; no controller changes player, so player lights stay put. The Game Mode spawns the pawn for player 0 only and split screen is off.
+Why: the user wants each controller to keep its player and light; moving controllers between players also broke joined pairs and leaked into the next Play.
+Origin: user, 2026-11-06, approved on hardware
+Not chosen: `JSL4U Assign Controller To Player Index` per pick. Sharing a slot on purpose (R-023's buttons) is a different case: there the shared player is the point.
+Affects: docs/demo.md
+
 ## Verified facts
 
 ### F-001 Joy-Con 2 sensor ranges
@@ -177,3 +198,15 @@ Fact: Pro Controller 2 500 a second on the cable and 80-90 on Bluetooth; DualSho
 Source: `JSL4U Get Reports Per Second` in the demo panel, in Standalone, read by the user
 Verified: 2026-11-06
 Affects: D-014
+
+### F-015 Unreal negates Gamepad Right Y for every gamepad before the game sees it
+Fact: `FSceneViewport::OnAnalogValueChanged` passes `-Value` for `EKeys::Gamepad_RightY` and the raw value for every other key, so with the right stick up a game reads -1 from an Xbox pad and from every controller of this plugin alike; the left stick reads +1. `Get Input Analog Key State` and Enhanced Input both read after it.
+Source: Engine/Source/Runtime/Engine/Private/Slate/SceneViewport.cpp:1352 (UE 5.8); measured in `LV_JoyShockGyroAim` on Pro Controller 2, DualShock 4 and a Joy-Con pair
+Verified: 2026-11-06
+Affects: D-015
+
+### F-016 Controllers, player slots and Joy-Con pairings survive from one PIE session to the next
+Fact: the module, its controllers, `PlayerSlotByPrimary` and pairings live as long as the editor; at the end of a Play only `UJoyShockSubsystem` goes. After the gyro-aim level put every controller but one on player 1, the next Play of the multiplayer level started with them all there and a pair still joined.
+Source: code (`JoyShockSubsystem.cpp`, `JoyShockPlayerAssignment.cpp`) and the session start log line, on hardware, R-020
+Verified: 2026-11-06
+Affects: D-016
