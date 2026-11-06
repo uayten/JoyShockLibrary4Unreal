@@ -3,24 +3,21 @@
 Updated: 2026-11-06
 
 ## State
-- Branch `master`, nothing pushed. Editor binaries are built from HEAD (unity build; no function moved between files, so no non-unity check was needed).
-- Approved on hardware this session and closed: R-046 (a reconnecting controller's mirror takes the first free slot), R-018, R-019 and R-028 (already fixed; re-tested in Standalone and closed).
-- Also fixed and tested in Standalone, outside the roadmap: the unservable-id warning no longer fires in the frame a controller leaves, Is Controller Connected never warns, and the warning names the Blueprint that asked (D-013); the demo's sensor panel stops reading a gone controller; a Pro Controller 2 cabled before a Standalone starts keeps its identity, so its first trip off the cable is held (F-013).
-- *Em teste* holds only Renan's items: R-029, R-002 (console step), R-003 (debugger steps), R-012, R-017. They reach him only after a push, which the user decides.
-- BossRush: the pointer to this submodule and its `CLAUDE.md` (Renan's Switch 2 console) are committed there. The user's own content changes in BossRush (Zoo map, Tigre and sword animations, Testes assets) are left uncommitted for the user.
+- Branch `master`, nothing pushed. Editor binaries built from this commit (unity build; the non-unity include check passed for the gyro change).
+- Approved on hardware and closed this session: R-039 (no code change), R-043 (Nintendo player lights off on exit), R-042 (`JSL4U Get Reports Per Second`), R-037 (gyro as time slices, D-014).
+- R-049 in progress: `LV_JoyShockGyroAim`, a gyro-aim demo level with per-controller buttons, A to mark the crosshair, both sticks turning the camera. Approved except the button colours, untested. The pawn's stick pitch inversion is provisional, waiting on R-001.
+- `LV_JoyShockDemo` was renamed `LV_JoyShockLocalMultiplayer` (duplicated and the old one deleted: Unreal refused to move the map; nothing referenced it). Not yet opened in Play after the rename.
+- R-001 rewritten into the user's design: bytes per protocol, one table with a row per controller for each axis's sign and the quarter turn when held sideways.
+- *Em teste* still holds only Renan's items (R-029, R-002, R-003, R-012, R-017); they reach him after a push.
 
 ## Next step
-No item is waiting here. The next move is the user's choice: publish (Renan's five items and this session's fixes reach him only through a push), or pick from *A fazer*. R-001 is first in order but needs a Switch 1 Pro Controller, which only Renan has; R-039 and R-043 are plugin work testable here.
-
-## Open questions
-- R-048 (research): can the Pro Controller 2 keep its Bluetooth link while cabled, so it returns by itself like a DualShock 4?
-- R-040, R-027, R-001 and Is Charging at full battery: unchanged.
+R-001, first step: in `LV_JoyShockGyroAim`, show what Unreal receives on Gamepad Left X/Y and Right X/Y before any modifier (`Get Input Analog Key State` on the player controller), so each controller measures itself against up = +1. Then the table, then drop the pawn's inversion.
 
 ## Notes for the next session
-- NodeScribe (`unreal-mcp`) needs the editor open; after closing and reopening it for a build, it reconnected by itself. NodeScribe cannot label a True/False exec output on a non-Branch node, nor rewire an existing pin: `BlueprintTools.connect_pins` does (trail learnings).
-- In the editor, which controller moves the menus is Slate focus: player 1 follows the mouse click, the others keep their own focus. That is Unreal's behaviour, kept on purpose.
-- With a Standalone open, the controllers' lights show the game's players, not the editor's.
-- Log timestamps are UTC (user's time + 3 h). The Standalone writes `BossRush_2.log`.
+- Measured 2026-11-06 with the pawn's inversion: Pro Controller 2 left, Joy-Con L sideways and Joy-Con R sideways agree; the Pro Controller 2 right stick goes the other way. The user has no Xbox pad at hand for a reference.
+- NodeScribe: a quoted literal on a Text pin does not come back in the reading (nor through `Conv_StringToText`); `Append` a string and convert with `(String -> Text)`. A custom event's parameters change only by rewriting the graph with `replace`.
+- Blueprint compile errors from `BlueprintTools.compile_blueprint` show only in the log (`LogBlueprint: Error`); the tool returns null either way.
+- Plugin content can't be created directly: `create_asset` in `/Game/BossRush/Testes/`, then `AssetTools.move` to `/JoyShockLibrary4Unreal/`.
 
 ## Read first
-CLAUDE.md, then only the roadmap item the user picks. DECISIONS.md D-012, D-013 and F-013 if the work touches disconnects or the Pro Controller 2.
+CLAUDE.md, then R-001 in ROADMAP.md. For the code: `PresentSticks` in `JoyShockInterface.cpp` and the stick blocks of the parsers in `InputHelpers.cpp` (trail ask). `docs/demo.md` > *Gyro aim level* for the level's Blueprints. Not needed: the gyro slicer (`GyroTimeSlicer.h`) unless motion is touched.

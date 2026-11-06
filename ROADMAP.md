@@ -1,6 +1,6 @@
 # Roadmap
 
-<!-- project-docs: só pendências; aprovado é apagado. Ordem = prioridade. Próximo ID: R-049 -->
+<!-- project-docs: só pendências; aprovado é apagado. Ordem = prioridade. Próximo ID: R-050 -->
 
 ## Em teste
 
@@ -25,17 +25,37 @@ Com a mão não dá: a conexão inteira leva meio segundo (medido em 2026-11-06,
 
 ## Em andamento
 
+### R-049 [feature] Um level de mira por gyro na demo
+Esperado: a demo tem um segundo level, `LV_JoyShockGyroAim`, em primeira pessoa: o controle escolhido entre botões empilhados à direita, um por controle conectado, gira a câmera pelo Rotation Rate do Enhanced Input, diante de uma parede com grade e alvos, com a mira no centro e os relatórios por segundo do controle na tela. Serve de teste do R-037 e de exemplo de mira por gyro para quem usa o plugin.
+Como:
+- Level à parte, não uma adaptação do `LV_JoyShockLocalMultiplayer` (antes `LV_JoyShockDemo`, renomeado em 2026-11-06): aquele tem câmera fixa e vários jogadores de propósito (escolha do usuário, 2026-11-06).
+- Só Enhanced Input no pawn, sem node do plugin no caminho do gyro, para o exemplo valer para qualquer projeto; reaproveita a `JoyShock-GyroscopeRotation` e o `JoyShockInputMappingContext` (escolha do agente).
+- Só o controle escolhido mira: ele vai para o jogador 0 e os outros para o jogador 1, que não tem pawn (pedido do usuário, 2026-11-06).
+- Os dois analógicos também giram a câmera (o esquerdo porque um Joy-Con de lado, sozinho, entrega o analógico dele como esquerdo), para trazer a mira de volta quando o gyro se afasta; o A (botão da direita) marca por 3 s onde a mira bate (pedido do usuário, 2026-11-06). Usa o mesmo `JoyShockInputMappingContext` do outro level (pedido do usuário).
+- A rotação da câmera é graus/s × tempo do frame × sensibilidade, aplicada na Control Rotation, sem as escalas legadas de input da Unreal (escolha do agente).
+Testes: em Standalone, com o Pro Controller 2 no Bluetooth e o DualShock 4 no cabo, girar devagar e rápido diante da grade.
+Já aprovado em hardware (2026-11-06): câmera lisa no cabo e boa no Bluetooth, botões que trocam o controle, tiro vermelho, analógicos e gyro juntos.
+Falta: testar os botões coloridos com a cor de cada controle; tirar do pawn a inversão provisória do vertical dos analógicos quando o R-001 entrar (hoje o Joy-Con deitado e o analógico esquerdo do Pro Controller 2 saem invertidos no level, e o direito do Pro sai certo).
+
 ## A fazer
 
-### R-001 [ajuste] Um só sinal de Y do analógico por camada, em todas as famílias de controle
-Ajusta: a normalização dos analógicos (`docs/architecture.md` > *Where to change what*).
-Esperado: o estado de baixo nível do JSL (`simple_state`, os getters diretos e os nodes de Blueprint que o leem) informa o Y do analógico direito com o mesmo sinal do esquerdo em toda família, e os comentários dizem o que o código faz de fato. O `FJoyShockInterface` então apresenta os analógicos sem correções por família.
+### R-001 [ajuste] Uma tabela por controle para o sinal e a pegada dos analógicos
+Ajusta: a normalização dos analógicos (`docs/architecture.md` > *Where to change what*), hoje espalhada entre os leitores de `InputHelpers.cpp` e o `PresentSticks` de `JoyShockInterface.cpp`.
+Esperado: todo controle entrega os dois analógicos à Unreal com para cima = +1 e direita = +1 em cada eixo, a convenção do XInput, e os nodes `JSL4U Get Left/Right Stick` dão o mesmo sinal que o input da Unreal. O sinal de cada eixo de cada controle está escrito num lugar só, uma tabela, e mudar a linha de um controle não mexe em nenhum outro.
+Como (escolha do usuário, 2026-11-06):
+- Três passos, sempre nesta ordem: o leitor do protocolo transforma bytes em número cru, no sinal que o hardware manda, só com a calibração; a linha do controle na tabela dá o sinal de cada eixo (LX, LY, RX, RY); se o controle está deitado, o vetor já corrigido gira pelo sentido que a linha indica.
+- Leitura por protocolo (Switch 1, Switch 2, DualShock 4, DualSense), porque controles que falam a mesma língua dividem o leitor; a tabela tem uma linha por controle (Joy-Con L, Joy-Con R, Pro do Switch 1, Joy-Con 2 L e R, Pro Controller 2, DualShock 4, DualSense, DualSense Edge), porque é o controle que define o comportamento.
+- A tabela tem uma coluna para o sentido do quarto de volta ao deitar (L anti-horário, R horário). O gyro do Joy-Con deitado (`GetJoyConGripUndoRotation`) passa a ler o mesmo sentido, para analógico e gyro não discordarem.
+- A tabela fica num arquivo próprio, aplicada num ponto por onde passam o input da Unreal e os getters diretos.
+- Cada linha anota quem mediu e com qual controle.
+- Separar os quatro leitores de `InputHelpers.cpp` em arquivos próprios é opcional; o que resolve é a correção de sinal sair deles.
 Fatos de partida:
-- Pro Controller do Switch 2 por USB: no relatório cru, os dois analógicos crescem para cima; nenhum eixo precisa ser negado. Medido em hardware com o Stick Overlay do FofuxoJoySense4Unity (o F-006 dele), 2026-10-08.
-- `parse_switch2_report` (`InputHelpers.cpp`, o bloco `bWhole`) nega o Y direito "para fazer cima positivo nos dois analógicos". Pelo fato acima, faz o contrário: depois dele, o analógico direito lê cima como negativo.
-- `FJoyShockInterface` (`JoyShockInterface.cpp`, fim de `PresentSticks`) nega o Y direito de novo para todo controle que não é Sony (`bSonyPad ? State.stickRY : -State.stickRY`). As duas negações se cancelam, e por isso a Unreal vê o sinal certo. O próprio comentário diz que a camada de baixo nível discorda entre a Sony e as outras famílias.
-- O ramo do Pro Controller do Switch 1 (`InputHelpers.cpp`, `left_right == 3`) acrescenta a mesma negação, com o mesmo raciocínio; o Joy-Con direito é corrigido uma vez, na interface. Conferir os dois em hardware antes de mexer.
-Antes de mudar: tudo o que lê o estado de baixo nível diretamente (`JoyShockBlueprintLibrary.cpp` monta `RightStick` a partir de `stickRY`) vai inverter o sinal. Para verificar, precisa de um Pro do Switch 2, um Pro do Switch 1, um Joy-Con direito e um controle Sony, testados em Standalone.
+- Medido em 2026-11-06 no `LV_JoyShockGyroAim`, com o To World Space do mapeamento compartilhado e a inversão provisória do pawn: analógico esquerdo do Pro Controller 2, do Joy-Con L deitado e do Joy-Con R deitado concordam entre si; o analógico direito do Pro Controller 2 vai ao contrário do esquerdo do mesmo controle. Na Unreal os dois analógicos têm a mesma convenção, então o direito do Pro Controller 2 chega invertido.
+- É regressão: o `21c383a` (2026-07-31) alinhou o analógico direito à convenção da Unreal e registrou que, num Pro Controller, os dois analógicos passaram a concordar.
+- Hoje o Y direito do Pro Controller 2 é negado duas vezes: em `parse_switch2_report` (bloco `bWhole`, "confirmado num Pro Controller 2") e em `PresentSticks` (`bSonyPad ? stickRY : -stickRY`). O F-006 do FofuxoJoySense4Unity (2026-10-08) mediu que no relatório cru do Pro Controller 2 por USB os dois analógicos crescem para cima. O Pro do Switch 1 (`left_right == 3`) tem negação parecida no leitor; o Joy-Con direito é corrigido só na interface; a Sony é a exceção do `bSonyPad`.
+- O pawn do `LV_JoyShockGyroAim` (R-049) inverte o vertical dos analógicos para compensar; sai quando a tabela entrar.
+Primeiro passo: no `LV_JoyShockGyroAim`, uma leitura do que a Unreal recebe em Gamepad Left X/Y e Right X/Y, antes de qualquer modificador. Como para cima = +1 vale para todo controle, cada um se mede sozinho, sem controle de referência; é ela que preenche a tabela.
+Testes: com a leitura na tela, empurrar cada analógico para cima e para a direita e ver +1 nos dois eixos. Aqui: Pro Controller 2 (USB e Bluetooth), Joy-Con L e R deitados e juntos, DualShock 4. Com o Renan: Pro do Switch 1, Joy-Con 2, DualSense, DualSense Edge. Os nodes `JSL4U Get Left/Right Stick` dão o mesmo sinal. Em Standalone.
 
 ### R-020 [pesquisa] Os controles do plugin são limpos entre sessões de PIE?
 Esperado: responder se `_joyshocks` e as vagas de jogador sobrevivem de uma sessão de Play In Editor para a seguinte, e se isso importa. Vale como resposta: um log de duas sessões de PIE seguidas com os mesmos controles, mostrando os ids e as vagas de jogador deles.
@@ -89,14 +109,6 @@ Fatos de partida, vindos do Fofuxo's JoySense4Unity (F-013 de lá), no Pro Contr
 - Derrubado o link, com a DLL sem nenhuma conexão aberta, o Windows seguiu com o controle conectado (`IsConnected` verdadeiro no nó `BTHLE\DEV_<endereço>`, lido com `Get-PnpDeviceProperty`). Conectado, o controle não anuncia, e o botão não o reconecta. Desligar e ligar o Bluetooth do Windows soltou. Quem segurava o link não se sabe; fechar o processo com o caso na mão responde se é um objeto WinRT esquecido aberto.
 Verificar aqui: a sequência cabo, tirar o cabo, botão, algumas vezes; se o JSL4U detecta o silêncio; e se, ao desconectar, o nó `BTHLE\DEV_` deixa de estar conectado.
 Testes: o usuário, com o Pro Controller 2 e o Steam fechado.
-
-### R-037 [pesquisa] Quantos relatórios por segundo o Switch 2 entrega no Bluetooth, e se o gyro anda liso
-Esperado: a taxa medida no JSL4U, e nenhum degrau no giro da câmera pelo Bluetooth.
-Fatos de partida, do JoySense:
-- Lá foram medidos uns 70 relatórios por segundo em 2026-11-01 de manhã e uns 225 a 240 à tarde, com a mesma DLL (que já pede `ThroughputOptimized`); não se sabe o que mudou. A DLL de diagnóstico tinha visto uns 250.
-- Com menos relatórios que frames, um giro somado por relatório deixa frames com giro zero e outros com o dobro, e a câmera anda em degraus. O JoySense resolveu segurando a velocidade da última amostra até a próxima (no máximo 50 ms) e dando a cada frame o trecho de tempo que ele cobre.
-Medido no JSL4U com o JSL4U Get Reports Per Second (R-042), em 2026-11-06, em Standalone: Pro Controller 2 no cabo 500 por segundo, no Bluetooth 80 a 90; DualShock 4 no cabo 500 fixo, no Bluetooth perto de 500 oscilando; Joy-Con 50 a 70. Parados, os controles no Bluetooth oscilam um pouco.
-Verificar aqui: se algum caminho do JSL4U entrega giro acumulado por frame (um valor em graus/s lido a cada frame, como o Rotation Rate, já se comporta como a velocidade segurada).
 
 ### R-040 [feature] Uma opção do editor para não procurar nem conectar controles
 Esperado: uma opção que só vale no editor e desliga a busca e a conexão de controles do plugin, para o controle poder ser usado em outro programa com o editor aberto.

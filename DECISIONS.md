@@ -1,6 +1,6 @@
 # Decisions
 
-<!-- project-docs: only what holds now. Next ID: D-014 · Next fact: F-014 -->
+<!-- project-docs: only what holds now. Next ID: D-015 · Next fact: F-015 -->
 
 The invariants learned by breaking them (Bluetooth streams, `GetInstance`, the device mapper, the right
 stick's Y, Connection Id, no CoreRedirects) live in `CLAUDE.md`, with their reasons. They are not repeated
@@ -92,6 +92,12 @@ Why: a controller leaves the interface in `SendControllerEvents`, but Wait For A
 Origin: agent's choice, tested by the user in Standalone, 2026-11-06
 Not chosen: stopping the demo panel's reader from its Destruct event -- `WBP_ConnectedJoyShockInfo`'s looping timer kept reading after the HUD removed the panel with Clear Children, and Destruct did not stop it; the reader now checks Is Controller Connected first.
 
+### D-014 Gyro reaches Unreal as time slices, one velocity per frame
+Decision: every gyro sample is kept as the stretch of time since the sample before it, and each game frame plays back exactly the time it covers (`FGyroTimeSlicer`). When samples run out mid-frame the last velocity is held for at most 50 ms, and the held time is owed: the next samples pay it off instead of being played on top. Sliced once per engine frame and shared by Unreal's Rotation Rate and `JSL4U Get And Clear Accumulated Gyro`; `JSL4U Get IMU State` stays the latest report.
+Why: report rates range from 80-90 a second (Pro Controller 2 on Bluetooth, below the frame rate) to 500 (on the cable, several per frame) (F-014). The latest sample repeated a stale velocity without limit when the controller went quiet and threw most samples away when it was fast. Summed over frames, slicing gives the turn the controller measured, at up to one sample of latency.
+Origin: user's choice (R-037), approved on hardware 2026-11-06 in `LV_JoyShockGyroAim`: smooth on the cable, good but less so on Bluetooth
+Not chosen: the latest report each frame (above); a plain average of the samples since the last frame -- weighs samples equally whatever time they cover and also repeats without limit. GyroWiki only says velocity times the time since the last sample; it does not cover reports slower than frames.
+
 ## Verified facts
 
 ### F-001 Joy-Con 2 sensor ranges
@@ -165,3 +171,9 @@ Fact: with the controller on the cable before a Standalone started beside the ed
 Source: BossRush_2.log, reproduced on purpose by the user and fixed in Standalone, 2026-11-06
 Verified: 2026-11-06
 Affects: D-012
+
+### F-014 Input reports per second, measured in the plugin
+Fact: Pro Controller 2 500 a second on the cable and 80-90 on Bluetooth; DualShock 4 500 steady on the cable and around 500, fluctuating, on Bluetooth; Joy-Con 50-70. On Bluetooth the rate fluctuates a little even with the controller still.
+Source: `JSL4U Get Reports Per Second` in the demo panel, in Standalone, read by the user
+Verified: 2026-11-06
+Affects: D-014
