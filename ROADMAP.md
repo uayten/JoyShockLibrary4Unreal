@@ -55,23 +55,6 @@ Falta: ver a volta ao automático acontecer. Só compilou: nenhum level da demo 
 
 ## A fazer
 
-### R-027 [pesquisa] Como ler o nível de bateria de 0 a 9 que o próprio Switch 2 informa?
-Esperado: um jeito de obter o nível de bateria de 0 a 9 que os relatórios 0x07-0x09 trazem, sem trocar o formato do relatório que o plugin usa (o 0x05) e sem mandar comando com o Bluetooth no ar; ou a conclusão de que trocar para o 0x09 vale o custo. Conta como resposta o nível lido no Pro Controller 2 batendo com a carga (cheio depois da luz de carga apagar). Respondido, o item volta a ser a feature: o Battery Percent do Switch 2 seguindo a carga de verdade em vez da reta entre 3,0 V e 4,2 V.
-Fatos de partida (2026-11-06):
-- No Pro Controller 2 do usuário, a tensão no Bluetooth foi de 3,713 V (com mais da metade, pela suspeita do usuário) a 3,728 V cheio, depois de 17 min no cabo até a luz de carga apagar. Uns 15 mV entre a metade e o cheio: uma curva genérica de lítio (cheio a 4,2 V) deu 19% com o controle quase cheio. No cabo a tensão quase não se mexe (3,73-3,75 V).
-- Pela pesquisa do ndeadly (github.com/ndeadly/switch2_controller_research, `hid_reports.md`), os relatórios 0x07, 0x08 e 0x09 (Joy-Con 2 L, R e Pro Controller 2) trazem no byte 0x1 o próprio nível de bateria do controle, de 0 a 9, mais os bits de energia externa e carregando. O relatório 0x05, que o plugin usa, não traz. O SDL não lê bateria nenhuma do Switch 2.
-- O Switch2Connect (github.com/TommyWabg/Switch2Connect, de onde vieram a leitura de corrente e de temperatura do plugin) lê a mesma tensão do relatório 0x05 e só mostra três ícones: alto acima de 3,25 V, médio acima de 3,125 V, baixo abaixo disso (lido por resumo do código, não linha a linha). Não decide carregando. Instalá-lo não serve de referência: lê o mesmo dado que o plugin, instala drivers e toma o controle para si.
-Como: preferir o nível 0-9 do próprio controle a inventar uma curva (escolha do usuário, 2026-11-06: partir do que outros já descobriram). Pistas: o comando 0x0B do ndeadly (subcomandos de tensão e estado de carga; procurar um de nível), lido uma vez na conexão; e o F-011, em que o Pro Controller 2 já chegou ao plugin mandando 0x09. O Switch2Connect diz que o 0x09 do Pro Controller 2 tem o bloco de movimento não documentado.
-
-### R-036 [pesquisa] Um Switch 2 no Bluetooth que conecta e fica mudo, e o Windows que não solta o link
-Esperado: saber se o JSL4U tem o mesmo silêncio e, se tiver, que ele se recupere sozinho e que um botão reconecte o controle depois.
-Fatos de partida, vindos do Fofuxo's JoySense4Unity (F-013 de lá), no Pro Controller 2:
-- Acontece ao tirar o cabo e acordar o controle por botão (duas vezes em 2026-11-01; na terceira, funcionou). A conexão abre, os comandos de setup são todos respondidos, mas a leitura da calibração dos analógicos falha e nenhum relatório de entrada chega, nem à DLL. Reenviar o setup não traz os relatórios de volta.
-- O JoySense passou a tratar 3 s sem relatório (não só antes do primeiro) assim: reenvia o setup e, se continuar mudo, derruba o link para um botão reconectar.
-- Derrubado o link, com a DLL sem nenhuma conexão aberta, o Windows seguiu com o controle conectado (`IsConnected` verdadeiro no nó `BTHLE\DEV_<endereço>`, lido com `Get-PnpDeviceProperty`). Conectado, o controle não anuncia, e o botão não o reconecta. Desligar e ligar o Bluetooth do Windows soltou. Quem segurava o link não se sabe; fechar o processo com o caso na mão responde se é um objeto WinRT esquecido aberto.
-Verificar aqui: a sequência cabo, tirar o cabo, botão, algumas vezes; se o JSL4U detecta o silêncio; e se, ao desconectar, o nó `BTHLE\DEV_` deixa de estar conectado.
-Testes: o usuário, com o Pro Controller 2 e o Steam fechado.
-
 ### R-040 [feature] Uma opção do editor para não procurar nem conectar controles
 Esperado: uma opção que só vale no editor e desliga a busca e a conexão de controles do plugin, para o controle poder ser usado em outro programa com o editor aberto.
 Como:
@@ -94,3 +77,20 @@ Fatos de partida: o plugin lê os bytes 0x21-0x22 do relatório (packet[34-35]) 
 Esperado: o espelho de controles da demo tem um modelo para o Pro Controller do Nintendo Switch e o Pro Controller do Nintendo Switch 2; hoje o par de Joy-Cons, o Joy-Con Grip, o DualShock 4, o DualSense e o controle Xbox estão modelados, e os Joy-Con 2 pegam emprestados os modelos do Joy-Con do Switch 1.
 Como: o usuário modela.
 Origem: README *Planned future updates*, trazido para cá pelo R-013.
+
+### R-027 [pesquisa] Como ler o nível de bateria de 0 a 9 que o próprio Switch 2 informa?
+Esperado: um jeito de obter o nível de bateria de 0 a 9 que os relatórios 0x07-0x09 trazem, sem trocar o formato do relatório que o plugin usa (o 0x05) e sem mandar comando com o Bluetooth no ar; ou a conclusão de que trocar para o 0x09 vale o custo. Conta como resposta o nível lido no Pro Controller 2 batendo com a carga (cheio depois da luz de carga apagar). Respondido, o item volta a ser a feature: o Battery Percent do Switch 2 seguindo a carga de verdade em vez da reta entre 3,0 V e 4,2 V.
+Fatos de partida (2026-11-06):
+- No Pro Controller 2 do usuário, a tensão no Bluetooth foi de 3,713 V (com mais da metade, pela suspeita do usuário) a 3,728 V cheio, depois de 17 min no cabo até a luz de carga apagar. Uns 15 mV entre a metade e o cheio: uma curva genérica de lítio (cheio a 4,2 V) deu 19% com o controle quase cheio. No cabo a tensão quase não se mexe (3,73-3,75 V).
+- Pela pesquisa do ndeadly (github.com/ndeadly/switch2_controller_research, `hid_reports.md`), os relatórios 0x07, 0x08 e 0x09 (Joy-Con 2 L, R e Pro Controller 2) trazem no byte 0x1 o próprio nível de bateria do controle, de 0 a 9, mais os bits de energia externa e carregando. O relatório 0x05, que o plugin usa, não traz. O SDL não lê bateria nenhuma do Switch 2.
+- O Switch2Connect (github.com/TommyWabg/Switch2Connect, de onde vieram a leitura de corrente e de temperatura do plugin) lê a mesma tensão do relatório 0x05 e só mostra três ícones: alto acima de 3,25 V, médio acima de 3,125 V, baixo abaixo disso (lido por resumo do código, não linha a linha). Não decide carregando. Instalá-lo não serve de referência: lê o mesmo dado que o plugin, instala drivers e toma o controle para si.
+Como: preferir o nível 0-9 do próprio controle a inventar uma curva (escolha do usuário, 2026-11-06: partir do que outros já descobriram). Pistas: o comando 0x0B do ndeadly (subcomandos de tensão e estado de carga; procurar um de nível), lido uma vez na conexão; e o F-011, em que o Pro Controller 2 já chegou ao plugin mandando 0x09. O Switch2Connect diz que o 0x09 do Pro Controller 2 tem o bloco de movimento não documentado.
+
+### R-036 [pesquisa] Um Switch 2 no Bluetooth que conecta e fica mudo, e o Windows que não solta o link
+Esperado: saber se o JSL4U tem o mesmo silêncio e, se tiver, que ele se recupere sozinho e que um botão reconecte o controle depois.
+Fatos de partida, vindos do Fofuxo's JoySense4Unity (F-013 de lá), no Pro Controller 2:
+- Acontece ao tirar o cabo e acordar o controle por botão (duas vezes em 2026-11-01; na terceira, funcionou). A conexão abre, os comandos de setup são todos respondidos, mas a leitura da calibração dos analógicos falha e nenhum relatório de entrada chega, nem à DLL. Reenviar o setup não traz os relatórios de volta.
+- O JoySense passou a tratar 3 s sem relatório (não só antes do primeiro) assim: reenvia o setup e, se continuar mudo, derruba o link para um botão reconectar.
+- Derrubado o link, com a DLL sem nenhuma conexão aberta, o Windows seguiu com o controle conectado (`IsConnected` verdadeiro no nó `BTHLE\DEV_<endereço>`, lido com `Get-PnpDeviceProperty`). Conectado, o controle não anuncia, e o botão não o reconecta. Desligar e ligar o Bluetooth do Windows soltou. Quem segurava o link não se sabe; fechar o processo com o caso na mão responde se é um objeto WinRT esquecido aberto.
+Verificar aqui: a sequência cabo, tirar o cabo, botão, algumas vezes; se o JSL4U detecta o silêncio; e se, ao desconectar, o nó `BTHLE\DEV_` deixa de estar conectado.
+Testes: o usuário, com o Pro Controller 2 e o Steam fechado.
