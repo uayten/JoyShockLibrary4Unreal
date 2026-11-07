@@ -164,7 +164,7 @@ Source: code and config read, 2026-10-25
 Verified: 2026-10-25
 
 ### F-009 What the Pro Controller 2 reports beyond input
-Fact: battery voltage, percent and level read correctly over the cable (3.747 V, 62%, Medium) and over Bluetooth (3.652 V, 54%, Medium). The byte after the voltage is a charge state, not the low byte of a current (corrected 2026-11-06, from ndeadly's switch2_controller_research `hid_reports.md`): it read 0x34 on the cable while charging, 0x20 once the charge light went out, and 0 on Bluetooth. The "+0.52 A" read on 2026-10-31 was that 0x34; the battery current is the next two bytes, reported only with feature bit 0x20 and only by the Joy-Con 2 (R-050). The magnetometer is present: over Bluetooth it reads non-zero and moves as the controller turns; over the cable it reads zero because the USB init does not ask for it (FEATSEL 0x27, against 0x94 over Bluetooth). The mouse fields read zero on both, as the Pro 2 has no mouse sensor. The temperature read 25.07-25.12 and did not warm in the hand; F-017 has what it turned out to be.
+Fact: battery voltage, percent and level read correctly over the cable (3.747 V, 62%, Medium) and over Bluetooth (3.652 V, 54%, Medium). The byte after the voltage is a charge state, not the low byte of a current (corrected 2026-11-06, from ndeadly's switch2_controller_research `hid_reports.md`): it read 0x34 on the cable while charging, 0x20 once the charge light went out, and 0 on Bluetooth. The "+0.52 A" read on 2026-10-31 was that 0x34; the battery current is the next two bytes, reported only with feature bit 0x20 and only by the Joy-Con 2. Since R-050 Is Charging is the charge state above 0x20, tested on the Pro Controller 2 on 2026-11-07: true while the charge light is on, false once it goes out with the cable in, false on Bluetooth. The magnetometer is present: over Bluetooth it reads non-zero and moves as the controller turns; over the cable it reads zero because the USB init does not ask for it (FEATSEL 0x27, against 0x94 over Bluetooth). The mouse fields read zero on both, as the Pro 2 has no mouse sensor. The temperature read 25.07-25.12 and did not warm in the hand; F-017 has what it turned out to be.
 Source: the user's Pro Controller 2 with a test Blueprint printing JSL4U Get Switch 2 Sensors and the controller info, PIE; `JoyShock_Switch2.cpp` read for the FEATSEL values
 Verified: 2026-10-25
 Affects: R-031, R-032, F-017, docs/hardware.md
@@ -182,7 +182,7 @@ Verified: 2026-10-29
 Affects: R-004
 
 ### F-012 Switch2Connect reads a battery current after the voltage
-Fact: Switch2Connect's input parser reads the two bytes after the battery voltage (BLE offsets 33-34; packet[34..35] in this plugin's indexing) as `battery_current`, unsigned, divided by 100, and never uses the value. Nothing in it reads a charging flag. Its first byte is in fact a charge state, per ndeadly's research (see F-009); this plugin copied the misreading (R-050).
+Fact: Switch2Connect's input parser reads the two bytes after the battery voltage (BLE offsets 33-34; packet[34..35] in this plugin's indexing) as `battery_current`, unsigned, divided by 100, and never uses the value. Nothing in it reads a charging flag. Its first byte is in fact a charge state, per ndeadly's research (see F-009); this plugin copied the misreading until R-050.
 Source: https://github.com/TommyWabg/Switch2Connect `src/controller.py`, the input-report parser
 Verified: 2026-10-29
 Affects: R-031

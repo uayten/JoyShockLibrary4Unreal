@@ -68,11 +68,6 @@ Em aberto: onde a opção fica (Editor Preferences ou um botão na barra do edit
 Esperado: saber se dá para o Pro Controller 2 voltar ao Bluetooth sozinho ao tirar o cabo, como o DualShock 4, sem apertar botão. Conta como resposta um teste com o Pro Controller 2 do usuário que mostre quem derruba o Bluetooth quando o cabo entra (o próprio controle ou um comando da preparação USB do plugin) e se algum comando ou ordem de preparação o mantém.
 Fatos de partida: em 2026-11-06 o Bluetooth caiu 13 ms depois de o plugin abrir o USB, e depois de tirar o cabo o controle não anunciou no Bluetooth em nenhum dos 10 s seguintes até um botão ser apertado. Com o R-045, apertar um botão o traz de volta como o mesmo jogador.
 
-### R-050 [ajuste] Is Charging e a corrente da bateria do Switch 2 leem os bytes certos
-Ajusta: JSL4U Get Switch 2 Sensors e Is Charging (docs/controllers.md).
-Esperado: Is Charging diz se o controle está carregando, e fica falso quando a carga termina com o cabo ligado; a corrente da bateria mostra uma corrente, ou sai do node se o controle não a informa.
-Fatos de partida: o plugin lê os bytes 0x21-0x22 do relatório (packet[34-35]) como corrente em centésimos de ampère, mas pelo ndeadly o 0x21 é o estado de carga (sobe até 0x34 carregando, 0x20 cheio) e a corrente fica em 0x22-0x23, só com o bit 5 (0x20) da seleção de recursos, e só nos Joy-Con 2. Bate com o medido em 2026-11-06: o "0,52 A" é 0x34 e o "0,32 A" depois que a luz apagou é 0x20; pedir o bit 0x20 no Bluetooth não fez corrente aparecer no Pro Controller 2. Hoje Is Charging continua verdadeiro com a carga completa.
-
 ### R-026 [feature] Modelos dos Pro Controllers no espelho de controles da demo
 Esperado: o espelho de controles da demo tem um modelo para o Pro Controller do Nintendo Switch e o Pro Controller do Nintendo Switch 2; hoje o par de Joy-Cons, o Joy-Con Grip, o DualShock 4, o DualSense e o controle Xbox estão modelados, e os Joy-Con 2 pegam emprestados os modelos do Joy-Con do Switch 1.
 Como: o usuário modela.
