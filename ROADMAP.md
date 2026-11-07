@@ -53,22 +53,15 @@ Falta: ver a volta ao automático acontecer. Só compilou: nenhum level da demo 
 
 ## Em andamento
 
-### R-034 [pesquisa] O Pro Controller 2 informa temperatura, e onde?
-Esperado: se o relatório do Pro Controller 2 traz uma temperatura, em quais bytes e com qual escala; a resposta vale quando a leitura sobe enquanto o controle fica na mão por alguns minutos.
-Fatos de partida: F-009. O parser lê os bytes 47-48 como `25 + raw / 127`; no Pro 2 o valor cru fica em torno de 9-15 e só oscila.
-Feito até agora (2026-10-25): no Pro Controller 2 a leitura fica em 25,07-25,12 e não esquenta na mão (F-009).
-Feito até agora (2026-11-06): com o relatório inteiro no log a cada 2 s, os bytes 47-48 sobem de 3 a 8 nos primeiros 7 minutos depois de ligar, carregando no cabo, em degraus de 1 que só oscilam na divisa -- então é temperatura, e a escala `/ 127` é que está errada: degraus tão limpos são de um sensor grosso, de meio grau ou um grau por unidade. Logo depois de ligar, num quarto de uns 25 °C, o valor é 3, o que confirma o zero em 25 °C.
-Falta: a escala. O ndeadly (`hid_reports.md`) documenta esse campo como inteiro de 16 bits com sinal, desvio de 25 °C com 1/126,9 °C por unidade -- a fórmula atual --, o que daria só 0,04 °C de aquecimento em 7 minutos carregando, em degraus limpos demais para essa resolução. Conferir com uma segunda temperatura conhecida, ou aceitar a do ndeadly e anotar a divergência.
-
 ## A fazer
 
-### R-027 [feature] Porcentagem de bateria do Switch 2 que segue a carga de verdade
-Esperado: o Battery Percent de um controle do Switch 2 segue a carga de verdade em vez de uma reta entre 3,0 V e 4,2 V, para o número valer a pena ser mostrado e não só uma barra.
+### R-027 [pesquisa] Como ler o nível de bateria de 0 a 9 que o próprio Switch 2 informa?
+Esperado: um jeito de obter o nível de bateria de 0 a 9 que os relatórios 0x07-0x09 trazem, sem trocar o formato do relatório que o plugin usa (o 0x05) e sem mandar comando com o Bluetooth no ar; ou a conclusão de que trocar para o 0x09 vale o custo. Conta como resposta o nível lido no Pro Controller 2 batendo com a carga (cheio depois da luz de carga apagar). Respondido, o item volta a ser a feature: o Battery Percent do Switch 2 seguindo a carga de verdade em vez da reta entre 3,0 V e 4,2 V.
 Fatos de partida (2026-11-06):
 - No Pro Controller 2 do usuário, a tensão no Bluetooth foi de 3,713 V (com mais da metade, pela suspeita do usuário) a 3,728 V cheio, depois de 17 min no cabo até a luz de carga apagar. Uns 15 mV entre a metade e o cheio: uma curva genérica de lítio (cheio a 4,2 V) deu 19% com o controle quase cheio. No cabo a tensão quase não se mexe (3,73-3,75 V).
 - Pela pesquisa do ndeadly (github.com/ndeadly/switch2_controller_research, `hid_reports.md`), os relatórios 0x07, 0x08 e 0x09 (Joy-Con 2 L, R e Pro Controller 2) trazem no byte 0x1 o próprio nível de bateria do controle, de 0 a 9, mais os bits de energia externa e carregando. O relatório 0x05, que o plugin usa, não traz. O SDL não lê bateria nenhuma do Switch 2.
-Como: preferir o nível 0-9 do próprio controle a inventar uma curva (escolha do usuário, 2026-11-06: partir do que outros já descobriram). Falta saber como obtê-lo sem trocar o formato do relatório nem mandar comando com o Bluetooth no ar (invariante do CLAUDE.md).
-Em aberto: trocar o Pro Controller 2 para o relatório 0x09 vale o custo? Há comando que devolva o nível uma vez, na conexão?
+- O Switch2Connect (github.com/TommyWabg/Switch2Connect, de onde vieram a leitura de corrente e de temperatura do plugin) lê a mesma tensão do relatório 0x05 e só mostra três ícones: alto acima de 3,25 V, médio acima de 3,125 V, baixo abaixo disso (lido por resumo do código, não linha a linha). Não decide carregando. Instalá-lo não serve de referência: lê o mesmo dado que o plugin, instala drivers e toma o controle para si.
+Como: preferir o nível 0-9 do próprio controle a inventar uma curva (escolha do usuário, 2026-11-06: partir do que outros já descobriram). Pistas: o comando 0x0B do ndeadly (subcomandos de tensão e estado de carga; procurar um de nível), lido uma vez na conexão; e o F-011, em que o Pro Controller 2 já chegou ao plugin mandando 0x09. O Switch2Connect diz que o 0x09 do Pro Controller 2 tem o bloco de movimento não documentado.
 
 ### R-036 [pesquisa] Um Switch 2 no Bluetooth que conecta e fica mudo, e o Windows que não solta o link
 Esperado: saber se o JSL4U tem o mesmo silêncio e, se tiver, que ele se recupere sozinho e que um botão reconecte o controle depois.

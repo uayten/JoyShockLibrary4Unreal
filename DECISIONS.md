@@ -164,10 +164,10 @@ Source: code and config read, 2026-10-25
 Verified: 2026-10-25
 
 ### F-009 What the Pro Controller 2 reports beyond input
-Fact: battery voltage, percent and level read correctly over the cable (3.747 V, 62%, Medium) and over Bluetooth (3.652 V, 54%, Medium). The byte after the voltage is a charge state, not the low byte of a current (corrected 2026-11-06, from ndeadly's switch2_controller_research `hid_reports.md`): it read 0x34 on the cable while charging, 0x20 once the charge light went out, and 0 on Bluetooth. The "+0.52 A" read on 2026-10-31 was that 0x34; the battery current is the next two bytes, reported only with feature bit 0x20 and only by the Joy-Con 2 (R-050). The magnetometer is present: over Bluetooth it reads non-zero and moves as the controller turns; over the cable it reads zero because the USB init does not ask for it (FEATSEL 0x27, against 0x94 over Bluetooth). The mouse fields read zero on both, as the Pro 2 has no mouse sensor. The temperature reads 25.07-25.12 and does not warm in the hand, so it is not a temperature as parsed.
+Fact: battery voltage, percent and level read correctly over the cable (3.747 V, 62%, Medium) and over Bluetooth (3.652 V, 54%, Medium). The byte after the voltage is a charge state, not the low byte of a current (corrected 2026-11-06, from ndeadly's switch2_controller_research `hid_reports.md`): it read 0x34 on the cable while charging, 0x20 once the charge light went out, and 0 on Bluetooth. The "+0.52 A" read on 2026-10-31 was that 0x34; the battery current is the next two bytes, reported only with feature bit 0x20 and only by the Joy-Con 2 (R-050). The magnetometer is present: over Bluetooth it reads non-zero and moves as the controller turns; over the cable it reads zero because the USB init does not ask for it (FEATSEL 0x27, against 0x94 over Bluetooth). The mouse fields read zero on both, as the Pro 2 has no mouse sensor. The temperature read 25.07-25.12 and did not warm in the hand; F-017 has what it turned out to be.
 Source: the user's Pro Controller 2 with a test Blueprint printing JSL4U Get Switch 2 Sensors and the controller info, PIE; `JoyShock_Switch2.cpp` read for the FEATSEL values
 Verified: 2026-10-25
-Affects: R-031, R-032, R-034, docs/hardware.md
+Affects: R-031, R-032, F-017, docs/hardware.md
 
 ### F-010 A Switch 2 on Bluetooth stays with the editor in Standalone
 Fact: with the editor connected to a Pro Controller 2 over Bluetooth, a Standalone game launched from the editor logged "0 controller(s) already connected" and never tried to connect it; PIE worked. The Bluetooth session belongs to the process that opened it and a connected controller stops advertising, and unlike the USB interface nothing hands it over.
@@ -182,7 +182,7 @@ Verified: 2026-10-29
 Affects: R-004
 
 ### F-012 Switch2Connect reads a battery current after the voltage
-Fact: Switch2Connect's input parser reads the two bytes after the battery voltage (BLE offsets 33-34; packet[34..35] in this plugin's indexing) as `battery_current`, unsigned, divided by 100, and never uses the value. Nothing in it reads a charging flag.
+Fact: Switch2Connect's input parser reads the two bytes after the battery voltage (BLE offsets 33-34; packet[34..35] in this plugin's indexing) as `battery_current`, unsigned, divided by 100, and never uses the value. Nothing in it reads a charging flag. Its first byte is in fact a charge state, per ndeadly's research (see F-009); this plugin copied the misreading (R-050).
 Source: https://github.com/TommyWabg/Switch2Connect `src/controller.py`, the input-report parser
 Verified: 2026-10-29
 Affects: R-031
@@ -210,3 +210,9 @@ Fact: the module, its controllers, `PlayerSlotByPrimary` and pairings live as lo
 Source: code (`JoyShockSubsystem.cpp`, `JoyShockPlayerAssignment.cpp`) and the session start log line, on hardware, R-020
 Verified: 2026-11-06
 Affects: D-016
+
+### F-017 The Pro Controller 2 temperature is in bytes 47-48, on a scale not confirmed
+Fact: bytes 47-48 of report 0x05 (0x2E without the report id) are a temperature. Read whole every 2 s on the user's Pro Controller 2, they went from 3 just after switching on, in a room of about 25 °C, to 8 after 7 minutes charging on the cable, in clean steps of 1 that only flickered at the boundary. ndeadly documents the field as a signed 16-bit deviation from 25 °C at 1/126.9 °C per unit, which is the plugin's formula (`25 + raw / 127`); by it, those 7 minutes warmed the controller by 0.04 °C, and steps that clean do not fit that resolution. The plugin keeps ndeadly's scale; the real one, likely half a degree or a degree per unit, needs a second known temperature to confirm.
+Source: temporary whole-report dump in `parse_switch2_report`, `Saved/Logs/BossRush.log`, 2026-11-06 23:18-23:25; https://github.com/ndeadly/switch2_controller_research `hid_reports.md`
+Verified: 2026-11-06
+Affects: JSL4U Get Switch 2 Sensors (Temperature Celsius)
