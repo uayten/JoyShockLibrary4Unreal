@@ -53,33 +53,19 @@ Falta: ver a volta ao automático acontecer. Só compilou: nenhum level da demo 
 
 ## Em andamento
 
-## A fazer
-
-### R-024 [feature] Botões no HUD da demo para criar, apagar e reatribuir um pawn
-Esperado: o HUD da demo tem botões para criar um pawn jogável, apagá-lo e atribuí-lo a outro controle.
-Como:
-- Reatribuir mantém o roteamento de jogadores do plugin e remapeia a identidade no jogo ("o jogador 1 é o chef vermelho"), como faz a maioria dos party games. O plugin não tem node para prender um controle numa vaga de jogador escolhida: é o índice de jogador dele que roteia o input, então o `Create Player` tem que receber esse índice (escolha do agente).
-- Segue a arquitetura da demo do D-004.
-Depende de: R-023
-
-### R-025 [feature] Os materiais de LED do Joy-Con acompanham o controle
-Esperado: os LEDs de jogador nos modelos de controle da demo acendem exatamente como os do controle físico.
-Como: ler `FJSL4UControllerInfo.PlayerLedNumber`, que é uma posição (1-4).
-Em aberto: a reformulação da demo de 2026-07-19 já espelha o LED de pareamento no modelo -- sobrou alguma coisa deste item?
-
-### R-026 [feature] Modelos do Pro Controller e do Xbox no espelho de controles da demo
-Esperado: o espelho de controles da demo tem um modelo para o Pro Controller do Nintendo Switch, o Pro Controller do Nintendo Switch 2 e um controle Xbox; hoje só o par de Joy-Cons, o Joy-Con Grip, o DualShock 4 e o DualSense estão modelados, e os Joy-Con 2 pegam emprestados os modelos do Joy-Con do Switch 1.
-Como: o usuário modela.
-Origem: README *Planned future updates*, trazido para cá pelo R-013.
-
-### R-027 [feature] Porcentagem de bateria do Switch 2 por curva de carga
-Esperado: o Battery Percent de um controle do Switch 2 segue a curva de descarga de uma célula de lítio em vez de uma reta entre 3,0 V e 4,2 V, para o número valer a pena ser mostrado e não só uma barra.
-Fatos de partida: o controle informa a tensão da célula e mais nada, e a tensão cai sob carga -- lê baixo no meio da vibração.
-Origem: README *Planned future updates*, trazido para cá pelo R-013.
-
 ### R-034 [pesquisa] O Pro Controller 2 informa temperatura, e onde?
 Esperado: se o relatório do Pro Controller 2 traz uma temperatura, em quais bytes e com qual escala; a resposta vale quando a leitura sobe enquanto o controle fica na mão por alguns minutos.
 Fatos de partida: F-009. O parser lê os bytes 47-48 como `25 + raw / 127`; no Pro 2 o valor cru fica em torno de 9-15 e só oscila.
+Feito até agora (2026-10-25): no Pro Controller 2 a leitura fica em 25,07-25,12 e não esquenta na mão, então os bytes 47-48 não são temperatura com essa escala (F-009).
+Falta: procurar em outros bytes do relatório, ou concluir que o Pro 2 não informa temperatura; o Joy-Con 2 não foi olhado.
+
+## A fazer
+
+### R-027 [feature] Porcentagem de bateria do Switch 2 por curva de carga
+Esperado: o Battery Percent de um controle do Switch 2 segue a curva de descarga de uma célula de lítio em vez de uma reta entre 3,0 V e 4,2 V, para o número valer a pena ser mostrado e não só uma barra.
+Fatos de partida: o controle informa a tensão da célula e a corrente da bateria (F-009), e a tensão cai sob carga -- lê baixo no meio da vibração.
+Feito até agora (2026-11-06): só a leitura -- tensão, corrente e Is Charging testados no Pro Controller 2 pelo cabo e pelo Bluetooth. A porcentagem ainda é a reta de 3,0 V a 4,2 V; a curva não foi começada.
+Origem: README *Planned future updates*, trazido para cá pelo R-013.
 
 ### R-036 [pesquisa] Um Switch 2 no Bluetooth que conecta e fica mudo, e o Windows que não solta o link
 Esperado: saber se o JSL4U tem o mesmo silêncio e, se tiver, que ele se recupere sozinho e que um botão reconecte o controle depois.
@@ -102,3 +88,8 @@ Em aberto: onde a opção fica (Editor Preferences ou um botão na barra do edit
 ### R-048 [pesquisa] O Pro Controller 2 pode manter o Bluetooth com o cabo ligado?
 Esperado: saber se dá para o Pro Controller 2 voltar ao Bluetooth sozinho ao tirar o cabo, como o DualShock 4, sem apertar botão. Conta como resposta um teste com o Pro Controller 2 do usuário que mostre quem derruba o Bluetooth quando o cabo entra (o próprio controle ou um comando da preparação USB do plugin) e se algum comando ou ordem de preparação o mantém.
 Fatos de partida: em 2026-11-06 o Bluetooth caiu 13 ms depois de o plugin abrir o USB, e depois de tirar o cabo o controle não anunciou no Bluetooth em nenhum dos 10 s seguintes até um botão ser apertado. Com o R-045, apertar um botão o traz de volta como o mesmo jogador.
+
+### R-026 [feature] Modelos dos Pro Controllers no espelho de controles da demo
+Esperado: o espelho de controles da demo tem um modelo para o Pro Controller do Nintendo Switch e o Pro Controller do Nintendo Switch 2; hoje o par de Joy-Cons, o Joy-Con Grip, o DualShock 4, o DualSense e o controle Xbox estão modelados, e os Joy-Con 2 pegam emprestados os modelos do Joy-Con do Switch 1.
+Como: o usuário modela.
+Origem: README *Planned future updates*, trazido para cá pelo R-013.

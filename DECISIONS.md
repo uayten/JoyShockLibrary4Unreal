@@ -33,7 +33,7 @@ Decision: on connect, `Create Player` with the plugin's player index spawns a `B
 Why: one general model instead of one per kind of game.
 Origin: agreed with the user, July 2026
 Watch out: bind in the GameMode's BeginPlay, not the GameInstance's Event Init (subsystems do not exist yet); seed from `JSL4U Get Connected Controllers`, because controllers connected before the bind never fire the event; keep a map from Connection Id to player controller, because on disconnect the slot is already free and `JSL4U Get Player Index` answers -1; never `Remove Player` on player 0 (the primary local player) -- unpossess instead.
-Affects: R-023, R-024
+Affects: the demo's local multiplayer level (`LV_JoyShockLocalMultiplayer`)
 
 ### D-005 Messages to Renan are written by Claude, in the first person
 Decision: the user forwards them saying they are Claude's, so they are written as Claude and address him directly. His public pseudonym is Agent Ottsel; his real name is not confidential and is not to be raised again.
