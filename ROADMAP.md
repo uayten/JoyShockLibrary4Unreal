@@ -1,6 +1,6 @@
 # Roadmap
 
-<!-- project-docs: só pendências; aprovado é apagado. Ordem = prioridade. Próximo ID: R-050 -->
+<!-- project-docs: só pendências; aprovado é apagado. Ordem = prioridade. Próximo ID: R-051 -->
 
 ## Em teste
 
@@ -56,16 +56,19 @@ Falta: ver a volta ao automático acontecer. Só compilou: nenhum level da demo 
 ### R-034 [pesquisa] O Pro Controller 2 informa temperatura, e onde?
 Esperado: se o relatório do Pro Controller 2 traz uma temperatura, em quais bytes e com qual escala; a resposta vale quando a leitura sobe enquanto o controle fica na mão por alguns minutos.
 Fatos de partida: F-009. O parser lê os bytes 47-48 como `25 + raw / 127`; no Pro 2 o valor cru fica em torno de 9-15 e só oscila.
-Feito até agora (2026-10-25): no Pro Controller 2 a leitura fica em 25,07-25,12 e não esquenta na mão, então os bytes 47-48 não são temperatura com essa escala (F-009).
-Falta: procurar em outros bytes do relatório, ou concluir que o Pro 2 não informa temperatura; o Joy-Con 2 não foi olhado.
+Feito até agora (2026-10-25): no Pro Controller 2 a leitura fica em 25,07-25,12 e não esquenta na mão (F-009).
+Feito até agora (2026-11-06): com o relatório inteiro no log a cada 2 s, os bytes 47-48 sobem de 3 a 8 nos primeiros 7 minutos depois de ligar, carregando no cabo, em degraus de 1 que só oscilam na divisa -- então é temperatura, e a escala `/ 127` é que está errada: degraus tão limpos são de um sensor grosso, de meio grau ou um grau por unidade. Logo depois de ligar, num quarto de uns 25 °C, o valor é 3, o que confirma o zero em 25 °C.
+Falta: a escala. O ndeadly (`hid_reports.md`) documenta esse campo como inteiro de 16 bits com sinal, desvio de 25 °C com 1/126,9 °C por unidade -- a fórmula atual --, o que daria só 0,04 °C de aquecimento em 7 minutos carregando, em degraus limpos demais para essa resolução. Conferir com uma segunda temperatura conhecida, ou aceitar a do ndeadly e anotar a divergência.
 
 ## A fazer
 
-### R-027 [feature] Porcentagem de bateria do Switch 2 por curva de carga
-Esperado: o Battery Percent de um controle do Switch 2 segue a curva de descarga de uma célula de lítio em vez de uma reta entre 3,0 V e 4,2 V, para o número valer a pena ser mostrado e não só uma barra.
-Fatos de partida: o controle informa a tensão da célula e a corrente da bateria (F-009), e a tensão cai sob carga -- lê baixo no meio da vibração.
-Feito até agora (2026-11-06): só a leitura -- tensão, corrente e Is Charging testados no Pro Controller 2 pelo cabo e pelo Bluetooth. A porcentagem ainda é a reta de 3,0 V a 4,2 V; a curva não foi começada.
-Origem: README *Planned future updates*, trazido para cá pelo R-013.
+### R-027 [feature] Porcentagem de bateria do Switch 2 que segue a carga de verdade
+Esperado: o Battery Percent de um controle do Switch 2 segue a carga de verdade em vez de uma reta entre 3,0 V e 4,2 V, para o número valer a pena ser mostrado e não só uma barra.
+Fatos de partida (2026-11-06):
+- No Pro Controller 2 do usuário, a tensão no Bluetooth foi de 3,713 V (com mais da metade, pela suspeita do usuário) a 3,728 V cheio, depois de 17 min no cabo até a luz de carga apagar. Uns 15 mV entre a metade e o cheio: uma curva genérica de lítio (cheio a 4,2 V) deu 19% com o controle quase cheio. No cabo a tensão quase não se mexe (3,73-3,75 V).
+- Pela pesquisa do ndeadly (github.com/ndeadly/switch2_controller_research, `hid_reports.md`), os relatórios 0x07, 0x08 e 0x09 (Joy-Con 2 L, R e Pro Controller 2) trazem no byte 0x1 o próprio nível de bateria do controle, de 0 a 9, mais os bits de energia externa e carregando. O relatório 0x05, que o plugin usa, não traz. O SDL não lê bateria nenhuma do Switch 2.
+Como: preferir o nível 0-9 do próprio controle a inventar uma curva (escolha do usuário, 2026-11-06: partir do que outros já descobriram). Falta saber como obtê-lo sem trocar o formato do relatório nem mandar comando com o Bluetooth no ar (invariante do CLAUDE.md).
+Em aberto: trocar o Pro Controller 2 para o relatório 0x09 vale o custo? Há comando que devolva o nível uma vez, na conexão?
 
 ### R-036 [pesquisa] Um Switch 2 no Bluetooth que conecta e fica mudo, e o Windows que não solta o link
 Esperado: saber se o JSL4U tem o mesmo silêncio e, se tiver, que ele se recupere sozinho e que um botão reconecte o controle depois.
@@ -88,6 +91,11 @@ Em aberto: onde a opção fica (Editor Preferences ou um botão na barra do edit
 ### R-048 [pesquisa] O Pro Controller 2 pode manter o Bluetooth com o cabo ligado?
 Esperado: saber se dá para o Pro Controller 2 voltar ao Bluetooth sozinho ao tirar o cabo, como o DualShock 4, sem apertar botão. Conta como resposta um teste com o Pro Controller 2 do usuário que mostre quem derruba o Bluetooth quando o cabo entra (o próprio controle ou um comando da preparação USB do plugin) e se algum comando ou ordem de preparação o mantém.
 Fatos de partida: em 2026-11-06 o Bluetooth caiu 13 ms depois de o plugin abrir o USB, e depois de tirar o cabo o controle não anunciou no Bluetooth em nenhum dos 10 s seguintes até um botão ser apertado. Com o R-045, apertar um botão o traz de volta como o mesmo jogador.
+
+### R-050 [ajuste] Is Charging e a corrente da bateria do Switch 2 leem os bytes certos
+Ajusta: JSL4U Get Switch 2 Sensors e Is Charging (docs/controllers.md).
+Esperado: Is Charging diz se o controle está carregando, e fica falso quando a carga termina com o cabo ligado; a corrente da bateria mostra uma corrente, ou sai do node se o controle não a informa.
+Fatos de partida: o plugin lê os bytes 0x21-0x22 do relatório (packet[34-35]) como corrente em centésimos de ampère, mas pelo ndeadly o 0x21 é o estado de carga (sobe até 0x34 carregando, 0x20 cheio) e a corrente fica em 0x22-0x23, só com o bit 5 (0x20) da seleção de recursos, e só nos Joy-Con 2. Bate com o medido em 2026-11-06: o "0,52 A" é 0x34 e o "0,32 A" depois que a luz apagou é 0x20; pedir o bit 0x20 no Bluetooth não fez corrente aparecer no Pro Controller 2. Hoje Is Charging continua verdadeiro com a carga completa.
 
 ### R-026 [feature] Modelos dos Pro Controllers no espelho de controles da demo
 Esperado: o espelho de controles da demo tem um modelo para o Pro Controller do Nintendo Switch e o Pro Controller do Nintendo Switch 2; hoje o par de Joy-Cons, o Joy-Con Grip, o DualShock 4, o DualSense e o controle Xbox estão modelados, e os Joy-Con 2 pegam emprestados os modelos do Joy-Con do Switch 1.
