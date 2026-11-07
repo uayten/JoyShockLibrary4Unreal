@@ -124,7 +124,7 @@ Decision: **Connect Controllers in the Editor** (Editor Preferences > Plugins > 
 Why: the point is to hand a controller to another program, such as Unity, without closing the editor; a toolbar button would take space for something rarely changed.
 Origin: user, 2026-11-07 ("Editor Preferences", "Na hora"); per-user storage and Standalone being unaffected were the agent's choice, already in R-040
 Not chosen: a toolbar button; applying only on the next editor start.
-Affects: R-040, docs/troubleshooting.md
+Affects: docs/troubleshooting.md, docs/output.md
 
 ## Verified facts
 

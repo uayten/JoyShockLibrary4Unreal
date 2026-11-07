@@ -4,12 +4,6 @@
 
 ## Em teste
 
-### R-040 [feature] Uma opção do editor para não procurar nem conectar controles
-Feito: Edit > Editor Preferences > Plugins > JoyShockLibrary4Unreal > **Connect Controllers in the Editor**, ligada por padrão, guardada por usuário e valendo na hora (D-018). Testado pelo Antônio em 2026-11-07: desmarcar solta o Pro Controller 2 por Bluetooth e o Joy-Con; os Joy-Cons soltos e os de um editor fechado ficam com a luz de jogador 1; o Pro Controller 2 no cabo apaga as luzes ao fechar; marcar de novo traz os controles de volta; o Standalone conecta os controles com a opção desmarcada.
-Falta:
-1. Com a opção desmarcada: apertar botões, ligar um cabo, segurar o SYNC. Nada conecta no editor, nem num Play In Editor.
-2. Fechar o editor com a opção desmarcada e abrir de novo: nenhum controle conecta desde o início.
-
 ### R-029 Metades do Joy-Con 2 registradas como dispositivos de hardware (Renan)
 1. Conectar uma metade de Joy-Con 2 por Bluetooth: aparece no log a linha "RegisterDevice: ... HardwareDeviceIdentifier=JoyCon2Left" (ou Right), e Project Settings > Input lista JoyCon2Left e JoyCon2Right entre os dispositivos de hardware. Eles usam a máscara do Pro Controller 2 (9477: sem Lights), por serem da mesma família; o Renan deve dizer se os LEDs de jogador deveriam contar como Lights.
 
