@@ -1,21 +1,20 @@
 # Handoff
 
-Updated: 2026-11-06
+Updated: 2026-11-07
 
 ## State
-- Branch `master`, nothing pushed. Editor binaries built from this code (unity; the non-unity include check passed for the stick table).
-- Approved on hardware and closed this session: R-049 (gyro-aim level), R-021 and R-022 (done by the user). R-001 (stick table, D-015) is approved here and waits only on Renan's controllers; R-020 (slots reset at the end of a game, D-016) is answered but the reset is compiled only.
-- R-023 in progress: in `LV_JoyShockLocalMultiplayer` each controller panel has **Share player 1** / **Own player**, approved; the names above a character refresh when those buttons are clicked.
-- `LV_JoyShockGyroAim` now hands its one pawn to the picked controller's player (D-017); the demo's rumble test is on L (light) and R (strong).
+- Branch `master`, nothing pushed (11 commits ahead of `origin/master`). Editor binaries built from this code.
+- Approved on hardware this session: R-023 (names above a demo character grow upwards) and R-050 (Switch 2 Is Charging reads the charge-state byte; tested on the Pro Controller 2 in Standalone). R-024 dropped, R-025 found already done, R-034 closed as fact F-017.
+- Switch 2 battery percent is still the straight line from 3.0 V to 4.2 V, so a full Pro Controller 2 (3.728 V) shows about 60% and Medium. R-027 is now research on reading the controller's own 0-9 level instead; a generic lithium curve was tried and dropped (see the learning on the Switch 2 battery voltage).
+- In progress: nothing.
 
 ## Next step
-R-023, last item: the controller names above a character (`WBP_ControllerName`, one `WBP_ControllerNameText` per controller in `ControllerInfoVerticalBox`) should grow upwards, not downwards, as controllers are added. Read the widget's designer with `read_object` first; it sits in the character's `Controller Name Widget` component.
+R-040, the editor option to stop finding and connecting controllers. Before code, ask the user its two open questions: Editor Preferences or a toolbar button, and whether it applies at once or on reopening the editor. Then R-048 (Pro Controller 2 back to Bluetooth by itself), which needs the user's controller on the cable.
 
 ## Notes for the next session
-- NodeScribe limits met today: a `True:`/`False:` label on bool-as-exec nodes (Ensure Local Player For Controller) is mapped to `then` and fails, link that pin with BlueprintTools `connect_pins`; engine events go by function name (`event K2_PostLogin`); `after X (...)` cannot tell apart two nodes that differ only in a default-valued pin; orphans after a failed write block `replace`, remove them with BlueprintTools `delete_node`. All in `.trail/learnings/`.
-- BlueprintTools' compile returns null either way; errors show only as `LogBlueprint: Error` in `Saved/Logs/BossRush.log`.
-- Unreal negates Gamepad Right Y for every gamepad (F-015): a game reading -1 there is correct.
-- Joy-Con sticks read 0.7-0.9 at full travel in the stick check; not investigated (calibration, or the 0.25 AxisConfig dead zone the readout sees).
+- If the editor is closed when the session starts, `unreal-mcp` stays "failed" after opening the editor; only the user can reconnect it in the session's MCP server list.
+- To see a Switch 2 report whole, a temporary dump in `parse_switch2_report` logging the packet every 2 s worked well (removed; see F-017's source). Never commit it.
+- Prior art for the Switch 2 protocol: ndeadly's switch2_controller_research for field meanings, Switch2Connect for the BLE/USB mechanics (F-006). Check them before measuring a field from scratch.
 
 ## Read first
-CLAUDE.md, then R-023 in ROADMAP.md and `docs/demo.md` > *Local multiplayer level*. Not needed for R-023: the stick table, the parsers, the gyro slicer.
+CLAUDE.md, then R-040 in ROADMAP.md, `docs/architecture.md` (where enumeration and the Bluetooth link live) and D-008 in DECISIONS.md (the editor already yields to a game). Not needed for R-040: the parsers, the stick table, the demo Blueprints.

@@ -149,9 +149,9 @@ Verified: 2026-07-22
 Affects: R-018, D-004
 
 ### F-006 Switch2Connect is the open reference for the Switch 2 protocol
-Fact: `src/controller.py` has the whole BLE protocol (rumble frame encoding, commands, init, pairing, memory reads, input parser); `src/usb_hid_controller.py` the USB rumble routes and the 15 ms write rhythm; `src/discoverer.py` the advertisement filter. The rest (GUI, virtual drivers, ESP32 bridge) does not concern this plugin.
-Source: https://github.com/TommyWabg/Switch2Connect
-Verified: 2026-08-02
+Fact: `src/controller.py` has the whole BLE protocol (rumble frame encoding, commands, init, pairing, memory reads, input parser); `src/usb_hid_controller.py` the USB rumble routes and the 15 ms write rhythm; `src/discoverer.py` the advertisement filter. The rest (GUI, virtual drivers, ESP32 bridge) does not concern this plugin. For what each report field means, ndeadly's switch2_controller_research (`hid_reports.md`, `commands.md`) is the better reference: Switch2Connect reads the charge-state byte as half of a current (F-012).
+Source: https://github.com/TommyWabg/Switch2Connect; https://github.com/ndeadly/switch2_controller_research
+Verified: 2026-11-06
 
 ### F-007 Pro Controller 2 IMU layout
 Fact: in report 0x05, accelX = +int16 @49, accelY = +@53, accelZ = -@51; gyroX (pitch) = +@55, gyroY (yaw) = +@59, gyroZ (roll) = -@57; bytes 61-62 are always zero. A wrong gyro mapping also makes gravity look axis-swapped during motion, so gravity is checked only after the gyro is right.
