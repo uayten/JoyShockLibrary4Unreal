@@ -119,6 +119,13 @@ Origin: user, 2026-11-06, approved on hardware
 Not chosen: `JSL4U Assign Controller To Player Index` per pick. Sharing a slot on purpose (R-023's buttons) is a different case: there the shared player is the point.
 Affects: docs/demo.md
 
+### D-018 Switching controllers off in the editor is an Editor Preferences option that applies at once
+Decision: **Connect Controllers in the Editor** (Editor Preferences > Plugins > JoyShockLibrary4Unreal, `UJSL4UEditorSettings`, stored in EditorPerProjectUserSettings) releases every controller the moment it is turned off and connects none until it is back on. Each polling thread reads the flag (`SetAllControllersReleased`) as a disconnect, so the ordinary teardown closes the handle or Bluetooth link and the game is told; enumeration returns at once and the Bluetooth scan stops. Only the editor reads it. A released controller, like one on a closing editor, has its player lights reset: a Switch 1 controller on Bluetooth, whose link stays with Windows, to player 1 as Windows shows it (user's choice, 2026-11-07), anything else off.
+Why: the point is to hand a controller to another program, such as Unity, without closing the editor; a toolbar button would take space for something rarely changed.
+Origin: user, 2026-11-07 ("Editor Preferences", "Na hora"); per-user storage and Standalone being unaffected were the agent's choice, already in R-040
+Not chosen: a toolbar button; applying only on the next editor start.
+Affects: R-040, docs/troubleshooting.md
+
 ## Verified facts
 
 ### F-001 Joy-Con 2 sensor ranges

@@ -4,6 +4,12 @@
 
 ## Em teste
 
+### R-040 [feature] Uma opção do editor para não procurar nem conectar controles
+Feito: Edit > Editor Preferences > Plugins > JoyShockLibrary4Unreal > **Connect Controllers in the Editor**, ligada por padrão, guardada por usuário e valendo na hora (D-018). Testado pelo Antônio em 2026-11-07: desmarcar solta o Pro Controller 2 por Bluetooth e o Joy-Con; os Joy-Cons soltos e os de um editor fechado ficam com a luz de jogador 1; o Pro Controller 2 no cabo apaga as luzes ao fechar; marcar de novo traz os controles de volta; o Standalone conecta os controles com a opção desmarcada.
+Falta:
+1. Com a opção desmarcada: apertar botões, ligar um cabo, segurar o SYNC. Nada conecta no editor, nem num Play In Editor.
+2. Fechar o editor com a opção desmarcada e abrir de novo: nenhum controle conecta desde o início.
+
 ### R-029 Metades do Joy-Con 2 registradas como dispositivos de hardware (Renan)
 1. Conectar uma metade de Joy-Con 2 por Bluetooth: aparece no log a linha "RegisterDevice: ... HardwareDeviceIdentifier=JoyCon2Left" (ou Right), e Project Settings > Input lista JoyCon2Left e JoyCon2Right entre os dispositivos de hardware. Eles usam a máscara do Pro Controller 2 (9477: sem Lights), por serem da mesma família; o Renan deve dizer se os LEDs de jogador deveriam contar como Lights.
 
@@ -54,15 +60,6 @@ Falta: ver a volta ao automático acontecer. Só compilou: nenhum level da demo 
 ## Em andamento
 
 ## A fazer
-
-### R-040 [feature] Uma opção do editor para não procurar nem conectar controles
-Esperado: uma opção que só vale no editor e desliga a busca e a conexão de controles do plugin, para o controle poder ser usado em outro programa com o editor aberto.
-Como:
-- Ao desligar, os controles já conectados são soltos, inclusive o link Bluetooth do Switch 2 (escolha do agente)
-- Jogo empacotado e Standalone continuam procurando controles normalmente (escolha do agente)
-- A opção fica guardada por usuário, não no projeto (escolha do agente)
-Fatos de partida: o JoySense4Unity ganhou a mesma opção, e foi ela que acabou com a Unity aberta atrapalhando a Unreal. Um jogo com o plugin já recebe os controles Bluetooth do editor sozinho (D-008); esta opção é para um programa que não seja o plugin, como a Unity.
-Em aberto: onde a opção fica (Editor Preferences ou um botão na barra do editor) e se vale na hora ou só ao reabrir o editor.
 
 ### R-048 [pesquisa] O Pro Controller 2 pode manter o Bluetooth com o cabo ligado?
 Esperado: saber se dá para o Pro Controller 2 voltar ao Bluetooth sozinho ao tirar o cabo, como o DualShock 4, sem apertar botão. Conta como resposta um teste com o Pro Controller 2 do usuário que mostre quem derruba o Bluetooth quando o cabo entra (o próprio controle ou um comando da preparação USB do plugin) e se algum comando ou ordem de preparação o mantém.
