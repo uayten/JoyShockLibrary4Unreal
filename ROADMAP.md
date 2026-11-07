@@ -40,17 +40,6 @@ Fatos:
 Testes: no `LV_JoyShockGyroAim`, em Standalone, empurrar cada analógico para cima e para a direita: a seção de cima dá esquerdo +1 / +1 e direito −1 / +1, e a de baixo (os nodes) +1 em tudo, inclusive no Joy-Con deitado. A câmera sobe com os dois analógicos para cima. Aqui: Pro Controller 2 (USB e Bluetooth), Joy-Con L e R deitados e juntos, DualShock 4. Com o Renan: Pro do Switch 1, Joy-Con 2, DualSense, DualSense Edge, e o gyro do Joy-Con deitado.
 Aprovado aqui em 2026-11-06, em Standalone: Pro Controller 2, DualShock 4, Joy-Cons deitados e em par, nas duas seções da leitura e na câmera. Falta só o que é do Renan.
 
-### R-020 [pesquisa] Os controles do plugin são limpos entre sessões de PIE?
-Esperado: responder se `_joyshocks` e as vagas de jogador sobrevivem de uma sessão de Play In Editor para a seguinte, e se isso importa. Vale como resposta: um log de duas sessões de PIE seguidas com os mesmos controles, mostrando os ids e as vagas de jogador deles.
-Fatos de partida: `JslDisconnectAndDisposeAll` existe, mas talvez não esteja ligado ao fim do PIE (anotado em 2026-07-19).
-Resposta (2026-11-06): sim, e importa.
-- Pelo código: o módulo, os controles (`_joyshocks`), as vagas (`PlayerSlotByPrimary`) e os pares de Joy-Con vivem enquanto o editor estiver aberto; no fim de um Play só o `UJoyShockSubsystem` sai, desligando os eventos e parando a vibração. Nada chama `JslDisconnectAndDisposeAll` no fim do PIE, e deve continuar assim: refazer a conexão a cada Play mexeria nos links Bluetooth (invariante do CLAUDE.md).
-- Medido pelo Antônio, PIE seguido de PIE: depois do `LV_JoyShockGyroAim`, que manda os controles não escolhidos para o jogador 1, o `LV_JoyShockLocalMultiplayer` começou com todos no jogador 1 (luz 2) menos o escolhido, e com o par de Joy-Cons ainda junto. O log de início de sessão (`UJoyShockSubsystem: listening for device changes`) agora lista cada controle com id, tipo, jogador e par, e mostrou `[#3 Joy-Con (L), player 1] [#1 Joy-Con (R), player 0] [#4 Joy-Con (R), player 1, joined to #5] ...`, onde as sessões anteriores davam vagas automáticas 0 a 4.
-- Importa porque um jogo empacotado sempre começa do zero: o segundo Play no editor herda as escolhas do primeiro, até de outro level, e não reproduz o jogo.
-Decidido (escolha do usuário, 2026-11-06): no fim de cada jogo (`UJoyShockSubsystem::Deinitialize`), as vagas voltam ao automático com `ResetPlayerAssignmentsToAutomatic`; os controles continuam conectados e os pares de Joy-Con continuam juntos.
-Também decidido (pedido do usuário, 2026-11-06): o `LV_JoyShockGyroAim` não reatribui mais controles; passa o pawn para o jogador do controle escolhido, e as luzes ficam como estão. Aprovado em hardware.
-Falta: ver a volta ao automático acontecer. Só compilou: nenhum level da demo reatribui controle agora. Teste: um Blueprint que chame `JSL4U Assign Controller To Player Index` (por exemplo, um controle para o jogador 2), Play, parar, e ver as luzes e o log de início do Play seguinte voltarem às vagas automáticas, com o par de Joy-Cons ainda junto.
-
 ## Em andamento
 
 ## A fazer

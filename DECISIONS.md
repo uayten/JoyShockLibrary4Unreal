@@ -108,7 +108,7 @@ Affects: CLAUDE.md, docs/input.md, docs/architecture.md
 ### D-016 The player slots a game assigned end with it; controllers and pairings stay
 Decision: `UJoyShockSubsystem::Deinitialize` calls `ResetPlayerAssignmentsToAutomatic`, which drops every assigned slot and hands out automatic ones in handle order. Connections, Joy-Con pairings and a parked Pro Controller 2's slot are untouched.
 Why: slots live in the module, so the next Play In Editor session, in any level, inherited the last one's choices (F-016), where a packaged game starts from automatic slots. Reconnecting to start clean would rerun init on live Bluetooth links.
-Origin: user's choice (R-020), 2026-11-06; compiled only, since nothing in the demo assigns a slot any more
+Origin: user's choice (R-020), 2026-11-06; approved on hardware 2026-11-07, with a test Blueprint that moves a controller to player 2
 Not chosen: only documenting it; separating joined pairs too -- joining is the player's gesture.
 Affects: docs/players.md
 
