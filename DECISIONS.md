@@ -126,6 +126,13 @@ Origin: user, 2026-11-07 ("Editor Preferences", "Na hora"); per-user storage and
 Not chosen: a toolbar button; applying only on the next editor start.
 Affects: docs/troubleshooting.md, docs/output.md
 
+### D-019 A Pro Controller 2 on the cable always takes its input over the cable
+Decision: when the cable goes into a Pro Controller 2 that is on Bluetooth, the plugin runs the full USB set-up, 03:0D included, so input moves to the cable and the Bluetooth link ends (F-018). After unplugging, a button press brings it back to Bluetooth as the same controller and player.
+Why: whoever plugs the cable in wants the lower latency of the cable, not only charging.
+Origin: user, 2026-11-07
+Not chosen: leaving out 03:0D while the controller is on Bluetooth, which keeps the link and makes unplugging free, but leaves input on Bluetooth for as long as the cable is in; sending this PC's address in 03:0D, which keeps both links while plugged but still switches the controller off on unplugging.
+Affects: R-048 (closed), docs/troubleshooting.md
+
 ## Verified facts
 
 ### F-001 Joy-Con 2 sensor ranges
@@ -223,3 +230,10 @@ Fact: bytes 47-48 of report 0x05 (0x2E without the report id) are a temperature.
 Source: temporary whole-report dump in `parse_switch2_report`, `Saved/Logs/BossRush.log`, 2026-11-06 23:18-23:25; https://github.com/ndeadly/switch2_controller_research `hid_reports.md`
 Verified: 2026-11-06
 Affects: JSL4U Get Switch 2 Sensors (Temperature Celsius)
+
+### F-018 The Pro Controller 2 leaves Bluetooth on USB command 03:0D, not on the cable
+Fact: plugging the cable into a Pro Controller 2 on Bluetooth leaves the Bluetooth link up through Windows enumerating it, the plugin opening its HID and WinUSB interfaces, and the three SPI reads. The link drops 10-25 ms after the controller acknowledges 03:0D ("Initialise USB", the last of the ten init commands); with every command but 03:0D sent, it stays up for the whole time on the cable and after unplugging, while the cable carries no input. 03:0D carries a host address: with FF FF FF FF FF FF (what the plugin sends) or this PC's Bluetooth address most significant byte first, the link drops as before; with the address least significant byte first (`28 91 D6 0B E7 94` for 94:E7:0B:D6:91:28, the host the controller advertises as paired to), both links stay up, the cable streaming 0x05 after one set-up retry, but unplugging then drops the Bluetooth link about 1.2 s later and the controller switches off until a button is pressed.
+Source: temporary `JSL4U.Debug.Sw2UsbInitStage`, `Sw2UsbSkipCommand` and `Sw2UsbHostAddress` console variables in `init_switch2`, `Saved/Logs/BossRush.log`, 2026-11-07 03:46-04:17 UTC, on the user's Pro Controller 2; command names from https://github.com/ndeadly/switch2_controller_research `commands.md`
+Verified: 2026-11-07
+Affects: R-048, the Pro Controller 2 handover between cable and Bluetooth, docs/switch2.md
+
