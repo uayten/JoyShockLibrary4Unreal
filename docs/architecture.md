@@ -81,4 +81,54 @@ though little of it is unchanged now.
   `JSL4U` stick getters alike. Do not flip a stick anywhere else: two flips that each looked right have
   cancelled out more than once. The result is up = +1 on both sticks, XInput's convention; a game still
   reads `Gamepad_RightY` inverted, because Unreal's game viewport negates that key for every device.
-- **`UJoyShockLibrary` and the node names cannot be renamed.** Saved Blueprint graphs refer to them.
+  `Get Input Analog Key State` reads after that negation and after the legacy 0.25 dead zone.
+- **Never re-run a controller's init or configuration exchange on a live Bluetooth stream.** The
+  controller goes quiet, the reads time out, and the poll loop retires a controller that was working. Only
+  write-only single reports (rumble, player lights) are safe to repeat, and they are re-sent on request,
+  never on a timer. A quiet controller needs nothing: `hid_read` returning 0 recovers by itself.
+- **`GetInstance()` answers from the module's own stored pointer, never from `FModuleManager`.** During
+  shutdown `GetModule` returns null off the game thread while the polling and enumeration threads are still
+  stopping, so the one-line `LoadModuleChecked` it looks like it could be crashes there. Threads should
+  prefer the reference their caller already holds.
+- **Never broadcast a game-visible event from `IPlatformInputDeviceMapper`'s connection delegate.** The
+  plugin raises it itself, inside its own connect handling, with the container lock held and the player
+  slot half assigned. Queue the change and drain it on a later tick, as `SendControllerEvents` does.
+- **An editor with a game running beside it stays out of that game's way.** Both read the same controllers.
+  While a game with the plugin runs (`Switch2Ble::IsYieldedToGame`), the editor writes no output and runs no
+  Pro Controller 2 USB init, and only the application in front dispatches input. A new output or init path
+  has to check the same flag.
+- **A game only ever sees a Connection Id.** The library's `int32` handle is reused, so the controller it
+  names now may not be the one it named a moment ago; the `...ForHandle` functions are internal and stay
+  out of the public API.
+- **`UJoyShockLibrary` and the node names cannot be renamed, and there are no CoreRedirects.** Saved
+  Blueprint graphs refer to them. Every node's C++ symbol equals its `DisplayName` without spaces or
+  hyphens (`JSL4UGetJoyConPartner` and "JSL4U Get Joy-Con Partner"), because Find-in-Blueprints and a placed
+  node match the declared name; a renamed node can only be repaired in the editor, in every asset that
+  uses it.
+- **In the demo, a joined Joy-Con pair moves together.** A loop that sends "this controller to one player,
+  the others to another" has to check `JoinedToConnectionId`, or the partner carries the pair away.
+
+## Building and testing
+
+- **Close the editor before building.** Live Coding holds the module open and the build does nothing,
+  without reporting an error.
+- **A green build does not prove the includes are right.** UBT compiles the module as one unity blob, so a
+  `.cpp` missing an `#include` gets the declaration from its neighbour. To check, set `bUseUnity = false`
+  next to `PCHUsage` in `JoyShockLibrary4Unreal.Build.cs`, build, and take it out again; `-DisableUnity`
+  on the command line does not reach this module.
+- **Deleting `Binaries/` and `Intermediate/` is safe, and never the fix for a real compile error.**
+- **Test in Standalone, not Play-In-Editor.** PIE hides input focus problems with more than one player, and
+  re-entrancy that its timing happens to avoid. Controllers and Joy-Con pairings also survive from one PIE
+  session to the next; only the player slots reset.
+- **A console variable typed into the wrong box sends nothing.** Check the Output Log echo
+  (`<cvar> = "<value>"`) before reading a test round as a result.
+- **"Player 1's controller does nothing in the editor's menus" is Slate focus, not the plugin.** Slate
+  keeps one focus per user, and user 0 shares it with mouse and keyboard, so a click in the level viewport
+  takes player 1's focus away from the menus.
+- **There are no automated tests.** What counts is the hardware: say whether a change was compiled, run,
+  or tried on a controller.
+- **Close Steam, and any other program using the controllers, before judging a test.** Steam holds the Pro
+  Controller 2's command interface, so rumble and the calibrated init do nothing while it runs.
+- **A Switch 2 Bluetooth connection cannot be made to fail by hand:** it completes about half a second
+  after the controller is seen. Pause in a debugger inside the connect instead. A log showing a connect then
+  a disconnect is an ordinary disconnect, not a failed connection.
