@@ -95,7 +95,8 @@ As páginas detalhadas estão em inglês, menos a de primeiros passos.
 
 ## Perguntas
 
-**Em que versões da Unreal foi testado?** Só na 5.8. O plugin usa a API `FInputDeviceRegistry`. A Epic
+**Em que versões da Unreal foi testado?** Na 5.8 e na 5.9. O código compila nas duas sem mudança, mas as fases de
+demonstração precisam da 5.9: parte do conteúdo delas foi salva nela, e versões anteriores recusam carregá-lo. O plugin usa a API `FInputDeviceRegistry`. A Epic
 Games sinalizou o `FInputDeviceScope` como obsoleto, e ele será descontinuado em versões futuras da engine.
 
 **Por que usar isto em vez do Steam Input ou do DS4Windows?** Eles traduzem esses controles para XInput, e

@@ -87,7 +87,8 @@ each connected controller, and `LV_JoyShockGyroAim`, for judging gyro aiming. Se
 
 ## Questions
 
-**Which versions of Unreal has this been tested with?** Only 5.8. The plugin uses the
+**Which versions of Unreal has this been tested with?** 5.8 and 5.9. The code builds on both unchanged, but
+the demo levels need 5.9: some of their content was saved in it, and earlier versions refuse to load it. The plugin uses the
 `FInputDeviceRegistry` API. Epic Games has marked `FInputDeviceScope` as deprecated, and it will be
 removed in a future version of the engine.
 
