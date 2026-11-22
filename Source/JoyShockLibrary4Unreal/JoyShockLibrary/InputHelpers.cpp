@@ -209,7 +209,7 @@ static bool parse_switch2_report(JoyShock* jc, uint8_t* packet, int32 len, FIMUS
 			jc->battery_level.store(BatteryLevelFromPercent(percent));
 		}
 		// The byte after the voltage is a charge state, not half of a current, though Switch2Connect -- and
-		// this parser after it -- read it as one (ndeadly's switch2_controller_research, F-009). Measured on a
+		// this parser after it -- read it as one (ndeadly's switch2_controller_research, `hid_reports.md`). Measured on a
 		// Pro Controller 2: 0 on battery, 0x24 to 0x3C while charging on the cable, and 0x20 once the charge
 		// light goes out with the cable still in. So 0x20 alone is external power with nothing going in, and
 		// only a value above it is charging.
@@ -242,6 +242,9 @@ static bool parse_switch2_report(JoyShock* jc, uint8_t* packet, int32 len, FIMUS
 	}
 	if (len >= 49)
 	{
+		// ndeadly's scale: a signed deviation from 25 C at 1/126.9 C a unit. Not confirmed: on a Pro Controller 2
+		// the raw value rose from 3 to 8 in 7 minutes charging, in steps too clean for that resolution; a second
+		// known temperature would settle the real scale.
 		jc->sw2_temperature_celsius.store(25.0f + (packet[47] | (packet[48] << 8)) / 127.0f);
 	}
 

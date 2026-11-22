@@ -125,6 +125,8 @@ though little of it is unchanged now.
 - **"Player 1's controller does nothing in the editor's menus" is Slate focus, not the plugin.** Slate
   keeps one focus per user, and user 0 shares it with mouse and keyboard, so a click in the level viewport
   takes player 1's focus away from the menus.
+- **Map the gyro before checking gravity.** A wrong gyro mapping also makes gravity look axis-swapped while
+  the controller moves, so gravity is checked only once the gyro is right.
 - **There are no automated tests.** What counts is the hardware: say whether a change was compiled, run,
   or tried on a controller.
 - **Close Steam, and any other program using the controllers, before judging a test.** Steam holds the Pro
