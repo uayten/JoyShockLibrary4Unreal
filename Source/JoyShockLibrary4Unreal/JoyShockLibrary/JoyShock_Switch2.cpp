@@ -821,18 +821,15 @@ void JoyShock::build_sw2_rumble_block(int smallRumble, int bigRumble, unsigned c
 	constexpr uint16_t NeutralHighFrequency = 0x1E1;
 
 	// The two 10-bit amplitude fields each go to 1023, but the actuator can only be driven so hard: their
-	// sum has to stay within 511, or the frame is rejected/clipped. Scale both together when the request
-	// exceeds that, so asking for more of everything never changes the balance between the two motors.
+	// sum has to stay within 511, or the frame is rejected/clipped. Both channels are scaled by one fixed
+	// factor, chosen so that both at full still fit. Scaling only the requests that overflowed squashed the
+	// range instead: 0.2 on both channels came out at 80% of 1.0, and the two felt the same, while the
+	// Joy-Con kept them far apart. The price is that one channel alone tops out at half the budget.
 	constexpr int32 CombinedAmplitudeLimit = 511;
+	constexpr int32 FullRequestSum = 255 + 255;
 
-	int32 highAmp = FMath::Clamp(smallRumble, 0, 255) * 1023 / 255;
-	int32 lowAmp = FMath::Clamp(bigRumble, 0, 255) * 1023 / 255;
-	const int32 total = highAmp + lowAmp;
-	if (total > CombinedAmplitudeLimit)
-	{
-		highAmp = highAmp * CombinedAmplitudeLimit / total;
-		lowAmp = lowAmp * CombinedAmplitudeLimit / total;
-	}
+	const int32 highAmp = FMath::Clamp(smallRumble, 0, 255) * CombinedAmplitudeLimit / FullRequestSum;
+	const int32 lowAmp = FMath::Clamp(bigRumble, 0, 255) * CombinedAmplitudeLimit / FullRequestSum;
 
 	// The id lets the controller drop a packet it has already played; it must advance every send, or a
 	// sustained rumble looks like one repeated packet and the actuator falls silent after the first.
