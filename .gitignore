@@ -12,11 +12,10 @@ DerivedDataCache
 Intermediate
 Saved
 
-# AI coding agents. Everything an agent leaves behind is either machine-specific
-# (absolute paths, tool permissions) or a scratch copy of the repo, so the shared
-# settings and skills are the only things here that belong in the repository.
+# AI coding agents. Their setup, notes and tool configuration belong to each
+# contributor, not to the plugin, so none of it is in the repository.
 .claude/
-.trail/
+.mcp.json
 .codex/
 .cursor/
 .aider*
