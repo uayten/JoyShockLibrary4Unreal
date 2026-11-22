@@ -38,7 +38,7 @@ runs by itself when the game shuts down.
 |---|---|---|
 | DualShock 4, DualSense | Two motors, small and big | |
 | Joy-Con, Pro Controller | HD rumble: `BigRumble` is the low-frequency component (heavy shake), `SmallRumble` the high-frequency one (fine buzz) | Sustained until you set `(0, 0)` |
-| Pro Controller 2, Joy-Con 2 | HD rumble, the same split | Sustained until `(0, 0)`, over USB and Bluetooth. The controller caps the two components' combined strength, so each is scaled to fit with the other at full: one component alone peaks at half of what the actuator can do, and the ratio between two requests always holds. Close Steam for it over USB — see [Conflicts](#conflicts-with-other-applications) |
+| Pro Controller 2, Joy-Con 2 | HD rumble, the same split | Sustained until `(0, 0)`, over USB and Bluetooth. The actuator stops getting stronger well before the protocol's maximum, so both components are scaled to reach that point together at full, and the ratio between two requests always holds. Close Steam for it over USB — see [Conflicts](#conflicts-with-other-applications) |
 
 ## Lights
 

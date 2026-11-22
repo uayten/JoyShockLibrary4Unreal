@@ -820,12 +820,13 @@ void JoyShock::build_sw2_rumble_block(int smallRumble, int bigRumble, unsigned c
 	constexpr uint16_t NeutralLowFrequency = 0x0E1;
 	constexpr uint16_t NeutralHighFrequency = 0x1E1;
 
-	// The two 10-bit amplitude fields each go to 1023, but the actuator can only be driven so hard: their
-	// sum has to stay within 511, or the frame is rejected/clipped. Both channels are scaled by one fixed
-	// factor, chosen so that both at full still fit. Scaling only the requests that overflowed squashed the
-	// range instead: 0.2 on both channels came out at 80% of 1.0, and the two felt the same, while the
-	// Joy-Con kept them far apart. The price is that one channel alone tops out at half the budget.
-	constexpr int32 CombinedAmplitudeLimit = 511;
+	// The two 10-bit amplitude fields each go to 1023, but the actuator saturates well before that. On a Pro
+	// Controller 2 (2026-11-22), a combined 1023 (both channels at 511) shook clearly harder than the 511
+	// this code used to assume was the ceiling, and both fields at 1023 felt no stronger than that.
+	// Both channels are scaled by one fixed factor, chosen so that both at full reach the combined 1023.
+	// Scaling only the requests that overflowed squashed the range instead: 0.2 on both channels came out
+	// at 80% of 1.0, the two felt the same, while the Joy-Con kept them far apart.
+	constexpr int32 CombinedAmplitudeLimit = 1023;
 	constexpr int32 FullRequestSum = 255 + 255;
 
 	const int32 highAmp = FMath::Clamp(smallRumble, 0, 255) * CombinedAmplitudeLimit / FullRequestSum;
